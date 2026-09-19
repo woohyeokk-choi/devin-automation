@@ -801,6 +801,29 @@ Native Slack sync for that session is unavailable to anyone but its owner, the
 `superset-runtime-repair` service user; it stays deferred rather than being
 obtained by changing ownership or duplicating the repair.
 
+### Phase 6 live S1 pilot
+
+Published automation revision `86c03c3`, clean tree, same `runtime/live-state`
+directory with all S2 records preserved, one singleton-locked host coordinator,
+portal still `AUTO_REPAIR_ENABLED=false`.
+
+| Step | Result |
+| --- | --- |
+| Fixture restored through `POST /ops/fixtures/reset` | chart 6 read back at row limit `137`, palette `googleCategory10c` |
+| Real portal action (`POST /settings/sort`, no `row_limit` sent) | read back row limit `1000`, palette unchanged, sort changed as requested |
+| Control | a restricted-viewer action in the same window returned its expected authenticated denial and created no incident |
+| Incident | `omitted_row_limit_is_reset`, fingerprint `4850806e18c18de5acf83d2588df81c0`, admission `eligible` |
+| GitHub issue | <https://github.com/woohyeokk-choi/superset/issues/3> |
+| Devin session (exactly one) | `18b04127f4a44af6a9c71f9eb3eaba9e`, `max_acu_limit=20` in the create body, deadline 22:44 UTC, service-user attribution |
+| Candidate PR | <https://github.com/woohyeokk-choi/superset/pull/4>, head `fe266eac51a996760a75997ff94b3270c9ef73b1` read from GitHub |
+| Verdict | `verified_in_preview` on attempt 1 (verification 9): 13 checks over S1 and N1, including an explicit `1000` still being honoured and creation defaults unchanged |
+| Feedback sent | none — no product check failed |
+
+S2's defect is not required to pass this candidate: PR #2 is open and unmerged,
+so that bug remains in the baseline this branch starts from, and each repair is
+judged against its own registered cases. Evidence in
+`artifacts/phase6/S1/`.
+
 ## 8. Blockers and required credentials
 
 Nothing is stored in this file; all values go into session/org secrets.
