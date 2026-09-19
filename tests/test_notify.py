@@ -517,6 +517,27 @@ def test_a_recording_speaks_for_a_head_only_if_it_says_it_ran_there() -> None:
     _, _, none = historical_message(REPAIR, ASSESSED, {"verdict": "passed"})
     assert "recording" not in none
 
+    # A clip published as a file in the thread has no link to give, and says
+    # so rather than borrowing one; its metadata is checked as strictly.
+    from portal.notify import IN_THREAD
+
+    in_thread = Recording(
+        url=IN_THREAD,
+        case="S1",
+        sha="f" * 40,
+        recorded_at=good.recorded_at,
+        scope="later CLI replay",
+    )
+    assert recording_problem(in_thread, REPAIR) == ""
+    _, _, attached = historical_message(
+        REPAIR, ASSESSED, {"verdict": "passed"}, in_thread
+    )
+    assert "recording uploaded to this thread — S1 captured" in attached
+    assert recording_problem(
+        Recording(url=IN_THREAD, case="S1", sha="a" * 40, recorded_at=good.recorded_at),
+        REPAIR,
+    ).startswith("the capture ran against")
+
 
 # --- restart recovery ------------------------------------------------------
 

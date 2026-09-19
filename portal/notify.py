@@ -1036,10 +1036,18 @@ class Recording:
     """
 
     url: str
+    """A shareable https link, or `IN_THREAD` for a clip uploaded alongside."""
+
     case: str = ""
     sha: str = ""
     recorded_at: str = ""
     scope: str = ""
+
+
+#: A capture published as a file in the repair's own thread rather than as a
+#: link. It is still a capture and still has to state what it recorded; what
+#: it does not have is a URL, and inventing one would be worse than saying so.
+IN_THREAD = "thread"
 
 
 def recording_problem(recording: Recording, repair: dict[str, Any]) -> str:
@@ -1050,7 +1058,7 @@ def recording_problem(recording: Recording, repair: dict[str, Any]) -> str:
     rather than published under the accepted head.
     """
     url = recording.url
-    if not url.startswith("https://") or _is_signed(url):
+    if url != IN_THREAD and (not url.startswith("https://") or _is_signed(url)):
         return "not a shareable https link"
     missing = [
         name
@@ -1088,8 +1096,13 @@ def _video(repair: dict[str, Any], recording: Recording | None) -> str:
     problem = recording_problem(recording, repair)
     if problem:
         return f" · recording pending — {_short(problem, 120)}"
+    where = (
+        "uploaded to this thread"
+        if recording.url == IN_THREAD
+        else escape(recording.url)
+    )
     return (
-        f" · recording {escape(recording.url)} — {escape(recording.case)} "
+        f" · recording {where} — {escape(recording.case)} "
         f"captured {escape(recording.recorded_at)} against "
         f"`{escape(recording.sha.strip().lower()[:12])}`, shows "
         f"{_short(recording.scope or 'scope unstated', 120)}"

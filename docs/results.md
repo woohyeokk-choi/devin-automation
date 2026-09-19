@@ -219,5 +219,19 @@ session, product edit, merge or public exposure was involved.
   against `runtime/live-state`, which matches each result to the one stored
   non-simulated repair with that case and accepted head. A fresh state
   inherits no parent and opens its own thread.
+- The four authorized final deliveries went out from `runtime/live-state`
+  through the bot transport, each under its own historical parent: the S2
+  result `ts 1789858187.458229` and clip `F0C2XKS6FD1` under
+  `1789854458.454909`, the S1 result `ts 1789858224.753179` and clip
+  `F0C33PMRVA6` under `1789854458.664169`, all `sent` at one attempt with no
+  ambiguous outcome. Both clips are the 13-second phase 8 replays, described
+  as later CLI/API replays of baseline failure versus accepted-head pass —
+  not the original phase 6 verification, not portal UI, not a deployment, and
+  N1 was not re-run in them. **The S2 result line reads `recording pending —
+  not a shareable https link`**: it was sent before the message builder could
+  describe a clip published as a file rather than as a URL, so its own clip
+  arrived in the thread a minute later without the line naming it. The S1
+  line, sent after the fix, reads `recording uploaded to this thread`.
+  Nothing in the channel was edited or deleted to hide the difference.
 - Two defects, two repairs, one repository, on a fork with a synthetic
   fixture. Nothing here establishes a rate on real customer incidents.

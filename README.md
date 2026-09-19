@@ -488,7 +488,7 @@ python3 -m portal.notify result --repair 1 \
     --recording-scope 'baseline vs candidate replay'
 python3 -m portal.notify attach --repair 2 \
     --clip artifacts/phase8/replay/S1-exact-sha-replay.mp4 \
-    --recording file --recording-case S1 \
+    --recording thread --recording-case S1 \
     --recording-sha <full sha the capture ran against> \
     --recording-at 2026-09-19T22:15:30+00:00 \
     --recording-scope 'baseline failure then candidate pass'
@@ -531,7 +531,9 @@ no recording is published for that head rather than implying footage exists.
 
 A supplied capture must state what it recorded — its case, the full revision
 it ran against and when it was taken — and that revision is compared to the
-accepted head. The head is never borrowed from the repair the clip is
+accepted head. `--recording thread` is the capture published as a file in the
+repair's own thread: it has no link to give, so the line says so instead of
+borrowing one, and its metadata is checked exactly as strictly. The head is never borrowed from the repair the clip is
 attached to, so a capture of another revision, an incomplete one, an
 abbreviated sha or a signed download URL reads as `recording pending` with
 the reason instead of being presented as verified footage.
