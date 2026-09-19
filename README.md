@@ -442,8 +442,16 @@ python3 -m portal.notify status                 # ledger, no network
 python3 -m portal.notify test                   # one marked connectivity line
 python3 -m portal.notify backfill --repair 1 --repair 2
 python3 -m portal.notify result --repair 1 \
-    --recording <url> --recording-scope 'baseline vs candidate replay'
+    --recording <url> --recording-case S2 \
+    --recording-sha <full sha the capture ran against> \
+    --recording-at 2026-09-19T22:15:30+00:00 \
+    --recording-scope 'baseline vs candidate replay'
+python3 -m portal.notify correction --text 'Integration correction: …'
 ```
+
+`correction` publishes one factual correction of something the channel was
+already told, keyed by the correction's own wording so running it again sends
+nothing. Channel history is never edited or deleted.
 
 `result` is the accepted-outcome follow-up, separate from `backfill` so a
 recording made after the historical summary was sent can still be published.
@@ -452,6 +460,13 @@ recorded pull request head and the repair is `verified`, and its event id
 carries that head and a digest of the link, so the same link sends once and a
 later genuine recording sends once more. With no `--recording` the line says
 no recording is published for that head rather than implying footage exists.
+
+A supplied capture must state what it recorded — its case, the full revision
+it ran against and when it was taken — and that revision is compared to the
+accepted head. The head is never borrowed from the repair the clip is
+attached to, so a capture of another revision, an incomplete one, an
+abbreviated sha or a signed download URL reads as `recording pending` with
+the reason instead of being presented as verified footage.
 
 - **Optional.** With no `SLACK_WEBHOOK_URL`, messages are recorded `disabled`
   and no request is made. The URL must be `https`, host `hooks.slack.com`,

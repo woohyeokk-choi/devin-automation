@@ -141,12 +141,22 @@ private signed download URLs, which are not published here and are refused by
 the notifier (`_video` withholds any `https` URL whose query string carries a
 signature or token).
 
-A result alert therefore carries a recording link only when a real accessible
-one is supplied, together with what it shows and the head it was taken at:
+A result alert therefore carries a recording link only when the capture
+itself states what it recorded: the case, the full revision it ran against,
+when it was taken, and what it shows. That revision is compared to the
+accepted head; it is never inferred from the repair the clip is attached to,
+so a link recorded elsewhere is reported as `recording pending — the capture
+ran against …, not the head …` rather than published as verified footage.
+Incomplete metadata, an abbreviated sha and a signed download URL are pending
+for the same reason.
 
 ```bash
-python3 -m portal.notify backfill --repair 1 \
-  --recording https://…  --recording-scope "S2 replay at d234055eaf85"
+python3 -m portal.notify result --repair 1 \
+  --recording https://… \
+  --recording-case S2 \
+  --recording-sha d234055eaf85a70d5e5ec5a7a7256ee43d02dde6 \
+  --recording-at 2026-09-19T22:15:30+00:00 \
+  --recording-scope "baseline failure then the accepted head passing"
 ```
 
 Missing video is an honest omission, not a failed repair.
@@ -175,6 +185,9 @@ session, product edit, merge or public exposure was involved.
   `SLACK_WEBHOOK_URL` even when the providers were fakes. Simulated wiring now
   refuses a real transport at runtime, with a canary-webhook regression that
   intercepts sockets and asserts zero outbound calls. The channel history is
-  preserved unedited; the tests were not entirely offline.
+  preserved unedited; the tests were not entirely offline. One factual
+  correction was later posted to the channel
+  (`portal.notify correction --text …`, keyed by the correction's own wording
+  so it cannot repeat); nothing was edited or deleted.
 - Two defects, two repairs, one repository, on a fork with a synthetic
   fixture. Nothing here establishes a rate on real customer incidents.

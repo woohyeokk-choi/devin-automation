@@ -32,11 +32,14 @@ from portal.notify import (
     UNKNOWN,
     NotificationLog,
     Notifier,
+    Recording,
+    correction_message,
     historical_message,
     PREVIEW_ONLY,
     _fingerprint,
     message_for,
     reconcile,
+    recording_problem,
     result_message,
     result_problem,
     webhook_problem,
@@ -442,29 +445,65 @@ def test_the_final_message_points_at_the_replay_and_invents_no_video() -> None:
 
     _, _, historical = historical_message(
         REPAIR, ASSESSED, {"verdict": "passed", "cases": "S1,N1"},
-        recording_url="https://example.invalid/replay.mp4",
+        Recording(
+            url="https://example.invalid/replay.mp4",
+            case="S1",
+            sha="f" * 40,
+            recorded_at="2026-09-19T22:16:48+00:00",
+        ),
     )
     assert historical.startswith("Historical result — repair ran earlier.")
     assert "recording https://example.invalid/replay.mp4" in historical
 
 
-def test_a_recording_link_carries_its_scope_and_head_or_is_withheld() -> None:
-    """A link with no scope invites the wrong reading; a signed link is a secret."""
-    _, _, plain = historical_message(
-        REPAIR, ASSESSED, {"verdict": "passed"},
-        recording_url="https://app.devin.ai/sessions/x/recording",
-        recording_scope="operator console walk-through on the unfixed baseline",
+def test_a_recording_speaks_for_a_head_only_if_it_says_it_ran_there() -> None:
+    """The capture states its own revision; the repair never lends it one."""
+    good = Recording(
+        url="https://example.invalid/replay-s1.mp4",
+        case="S1",
+        sha="F" * 40,
+        recorded_at="2026-09-19T22:16:48+00:00",
+        scope="baseline failure then the accepted head passing",
     )
-    assert "shows operator console walk-through on the unfixed baseline" in plain
-    assert "taken at head `ffffffffffff`" in plain
+    _, _, plain = historical_message(REPAIR, ASSESSED, {"verdict": "passed"}, good)
+    assert recording_problem(good, REPAIR) == ""
+    assert "S1 captured 2026-09-19T22:16:48+00:00 against `ffffffffffff`" in plain
+    assert "shows baseline failure then the accepted head passing" in plain
 
-    _, _, signed = historical_message(
-        REPAIR, ASSESSED, {"verdict": "passed"},
-        recording_url="https://cdn.example/clip.mp4?X-Amz-Signature=deadbeef",
-        recording_scope="anything",
+    # A capture of another revision is footage of another product.
+    elsewhere = Recording(
+        url=good.url, case="S1", sha="a" * 40, recorded_at=good.recorded_at
     )
-    assert "deadbeef" not in signed
-    assert "recording link withheld" in signed
+    assert recording_problem(elsewhere, REPAIR) == (
+        "the capture ran against aaaaaaaaaaaa, not the head ffffffffffff"
+    )
+    _, _, wrong = historical_message(REPAIR, ASSESSED, {"verdict": "passed"}, elsewhere)
+    assert "recording pending — the capture ran against aaaaaaaaaaaa" in wrong
+    assert good.url not in wrong
+
+    # A bare link claims nothing, so it is not published as footage.
+    bare = Recording(url=good.url)
+    assert "no case" in recording_problem(bare, REPAIR)
+    _, _, unstated = historical_message(REPAIR, ASSESSED, {"verdict": "passed"}, bare)
+    assert "recording pending" in unstated and good.url not in unstated
+
+    # An abbreviated revision cannot be compared to a head.
+    short = Recording(
+        url=good.url, case="S1", sha="ffffff", recorded_at=good.recorded_at
+    )
+    assert recording_problem(short, REPAIR) == (
+        "the capture's revision is not a full commit sha"
+    )
+
+    signed = Recording(
+        url="https://cdn.example/clip.mp4?X-Amz-Signature=deadbeef",
+        case="S1",
+        sha="f" * 40,
+        recorded_at=good.recorded_at,
+    )
+    _, _, withheld = historical_message(REPAIR, ASSESSED, {"verdict": "passed"}, signed)
+    assert "deadbeef" not in withheld
+    assert "not a shareable https link" in withheld
 
     _, _, none = historical_message(REPAIR, ASSESSED, {"verdict": "passed"})
     assert "recording" not in none
@@ -624,7 +663,13 @@ PASSED_ATTEMPT = {
     "cases": "S1,N1",
     "finished_at": "2026-09-19T22:24:51.208+00:00",
 }
-RECORDING = "https://example.invalid/replay-s1.mp4"
+RECORDING = Recording(
+    url="https://example.invalid/replay-s1.mp4",
+    case="S1",
+    sha="f" * 40,
+    recorded_at="2026-09-19T22:16:48+00:00",
+    scope="S1 replay at the accepted head",
+)
 
 
 def test_a_result_is_separately_identified_and_carries_its_recording(
@@ -637,15 +682,13 @@ def test_a_result_is_separately_identified_and_carries_its_recording(
     notifier.publish(backfill_id, kind, text, 2)
 
     event_id, kind, text = result_message(
-        REPAIR, INCIDENT, PASSED_ATTEMPT,
-        recording_url=RECORDING,
-        recording_scope="S1 replay at the accepted head",
+        REPAIR, INCIDENT, PASSED_ATTEMPT, recording=RECORDING
     )
     assert notifier.publish(event_id, kind, text, 2) == SENT
 
-    assert event_id == f"2:result:{'f' * 40}:{_fingerprint(RECORDING)}"
+    assert event_id == f"2:result:{'f' * 40}:{_fingerprint(RECORDING.url)}"
     assert event_id != backfill_id
-    assert RECORDING in wire.calls[-1]["json"]["text"]
+    assert RECORDING.url in wire.calls[-1]["json"]["text"]
     assert PREVIEW_ONLY in text and "S1,N1" in text
     # The same link again is the same event.
     assert notifier.publish(event_id, kind, text, 2) == SENT
@@ -655,6 +698,18 @@ def test_a_result_is_separately_identified_and_carries_its_recording(
 def test_a_result_without_a_recording_says_so() -> None:
     _, _, text = result_message(REPAIR, INCIDENT, PASSED_ATTEMPT)
     assert "recording: none published for this head" in text
+
+
+def test_a_correction_is_keyed_by_its_own_wording(tmp_path: Path) -> None:
+    """Corrections repair the record forward and never repeat themselves."""
+    wire = Recorder()
+    notifier = Notifier(log=_ledger(tmp_path), webhook=WEBHOOK, transport=wire)
+    event_id, kind, text = correction_message("Integration correction: <it> was wrong")
+    assert notifier.publish(event_id, kind, text) == SENT
+    assert notifier.publish(event_id, kind, text) == SENT
+    assert len(wire.calls) == 1
+    assert "&lt;it&gt;" in wire.calls[0]["json"]["text"]
+    assert correction_message("another correction")[0] != event_id
 
 
 def test_a_result_is_refused_unless_the_attempt_measured_that_head() -> None:

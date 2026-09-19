@@ -929,7 +929,15 @@ exact head produces *"verified in isolated preview; not merged/deployed"*,
 with the attempt it came from. Blocked and failed validations say explicitly
 that the repair is **not completed** and what happens next; neither consumes a
 new session. A recording link appears only when one is supplied to the CLI
-(`--recording`), so no video is ever implied.
+(`--recording`), so no video is ever implied, and only when the capture
+states its own case, full revision and capture time (`--recording-case`,
+`--recording-sha`, `--recording-at`): the stated revision is compared to the
+accepted head, never inferred from it, and anything else is shown as
+`recording pending` with the reason.
+
+A `correction` command publishes one factual correction of something the
+channel was already told, keyed by the correction's own wording so repeating
+the command sends nothing. Channel history is never edited or deleted.
 
 Native conversational Slack sync remains owner-only for service-user sessions
 and is not used or claimed here.

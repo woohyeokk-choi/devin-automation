@@ -28,6 +28,7 @@ The CLI is the only way to send anything by hand:
 
     python3 -m portal.notify test                # one marked connectivity test
     python3 -m portal.notify backfill --repair 1 # one historical summary
+    python3 -m portal.notify correction --text … # one correction, keyed by text
     python3 -m portal.notify status              # the ledger, no network
 """
 
@@ -558,7 +559,7 @@ def message_for(
             "verified",
             f"Verification passed — {stem}, tested head `{escape(head)}` "
             f"({_checks(repair)}). {_reproduction(repair)}. {PREVIEW_ONLY}. "
-            f"{_links(repair)}{_video(repair)}",
+            f"{_links(repair)}",
         )
     if action == "blocked":
         return (
@@ -678,29 +679,75 @@ def _checks(repair: dict[str, Any]) -> str:
     )
 
 
-def _video(repair: dict[str, Any]) -> str:
-    """A recording link only if one exists.
+@dataclass(frozen=True)
+class Recording:
+    """A capture that states, itself, what it recorded.
+
+    The head a clip was taken at is a property of the capture, never of the
+    repair it is being attached to: inferring one from the other turns any
+    supplied link into footage of an accepted fix. The recorder supplies the
+    case, the full revision it ran against and when it was taken, and those
+    are what the message quotes.
+    """
+
+    url: str
+    case: str = ""
+    sha: str = ""
+    recorded_at: str = ""
+    scope: str = ""
+
+
+def recording_problem(recording: Recording, repair: dict[str, Any]) -> str:
+    """Why this capture cannot be shown as footage of this head, if it cannot.
+
+    Signed download URLs are refused because their query string is a bearer
+    credential, and an incomplete or differing capture is named pending
+    rather than published under the accepted head.
+    """
+    url = recording.url
+    if not url.startswith("https://") or _is_signed(url):
+        return "not a shareable https link"
+    missing = [
+        name
+        for name, value in (
+            ("case", recording.case),
+            ("revision", recording.sha),
+            ("capture time", recording.recorded_at),
+        )
+        if not value.strip()
+    ]
+    if missing:
+        return f"the capture states no {', no '.join(missing)}"
+    sha = recording.sha.strip().lower()
+    if len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha):
+        return "the capture's revision is not a full commit sha"
+    head = str(repair.get("pr_head_sha") or "").lower()
+    if not head:
+        return "the repair has no recorded pull request head"
+    if sha != head:
+        return f"the capture ran against {sha[:12]}, not the head {head[:12]}"
+    return ""
+
+
+def _video(repair: dict[str, Any], recording: Recording | None) -> str:
+    """A recording line only when the capture itself says it shows this head.
 
     Nothing in the lifecycle records video, so this is empty unless an
-    operator supplies a link (the backfill command does): an invented or
-    unrelated recording would be worse than none.
-
-    A link is carried with what it shows and the head it was taken at, so a
-    console walk-through on the unfixed baseline cannot read as footage of a
-    repaired product. Signed download URLs are dropped rather than published:
-    their query string is a bearer credential.
+    operator supplies a capture: an invented or unrelated recording would be
+    worse than none. A capture that does not bind itself to the accepted head
+    is reported as pending, with the reason, instead of being presented as
+    verified footage.
     """
-    url = str(repair.get("recording_url") or "")
-    if not url:
+    if recording is None or not recording.url:
         return ""
-    if not url.startswith("https://") or _is_signed(url):
-        return " · recording link withheld (not a shareable https link)"
-    scope = str(repair.get("recording_scope") or "").strip()
-    head = str(repair.get("pr_head_sha") or "")
+    problem = recording_problem(recording, repair)
+    if problem:
+        return f" · recording pending — {_short(problem, 120)}"
     return (
-        f" · recording {escape(url)} — shows "
-        f"{_short(scope or 'scope unstated', 120)}"
-        f"{f', taken at head `{escape(head[:12])}`' if head else ''}"
+        f" · recording {escape(recording.url)} — {escape(recording.case)} "
+        f"captured {escape(recording.recorded_at)} against "
+        f"`{escape(recording.sha.strip().lower()[:12])}`, shows "
+        f"{_short(recording.scope or 'scope unstated', 120)}"
     )
 
 
@@ -728,8 +775,7 @@ def historical_message(
     repair: dict[str, Any],
     incident: dict[str, Any] | None,
     attempt: dict[str, Any] | None,
-    recording_url: str = "",
-    recording_scope: str = "",
+    recording: Recording | None = None,
 ) -> tuple[str, str, str]:
     """A summary of a result that was reached before Slack existed here.
 
@@ -750,8 +796,7 @@ def historical_message(
         f"Historical result — repair ran earlier. {case}, repair {repair['id']}, "
         f"incident {repair.get('incident_id')}: verification {escape(verdict)} at "
         f"{escape(finished)} on head `{escape(head)}` (cases {escape(checks)}). "
-        f"{tail} {_links(repair)}"
-        f"{_video({**repair, 'recording_url': recording_url, 'recording_scope': recording_scope})}"
+        f"{tail} {_links(repair)}{_video(repair, recording)}"
     )
     return f"backfill:{repair['id']}", "historical", text
 
@@ -788,8 +833,7 @@ def result_message(
     incident: dict[str, Any] | None,
     attempt: dict[str, Any] | None,
     *,
-    recording_url: str = "",
-    recording_scope: str = "",
+    recording: Recording | None = None,
 ) -> tuple[str, str, str]:
     """The final result for an accepted head, with its recording or without.
 
@@ -808,12 +852,12 @@ def result_message(
         f"repair {repair['id']} ({_case(repair, incident)}), "
         f"incident {repair.get('incident_id')}"
     )
-    video = _video({**repair, "recording_url": recording_url,
-                    "recording_scope": recording_scope})
+    video = _video(repair, recording)
     if not video:
         video = " · recording: none published for this head"
     return (
-        f"{repair['id']}:result:{head}:{_fingerprint(recording_url)}",
+        f"{repair['id']}:result:{head}:"
+        f"{_fingerprint(recording.url if recording else '')}",
         "result",
         f"Result — {stem}, tested head `{escape(head)}` "
         f"(verification {escape(str(verified.get('id') or ''))}, "
@@ -821,6 +865,16 @@ def result_message(
         f"finished {escape(str(verified.get('finished_at') or ''))}). "
         f"{_reproduction(repair)}. {PREVIEW_ONLY}. {_links(repair)}{video}",
     )
+
+
+def correction_message(text: str) -> tuple[str, str, str]:
+    """A correction of something the channel was already told.
+
+    Keyed by the correction's own wording, so the same correction sent twice
+    is one message while a different one is a different event. It repairs the
+    record forward; nothing in the channel is edited or deleted.
+    """
+    return f"correction:{_fingerprint(text)}", "correction", escape(text)
 
 
 def test_message(run_id: str) -> tuple[str, str, str]:
@@ -870,7 +924,14 @@ def _state(config: Settings) -> Any:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Slack status notifications.")
-    parser.add_argument("command", choices=("test", "backfill", "result", "status"))
+    parser.add_argument(
+        "command", choices=("test", "backfill", "result", "correction", "status")
+    )
+    parser.add_argument(
+        "--text",
+        default="",
+        help="the correction to publish, verbatim; required for correction",
+    )
     parser.add_argument(
         "--repair",
         type=int,
@@ -894,7 +955,36 @@ def main(argv: list[str] | None = None) -> int:
             "walk-through on the unfixed baseline is not footage of a repair"
         ),
     )
+    parser.add_argument(
+        "--recording-case",
+        default="",
+        help="the case the capture ran, as stated by whoever recorded it",
+    )
+    parser.add_argument(
+        "--recording-sha",
+        default="",
+        help=(
+            "the full commit sha the capture ran against; it is compared to "
+            "the accepted head and never inferred from it"
+        ),
+    )
+    parser.add_argument(
+        "--recording-at",
+        default="",
+        help="when the capture was taken, in UTC",
+    )
     args = parser.parse_args(argv)
+    recording = (
+        Recording(
+            url=args.recording,
+            case=args.recording_case,
+            sha=args.recording_sha,
+            recorded_at=args.recording_at,
+            scope=args.recording_scope,
+        )
+        if args.recording
+        else None
+    )
 
     notifier = build_notifier(settings)
     if args.command == "status":
@@ -933,6 +1023,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"event_id": event_id, "state": notifier.publish(event_id, kind, text)}))
         return 0
 
+    if args.command == "correction":
+        if not args.text.strip():
+            raise SystemExit("correction needs --text")
+        event_id, kind, text = correction_message(args.text.strip())
+        print(json.dumps({"event_id": event_id, "state": notifier.publish(event_id, kind, text)}))
+        return 0
+
     if not args.repair:
         raise SystemExit(f"{args.command} needs at least one --repair <id>")
     state = _state(settings)
@@ -955,18 +1052,18 @@ def main(argv: list[str] | None = None) -> int:
                 results.append({"repair": repair_id, "state": "refused", "reason": problem})
                 continue
             event_id, kind, text = result_message(
-                repair,
-                incident,
-                passed,
-                recording_url=args.recording,
-                recording_scope=args.recording_scope,
+                repair, incident, passed, recording=recording
             )
             results.append(
                 {
                     "repair": repair_id,
                     "event_id": event_id,
                     "tested_head": repair["pr_head_sha"],
-                    "recording": bool(args.recording),
+                    "recording": (
+                        recording_problem(recording, repair) or "published"
+                        if recording
+                        else "none supplied"
+                    ),
                     "state": notifier.publish(
                         event_id,
                         kind,
@@ -978,11 +1075,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             continue
         event_id, kind, text = historical_message(
-            repair,
-            incident,
-            attempts[-1] if attempts else None,
-            recording_url=args.recording,
-            recording_scope=args.recording_scope,
+            repair, incident, attempts[-1] if attempts else None, recording
         )
         results.append(
             {
