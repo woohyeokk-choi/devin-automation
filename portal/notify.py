@@ -1184,10 +1184,12 @@ def result_problem(
 
     A result message names an accepted SHA, so the attempt it quotes has to
     be a passing one measured on exactly that SHA. An attempt from another
-    head is a different experiment.
+    head is a different experiment, and a simulated one measured nothing.
     """
     if attempt is None:
         return "no passing verification attempt is stored for this repair"
+    if repair.get("simulated") or attempt.get("simulated"):
+        return "the repair or its verification is simulated"
     if str(attempt.get("verdict") or "") != "passed":
         return f"the attempt did not pass (verdict {attempt.get('verdict')})"
     head = str(repair.get("pr_head_sha") or "")

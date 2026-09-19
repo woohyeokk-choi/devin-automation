@@ -402,6 +402,29 @@ def test_a_clip_without_a_passing_attempt_is_never_uploaded(
     assert bot.uploads == [] and log.uploads() == []
 
 
+def test_simulated_evidence_can_never_speak_for_an_accepted_head(
+    log: NotificationLog, clip: Path
+) -> None:
+    """A simulated run measured nothing, whatever its rows say."""
+    from portal.notify import result_problem
+
+    assert "simulated" in result_problem(REPAIR | {"simulated": 1}, PASSED_ATTEMPT)
+    assert "simulated" in result_problem(REPAIR, PASSED_ATTEMPT | {"simulated": 1})
+    assert result_problem(REPAIR, PASSED_ATTEMPT) == ""
+
+    bot = FakeBot("F0123456789")
+    notifier = Notifier(log=log, bot=bot)
+    outcome = notifier.attach(
+        clip_upload_id(2, CAPTURE, clip),
+        clip,
+        CAPTURE,
+        REPAIR,
+        PASSED_ATTEMPT | {"simulated": 1},
+    )
+    assert outcome["state"] == DISABLED and "simulated" in outcome["detail"]
+    assert bot.uploads == [] and log.uploads() == []
+
+
 def test_a_clip_is_refused_when_the_verification_measured_another_commit(
     log: NotificationLog, clip: Path
 ) -> None:
