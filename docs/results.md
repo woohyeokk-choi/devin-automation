@@ -1,0 +1,112 @@
+# Results
+
+Two real defects in a fork of Apache Superset went from a failing user action
+to an independently verified candidate fix, without a human writing the fix.
+Both ended at `verified_in_preview`. Neither is merged and nothing is
+deployed, so the baseline is still buggy.
+
+Everything below is taken from the published evidence files, not retyped from
+memory: `artifacts/phase6/S2/` and `artifacts/phase6/S1/`.
+
+## The two repairs
+
+| | S2 | S1 |
+| --- | --- | --- |
+| User-visible failure | A new exploration was handed the key of one the user had discarded, and the discarded link resolved again | A sort-only chart update reset the saved row limit from 137 to 1000 |
+| Incident family / fingerprint | `discarded_form_data_key_is_reused` / `f7ff733a667fe52ceddc3eb0cff204c1` | `omitted_row_limit_is_reset` / `4850806e18c18de5acf83d2588df81c0` |
+| Issue (controller-created) | <https://github.com/woohyeokk-choi/superset/issues/1> | <https://github.com/woohyeokk-choi/superset/issues/3> |
+| Devin session (API-created, service user) | <https://app.devin.ai/sessions/4b7011c76c1e4ec8bf28cb373b614577> | <https://app.devin.ai/sessions/18b04127f4a44af6a9c71f9eb3eaba9e> |
+| Candidate pull request | <https://github.com/woohyeokk-choi/superset/pull/2> | <https://github.com/woohyeokk-choi/superset/pull/4> |
+| Tested head SHA | `d234055eaf85a70d5e5ec5a7a7256ee43d02dde6` | `fe266eac51a996760a75997ff94b3270c9ef73b1` |
+| Validator revision (pinned, trusted checkout) | `0ddca84740d985bb68d90697d1fdcade1295f4ed` | `86c03c333c57c42287db4c6efe268e7f140e4ebf` |
+| Candidate code hash, measured in-container | `f5e7c645aa2f0284eb6fce4130bfe48f` | `df0861b8afe7263353effbf2b6ca0623` |
+| Verification record | `artifacts/phase6/S2/verification-passed.json` | `artifacts/phase6/S1/verification-passed.json` |
+| Attempts | `artifacts/phase6/S2/attempts.json` | `artifacts/phase6/S1/attempts.json` |
+| Outcome | `verified_in_preview` | `verified_in_preview` |
+| Product follow-ups sent to the session | 0 | 0 |
+
+Both pull requests were open and unmerged when last read from GitHub.
+
+## What the check counts mean
+
+A "check" is one boolean assertion inside the host's behavioural replay. Most
+of them are **setup or control** assertions, there so that a pass cannot come
+from a broken run or from a fix that breaks normal behaviour. They are not 32
+unique tests, and the two runs share the same three N1 permission checks.
+
+| | S2 run | S1 run |
+| --- | --- | --- |
+| Setup (the scenario actually got to the point it claims to test) | 9 | 4 |
+| Target (the contract the repair had to restore) | 5 | 4 |
+| Control (normal behaviour that must still work) | 5 | 5 |
+| **Total, all holding** | **19** | **13** |
+
+Target checks, S2: a new exploration does not reuse a discarded key; the
+discarded link stays dead; the new exploration reads back exactly what was
+saved; plus N1's two authenticated denials. Target checks, S1: the requested
+sort change still persists; an omitted `row_limit` keeps the saved value; plus
+the same two N1 denials.
+
+The most informative controls are the ones that would catch a lazy fix: S1's
+`control_an_explicit_schema_default_row_limit_is_applied` (an explicitly
+requested 1000 must still be applied, so "never write 1000" fails) and
+`control_an_explicit_row_limit_is_applied`; S2's same-context reuse controls
+(key reuse is correct when nothing was discarded).
+
+## Attempts, and what "blocked" means
+
+| | S2 | S1 |
+| --- | --- | --- |
+| Total verification attempts | 8 | 1 |
+| Blocked | 7 | 0 |
+| Passed | 1 | 1 |
+
+A **blocked** attempt is the harness refusing to produce a verdict — it is
+never a failed product fix and never becomes feedback to the session. S2's
+seven were two policy rejections (the candidate touched a test path outside
+the registered S2 scope, a gap in my scope registration) and five environment
+failures (a port conflict, and four coordinator loops deleting each other's
+candidate checkout — the defect that produced the per-state-directory lock).
+Neither repair ever received product feedback, because no product check failed.
+
+## Three sources of "tested", kept apart
+
+1. **Independent host replay** — the 19 and 13 checks above. Run by the
+   coordinator from a pinned validator in a trusted checkout, against a
+   candidate stack built at the exact PR head, with the code hash measured
+   inside each container. This is the only thing that produced
+   `verified_in_preview`.
+2. **The agent's self-report** — what each repair session says it ran on its
+   own machine. S2: `test_create.py` 1 failed / 4 passed with its fix stashed,
+   5 passed with it applied; `pre-commit` on two files with `pylint` skipped
+   and the commit made with `SKIP=mypy,pylint`, against a baseline already
+   failing mypy repo-wide (454 errors in 94 files). S1: `tests/unit_tests/mcp_service/chart`
+   1862 passed / 1 skipped, and its two new tests failing on the base branch.
+   Useful context, not evidence, and no part of the verdict.
+3. **Upstream CI** — **none ran.** Both head SHAs have 0 check-runs and 0
+   commit statuses; the combined state reads `pending` because nothing ever
+   reported. No Superset workflow, `tox`, full pytest suite or frontend job
+   ran on either candidate.
+
+## Cost and effort
+
+- The API reported `acus_consumed: 0.0` for both sessions at the final poll.
+  That is what the field returned, reported as received. It is not a claim
+  that the work was free, and ACUs are not dollars — session reads expose no
+  cap at all, so `max_acu_limit=20` is only what the create body asked for.
+- Separately, the S2 session's native usage panel showed a per-message
+  on-demand limit of $20 with $0 consumed (read-only observation). Different
+  thing from the API field; not a whole-session cap.
+- **Human touch time was not measured** and neither was a cost per repair, so
+  there is no productivity multiplier or ROI figure here. Measuring acceptance
+  rate, touch time and cost is the prerequisite for scaling this, not a result
+  of it.
+
+## What this does not show
+
+- Nothing merged, nothing deployed, no production or public preview.
+- No Slack alerting or Q&A: a channel, app and bot exist, but there is no
+  outbound notifier in this repository, and native session sync is available
+  only to a session's owner — here the `superset-runtime-repair` service user.
+- Two defects, two repairs, one repository, on a fork with a synthetic
+  fixture. Nothing here establishes a rate on real customer incidents.

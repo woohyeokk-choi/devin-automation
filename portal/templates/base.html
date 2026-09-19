@@ -16,8 +16,17 @@
     .banner code { background:#00000010; padding:1px 4px; border-radius:3px; }
     .card { background:#fff; border:1px solid var(--line); border-radius:8px; padding:16px 18px; margin-bottom:18px; }
     .card h2 { margin:0 0 12px; font-size:17px; }
-    table { border-collapse:collapse; width:100%; font-size:14px; }
-    th, td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+    table { border-collapse:collapse; width:100%; font-size:14px; table-layout:fixed; }
+    /* SHAs, URLs and assertion names are long and unbreakable; without this a
+       single cell pushes the rest of the row off the page. */
+    th, td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--line);
+             vertical-align:top; overflow-wrap:anywhere; }
+    /* Key/value tables label in the first column; column tables head their
+       rows instead, so they keep the even split. */
+    tbody th { width:20%; }
+    .attempt { border-top:1px solid var(--line); padding-top:12px; margin-top:12px; }
+    .attempt h3 { font-size:15px; margin:0 0 8px; }
+    .attempt h4 { font-size:13px; margin:14px 0 4px; color:var(--muted); }
     th { color:var(--muted); font-weight:600; font-size:12.5px; text-transform:uppercase; letter-spacing:.03em; }
     form.inline { display:inline; }
     label { font-size:13px; color:var(--muted); margin-right:4px; }
@@ -31,7 +40,11 @@
     .pill.assertion_failed, .pill.bad { background:#fbe9e7; border-color:#f0bcb6; color:var(--bad); }
     .pill.blocked, .pill.error { background:#eceff1; border-color:#cfd8dc; color:#37474f; }
     .pill.expected_denial { background:#eef3ff; border-color:#c7d4f5; color:#26418f; }
-    pre { background:#0f1720; color:#d7e3ea; padding:10px 12px; border-radius:6px; overflow:auto; font-size:12.5px; }
+    /* Prompts and stored JSON arrive as one unbroken line; wrapping keeps
+       them readable instead of a kilometre-wide scroll. */
+    pre { background:#0f1720; color:#d7e3ea; padding:10px 12px; border-radius:6px;
+          overflow:auto; font-size:12.5px; white-space:pre-wrap; overflow-wrap:anywhere;
+          max-height:420px; }
     .grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
     @media (max-width:820px) { .grid { grid-template-columns:1fr; } }
   </style>

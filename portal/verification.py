@@ -489,6 +489,12 @@ class VerificationStore:
             ).fetchall()
         ]
 
+    def get(self, verification_id: int) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM verifications WHERE id = ?", (verification_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
     def verified_count(self) -> int:
         """Real passes only. A simulated lifecycle never counts as one."""
         row = self._conn.execute(

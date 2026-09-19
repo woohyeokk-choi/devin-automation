@@ -110,6 +110,32 @@ MAX_FOLLOW_UPS = 2
 ALLOWED_PR_HOST = "github.com"
 
 
+def lifecycle(incident: dict[str, Any], repair: dict[str, Any] | None) -> dict[str, Any]:
+    """What the console shows for an incident's progress.
+
+    The repair row is the only writer of issue, session, pull request and
+    verdict; the incident row records the failure and never learns how it
+    ended. Reading the two independently is how a console ends up claiming
+    `detected` and `not connected` on the same page that shows a verified
+    pull request, so the repair wins wherever it has an answer.
+    """
+    repair = repair or {}
+    verification = repair.get("verification")
+    return {
+        "state": repair.get("state") or incident.get("state"),
+        "simulated": bool(repair.get("simulated")),
+        "issue_url": repair.get("issue_url") or incident.get("issue_url"),
+        "session_url": repair.get("session_url") or incident.get("session_url"),
+        "pr_url": repair.get("agent_pr_url") or incident.get("pr_url"),
+        "pr_head_sha": repair.get("pr_head_sha"),
+        "verification": verification or incident.get("verification"),
+        # Whether this particular repair reached a provider, not whether this
+        # process is allowed to: the portal runs with dispatch off while the
+        # host coordinator does the sending.
+        "dispatched": bool(repair.get("session_id") or repair.get("issue_url")),
+    }
+
+
 class Parked(Exception):
     """Left for an operator. Not retried, not failed silently."""
 

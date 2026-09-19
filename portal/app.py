@@ -8,11 +8,12 @@ per-trace detail and a JSONL export.
 
 from __future__ import annotations
 
+import json
 import secrets
 from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
@@ -21,7 +22,7 @@ from .config import settings
 from .domain import DIMENSIONS, SORTS, Denied, ExplorationSpec, FixtureMissing, Portal
 from .events import EventStore
 from .handoff import FILES as BUNDLE_FILES, write_bundle
-from .controller import RepairStore
+from .controller import RepairStore, lifecycle
 from .verification import VerificationStore
 from .worker import RepairWorker, build_controller
 from .incidents import IncidentStore
@@ -446,10 +447,15 @@ def ops_export(trace_id: str | None = None, _: str = Depends(ops_guard)) -> Stre
 
 @app.get("/ops/incidents", response_class=HTMLResponse)
 def ops_incidents(request: Request, _: str = Depends(ops_guard)) -> HTMLResponse:
+    listed = incidents.list()
     return render(
         "ops_incidents.html",
         request,
-        incidents=incidents.list(),
+        incidents=listed,
+        lifecycles={
+            item["id"]: lifecycle(item, repairs.by_fingerprint(str(item["fingerprint"])))
+            for item in listed
+        },
         totals=incidents.totals(),
         processing_errors=incidents.processing_errors(),
     )
@@ -462,22 +468,60 @@ def ops_incident(
     incident = incidents.get(incident_id)
     if incident is None:
         raise HTTPException(status_code=404, detail="unknown incident")
+    repair = repairs.by_fingerprint(str(incident["fingerprint"]))
     return render(
         "ops_incident.html",
         request,
         incident=incident,
+        # The repair row, not the incident row, knows how this ended.
+        lifecycle=lifecycle(incident, repair),
         bundle_files=BUNDLE_FILES,
         note=note,
         # What the controller would send, or did: the disabled path is the
         # same path, so the proposal is inspectable before anything is live.
-        repair=repairs.by_fingerprint(str(incident["fingerprint"])),
+        repair=repair,
         intents=intents_of(str(incident["fingerprint"])),
         # Agent-reported readiness and the independent verdict are rendered
         # from different sources on purpose.
-        attempts=verifications.for_incident(incident_id),
+        attempts=[with_checks(a) for a in verifications.for_incident(incident_id)],
         verified_total=verifications.verified_count(),
         auto_repair_enabled=settings.auto_repair_enabled,
     )
+
+
+def with_checks(attempt: dict[str, Any]) -> dict[str, Any]:
+    """An attempt with its stored report opened up into per-case checks.
+
+    A verdict is only evidence if the assertions behind it are readable, so
+    the console shows the same names, expected and observed values the
+    grader used rather than a summary the reader has to trust.
+    """
+    try:
+        report = json.loads(str(attempt.get("report") or ""))
+    except json.JSONDecodeError:
+        report = {}
+    cases = report.get("cases") if isinstance(report, dict) else None
+    return attempt | {
+        "case_results": [case for case in cases or [] if isinstance(case, dict)],
+        "check_count": sum(
+            len(case.get("checks") or [])
+            for case in cases or []
+            if isinstance(case, dict)
+        ),
+    }
+
+
+@app.get("/ops/verifications/{verification_id}/report")
+def ops_verification_report(verification_id: int, _: str = Depends(ops_guard)) -> Response:
+    """The stored replay record, served from the database.
+
+    The artifact on disk is the same record; reading the row avoids handing a
+    path from a table straight to the filesystem.
+    """
+    attempt = verifications.get(verification_id)
+    if attempt is None or not attempt.get("report"):
+        raise HTTPException(status_code=404, detail="unknown verification")
+    return Response(str(attempt["report"]), media_type="application/json")
 
 
 def intents_of(fingerprint: str) -> list[dict[str, Any]]:

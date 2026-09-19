@@ -29,7 +29,9 @@
         <td class="muted">{{ item.last_seen_at }}</td>
         <td>{{ item.actor }}</td>
         <td class="muted"><code>{{ item.baseline_sha[:12] }}</code> ({{ item.revision_strength }})</td>
-        <td><span class="pill {{ 'assertion_failed' if item.state == 'detected' else 'ok' }}">{{ item.state }}</span></td>
+        {% set progress = lifecycles[item.id] %}
+        <td><span class="pill {{ 'assertion_failed' if progress.state == 'detected' else 'ok' }}">{{ progress.state }}</span>
+          {% if progress.pr_head_sha %}<div class="muted"><code>{{ progress.pr_head_sha[:12] }}</code></div>{% endif %}</td>
       </tr>
       {% else %}
       <tr><td colspan="9" class="muted">No incidents recorded yet.</td></tr>

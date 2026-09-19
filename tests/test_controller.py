@@ -25,6 +25,7 @@ from portal.controller import (
     NEEDS_ATTENTION,
     PROPOSED,
     TERMINAL,
+    VERIFIED,
     Budget,
     Controller,
     RepairStore,
@@ -630,6 +631,105 @@ def test_the_console_shows_what_would_be_sent(tmp_path: Path) -> None:
     assert "AUTO_REPAIR_ENABLED=false" in page.text
     assert "max_acu_limit" in page.text
     assert "not verified" in page.text
+
+
+def test_the_console_reports_the_outcome_the_repair_row_recorded(tmp_path: Path) -> None:
+    """The incident row never learns how the repair ended.
+
+    Reading progress from it printed `detected` and `not connected` on the
+    same page that showed a verified pull request.
+    """
+    from fastapi.testclient import TestClient
+
+    from portal import app as portal_app
+    from portal.config import settings
+
+    portal_app.store.emit(event(event_id="outcome-1", trace_id="outcome-trace"))
+    incident = next(i for i in portal_app.incidents.list() if i["scenario"] == "S2")
+    repair = portal_app.repairs.by_fingerprint(str(incident["fingerprint"]))
+    assert repair is not None
+    portal_app.repairs.update(
+        int(repair["id"]),
+        state=VERIFIED,
+        issue_url="https://github.com/acme/superset/issues/7",
+        session_id="0123456789abcdef0123456789abcdef",
+        session_url="https://app.devin.ai/sessions/0123456789abcdef0123456789abcdef",
+        agent_pr_url="https://github.com/acme/superset/pull/8",
+        pr_head_sha="a" * 40,
+        verification='{"verdict": "passed"}',
+    )
+
+    auth = (settings.ops_username, settings.ops_password)
+    client = TestClient(portal_app.app)
+    detail = client.get(f"/ops/incidents/{incident['id']}", auth=auth).text
+    listing = client.get("/ops/incidents", auth=auth).text
+
+    for page_text in (detail, listing):
+        assert VERIFIED in page_text
+        assert "detected" not in page_text.split("detected → candidate")[0]
+    assert "https://github.com/acme/superset/issues/7" in detail
+    assert "https://github.com/acme/superset/pull/8" in detail
+    assert "a" * 40 in detail
+    assert "nothing was sent" not in detail  # it was sent, by the coordinator
+
+
+def test_the_console_shows_the_assertions_behind_a_verdict(tmp_path: Path) -> None:
+    """A verdict is only evidence if its checks can be read."""
+    from fastapi.testclient import TestClient
+
+    from portal import app as portal_app
+    from portal.config import settings
+
+    portal_app.store.emit(event(event_id="checks-1", trace_id="checks-trace"))
+    incident = next(i for i in portal_app.incidents.list() if i["scenario"] == "S2")
+    repair = portal_app.repairs.by_fingerprint(str(incident["fingerprint"]))
+    assert repair is not None
+    report = {
+        "verdict": "passed",
+        "cases": [
+            {
+                "case": "S2",
+                "verdict": "passed",
+                "checks": [
+                    {
+                        "name": "discarded_key_is_not_reused",
+                        "kind": "target",
+                        "expected": "a fresh key",
+                        "observed": "a fresh key",
+                        "holds": True,
+                        "note": "",
+                    }
+                ],
+            }
+        ],
+    }
+    verification_id = portal_app.verifications.record(
+        {
+            "repair_id": int(repair["id"]),
+            "incident_id": int(incident["id"]),
+            "simulated": 1,
+            "pr_url": "https://github.com/acme/superset/pull/8",
+            "candidate_sha": "b" * 40,
+            "validator_ref": "c" * 40,
+            "cases": "S2",
+            "verdict": "passed",
+            "report": json.dumps(report),
+            "artifact_path": "/data/artifacts/repair-1/example.json",
+            "started_at": "2026-01-01T00:00:00+00:00",
+            "finished_at": "2026-01-01T00:01:00+00:00",
+        }
+    )
+
+    auth = (settings.ops_username, settings.ops_password)
+    client = TestClient(portal_app.app)
+    detail = client.get(f"/ops/incidents/{incident['id']}", auth=auth).text
+    assert "discarded_key_is_not_reused" in detail
+    assert "a fresh key" in detail
+
+    served = client.get(f"/ops/verifications/{verification_id}/report", auth=auth)
+    assert served.status_code == 200 and served.json() == report
+    assert client.get(f"/ops/verifications/{verification_id}/report").status_code == 401
+    assert client.get("/ops/verifications/99999/report", auth=auth).status_code == 404
 
 
 # --- pagination ------------------------------------------------------------

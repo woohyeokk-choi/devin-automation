@@ -14,12 +14,12 @@
       <tr><th>Target repository</th><td><code>{{ incident.target_repo }}</code></td></tr>
       <tr><th>Baseline SHA</th><td><code>{{ incident.baseline_sha }}</code> (provenance: {{ incident.revision_strength }})</td></tr>
       <tr><th>Fixture revision</th><td><code>{{ incident.fixture_revision or 'unmeasured' }}</code></td></tr>
-      <tr><th>State</th><td><span class="pill {{ 'assertion_failed' if incident.state == 'detected' else 'ok' }}">{{ incident.state }}</span>
-        <span class="muted">detected → candidate_fix → verified_in_preview</span></td></tr>
-      <tr><th>Fork issue</th><td>{{ incident.issue_url or 'not connected' }}</td></tr>
-      <tr><th>Repair session</th><td>{{ incident.session_url or 'not connected' }}</td></tr>
-      <tr><th>Pull request</th><td>{{ incident.pr_url or 'not connected' }}</td></tr>
-      <tr><th>Independent verification</th><td>{{ incident.verification or 'not run' }}</td></tr>
+      <tr><th>State</th><td><span class="pill {{ 'assertion_failed' if lifecycle.state == 'detected' else 'ok' }}">{{ lifecycle.state }}</span>{% if lifecycle.simulated %} <span class="muted">(SIMULATED run)</span>{% endif %}
+        <span class="muted">detected → candidate → verified_in_preview</span></td></tr>
+      <tr><th>Fork issue</th><td>{{ lifecycle.issue_url or 'not connected' }}</td></tr>
+      <tr><th>Repair session</th><td>{{ lifecycle.session_url or 'not connected' }}</td></tr>
+      <tr><th>Pull request</th><td>{{ lifecycle.pr_url or 'not connected' }}{% if lifecycle.pr_head_sha %} @ <code>{{ lifecycle.pr_head_sha }}</code>{% endif %}</td></tr>
+      <tr><th>Independent verification</th><td>{{ lifecycle.verification or 'not run' }}</td></tr>
     </tbody>
   </table>
 </div>
@@ -87,7 +87,12 @@
       <tr><th>State</th><td>{{ repair.state }}{% if repair.simulated %} <span class="muted">(SIMULATED run)</span>{% endif %}</td></tr>
       <tr><th>Dispatch</th>
         <td>
-          {% if auto_repair_enabled %}enabled{% else %}
+          {% if lifecycle.dispatched %}
+          sent
+          <span class="muted">— by the host coordinator, which holds the credentials.
+          This portal runs with AUTO_REPAIR_ENABLED={{ 'true' if auto_repair_enabled else 'false' }}.</span>
+          {% elif auto_repair_enabled %}enabled
+          {% else %}
           <span class="muted">AUTO_REPAIR_ENABLED=false — nothing was sent; the exact bodies below are what would be.</span>
           {% endif %}
         </td></tr>
@@ -139,43 +144,57 @@
   </p>
   {% if not attempts %}
   <p class="muted">No verification has been attempted for this incident.</p>
-  {% else %}
-  <table>
-    <thead>
-      <tr>
-        <th>Finished (UTC)</th><th>Verdict</th><th>Candidate SHA</th>
-        <th>Validator ref</th><th>Cases</th><th>Fixture / config</th>
-        <th>Reason</th><th>Artifact</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for attempt in attempts %}
-      <tr>
-        <td class="muted">{{ attempt.started_at }} → {{ attempt.finished_at }}</td>
-        <td>
-          {{ attempt.verdict }}
-          {% if attempt.simulated %}<span class="muted">(SIMULATED — excluded from verified counts)</span>{% endif %}
-        </td>
-        <td><code>{{ attempt.candidate_sha or 'unknown' }}</code></td>
-        <td>{{ attempt.validator_ref }}</td>
-        <td>{{ attempt.cases }}</td>
-        <td class="muted">{{ attempt.fixture_rev or '—' }} / {{ attempt.config_rev or '—' }}</td>
-        <td>{{ attempt.reason or '—' }}</td>
-        <td class="muted">{{ attempt.artifact_path or '—' }}</td>
-      </tr>
-      {% if attempt.failures and attempt.failures != '[]' %}
-      <tr><td colspan="8"><pre>{{ attempt.failures }}</pre></td></tr>
-      {% endif %}
-      {% if attempt.commands and attempt.commands != '[]' %}
-      <tr><td colspan="8"><pre>{{ attempt.commands }}</pre></td></tr>
-      {% endif %}
-      {% if attempt.provenance and attempt.provenance != '{}' %}
-      <tr><td colspan="8"><pre>{{ attempt.provenance }}</pre></td></tr>
-      {% endif %}
-      {% endfor %}
-    </tbody>
-  </table>
   {% endif %}
+  {% for attempt in attempts %}
+  <div class="attempt">
+    <h3>
+      Attempt {{ loop.index }} — {{ attempt.verdict }}
+      {% if attempt.simulated %}<span class="muted">(SIMULATED — excluded from verified counts)</span>{% endif %}
+      {% if attempt.check_count %}<span class="muted">· {{ attempt.check_count }} checks</span>{% endif %}
+    </h3>
+    <table>
+      <tbody>
+        <tr><th>Ran (UTC)</th><td class="muted">{{ attempt.started_at }} → {{ attempt.finished_at }}</td></tr>
+        <tr><th>Candidate SHA</th><td><code>{{ attempt.candidate_sha or 'unknown' }}</code></td></tr>
+        <tr><th>Validator ref</th><td><code>{{ attempt.validator_ref }}</code></td></tr>
+        <tr><th>Cases</th><td>{{ attempt.cases }}</td></tr>
+        <tr><th>Fixture / config</th><td class="muted">{{ attempt.fixture_rev or '—' }} / {{ attempt.config_rev or '—' }}</td></tr>
+        {% if attempt.reason %}<tr><th>Reason</th><td>{{ attempt.reason }}</td></tr>{% endif %}
+        <tr><th>Full record</th>
+          <td><a href="/ops/verifications/{{ attempt.id }}/report">verification-{{ attempt.id }}.json</a>
+            <span class="muted">· written to {{ attempt.artifact_path or 'no file' }}</span></td></tr>
+      </tbody>
+    </table>
+    {% for case in attempt.case_results %}
+    <h4>{{ case.case }} — {{ case.verdict }}{% if case.blocked_reason %}: {{ case.blocked_reason }}{% endif %}</h4>
+    {% if case.checks %}
+    <table>
+      <thead><tr><th>Assertion</th><th>Kind</th><th>Expected</th><th>Observed</th><th>Holds</th></tr></thead>
+      <tbody>
+        {% for check in case.checks %}
+        <tr>
+          <td><code>{{ check.name }}</code></td>
+          <td class="muted">{{ check.kind }}</td>
+          <td>{{ check.expected }}</td>
+          <td>{{ check.observed }}{% if check.note %} <span class="muted">({{ check.note }})</span>{% endif %}</td>
+          <td><span class="pill {{ 'ok' if check.holds else 'assertion_failed' }}">{{ 'yes' if check.holds else 'NO' }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% endfor %}
+    {% if attempt.failures and attempt.failures != '[]' %}
+    <pre>{{ attempt.failures }}</pre>
+    {% endif %}
+    {% if attempt.commands and attempt.commands != '[]' %}
+    <pre>{{ attempt.commands }}</pre>
+    {% endif %}
+    {% if attempt.provenance and attempt.provenance != '{}' %}
+    <pre>{{ attempt.provenance }}</pre>
+    {% endif %}
+  </div>
+  {% endfor %}
 </div>
 
 {% if incident.processing_errors %}
