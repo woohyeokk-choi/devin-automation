@@ -67,6 +67,8 @@ class SlackBot(Protocol):
 
     def post(self, text: str, *, thread_ts: str = "") -> str: ...
 
+    def amend(self, ts: str, text: str) -> str: ...
+
     def upload(
         self, path: Path, *, title: str, comment: str, thread_ts: str = ""
     ) -> str: ...
@@ -99,6 +101,23 @@ class WebClientBot:
                 thread_ts=thread_ts or None,
                 unfurl_links=False,
                 unfurl_media=False,
+            )
+        )
+        return str(response.get("ts") or "")
+
+    def amend(self, ts: str, text: str) -> str:
+        """Rewrite one message this deployment already posted.
+
+        `chat_update` replaces a message in place, so the caller decides
+        which `ts` may be touched; this only refuses to address anything
+        outside the approved channel.
+        """
+        response = self._answer(
+            lambda: self.client.chat_update(
+                channel=self.channel,
+                ts=ts,
+                text=text,
+                link_names=False,
             )
         )
         return str(response.get("ts") or "")

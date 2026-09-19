@@ -127,6 +127,17 @@ CREATE TABLE IF NOT EXISTS notification_threads (
     source     TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS notification_amendments (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           TEXT NOT NULL,
+    channel      TEXT NOT NULL,
+    previous     TEXT NOT NULL,
+    replacement  TEXT NOT NULL,
+    reason       TEXT NOT NULL,
+    state        TEXT NOT NULL,
+    detail       TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS notification_uploads (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     upload_id  TEXT NOT NULL UNIQUE,
@@ -337,12 +348,87 @@ class NotificationLog:
             ).fetchone()
         return dict(row) if row else None
 
+    def delivered_clip(self, repair_id: int, sha: str) -> str:
+        """The Slack file id of a clip this repair actually has in the channel.
+
+        Only a reservation Slack answered for — state `sent`, carrying a file
+        id — counts: a pending, failed or unknown upload is precisely the
+        case where a message must not claim the footage is there.
+        """
+        prefix = f"clip:{repair_id}:{sha.strip().lower()[:12]}:"
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT file_id FROM notification_uploads "
+                "WHERE repair_id = ? AND state = ? AND file_id != '' "
+                "AND upload_id LIKE ? ORDER BY id DESC LIMIT 1",
+                (repair_id, SENT, f"{prefix}%"),
+            ).fetchone()
+        return str(row["file_id"]) if row else ""
+
     def uploads(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM notification_uploads ORDER BY id"
             ).fetchall()
         return [dict(row) for row in rows]
+
+    # --- amendments --------------------------------------------------------
+
+    def record_amendment(
+        self,
+        ts: str,
+        channel: str,
+        previous: str,
+        replacement: str,
+        reason: str,
+        state: str,
+        detail: str = "",
+    ) -> None:
+        """Keep what a message said before it was corrected, and why.
+
+        An edit in Slack leaves no trace of the wording it replaced, so the
+        superseded text lives here: the channel shows the correction, the
+        ledger shows that it was one.
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO notification_amendments "
+                "(ts, channel, previous, replacement, reason, state, detail, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    ts,
+                    channel,
+                    previous,
+                    replacement,
+                    reason,
+                    state,
+                    detail,
+                    utcnow(),
+                ),
+            )
+
+    def amendments(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM notification_amendments ORDER BY id"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def by_ts(self, ts: str) -> dict[str, Any] | None:
+        """The row this deployment recorded for a posted message, if any."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM notifications WHERE ts = ? ORDER BY id DESC LIMIT 1",
+                (ts,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def replace_text(self, notification_id: int, text: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE notifications SET text = ?, updated_at = ? WHERE id = ?",
+                (text, utcnow(), notification_id),
+            )
 
     def close(self) -> None:
         self._conn.close()
@@ -716,6 +802,55 @@ class Notifier:
         self.log.settle_upload(upload_id, SENT, "", file_id)
         return {"state": SENT, "detail": "", "file_id": file_id}
 
+    def amend(self, ts: str, text: str, reason: str) -> dict[str, str]:
+        """Correct one message this ledger recorded posting, in place.
+
+        Only a `ts` this deployment stored for a message it sent can be
+        addressed: a parent message, a correction sent from another ledger
+        and anything else in the channel are other people's records and are
+        refused rather than rewritten. The superseded wording and the reason
+        are kept, so the edit is auditable from outside Slack, and an
+        unanswered call is recorded as unknown rather than retried.
+        """
+        row = self.log.by_ts(ts)
+        if row is None:
+            return {"state": DISABLED, "detail": f"no recorded message at {ts}"}
+        if str(row["state"]) != SENT:
+            return {
+                "state": DISABLED,
+                "detail": f"the message at {ts} is {row['state']}, not {SENT}",
+            }
+        if self.simulated or row.get("simulated"):
+            return {"state": DISABLED, "detail": SIMULATED_RECORD_REFUSAL}
+        if self.bot is None:
+            return {
+                "state": DISABLED,
+                "detail": "editing a message needs SLACK_BOT_TOKEN; the webhook cannot",
+            }
+        if not self.enabled:
+            return {"state": DISABLED, "detail": self.problem}
+        previous = str(row["text"])
+        labelled = _labelled(text)
+        try:
+            self.bot.amend(ts, labelled)
+        except Ambiguous as exc:
+            detail = redact_webhook(f"edit outcome unknown ({exc})", self.webhook)
+            self.log.record_amendment(
+                ts, self.channel, previous, labelled, reason, UNKNOWN, detail
+            )
+            return {"state": UNKNOWN, "detail": detail}
+        except Exception as exc:  # noqa: BLE001 - an edit may not break a repair
+            detail = redact_webhook(f"{type(exc).__name__}: {exc}", self.webhook)
+            self.log.record_amendment(
+                ts, self.channel, previous, labelled, reason, FAILED, detail
+            )
+            return {"state": FAILED, "detail": detail}
+        self.log.record_amendment(
+            ts, self.channel, previous, labelled, reason, SENT, ""
+        )
+        self.log.replace_text(int(row["id"]), labelled)
+        return {"state": SENT, "detail": ""}
+
     def _retry(self, notification_id: int, attempts: int, detail: str) -> str:
         detail = redact_webhook(detail, self.webhook)
         if attempts + 1 >= self.max_attempts:
@@ -1082,7 +1217,11 @@ def recording_problem(recording: Recording, repair: dict[str, Any]) -> str:
     return ""
 
 
-def _video(repair: dict[str, Any], recording: Recording | None) -> str:
+def _video(
+    repair: dict[str, Any],
+    recording: Recording | None,
+    attachment: str = "",
+) -> str:
     """A recording line only when the capture itself says it shows this head.
 
     Nothing in the lifecycle records video, so this is empty unless an
@@ -1090,17 +1229,23 @@ def _video(repair: dict[str, Any], recording: Recording | None) -> str:
     worse than none. A capture that does not bind itself to the accepted head
     is reported as pending, with the reason, instead of being presented as
     verified footage.
+
+    A clip carried in the thread rather than by link is only called uploaded
+    when `attachment` names the file Slack stored; supplying the metadata
+    says a capture exists, not that the upload happened, and the result is
+    written before the file is offered.
     """
     if recording is None or not recording.url:
         return ""
     problem = recording_problem(recording, repair)
     if problem:
         return f" · recording pending — {_short(problem, 120)}"
-    where = (
-        "uploaded to this thread"
-        if recording.url == IN_THREAD
-        else escape(recording.url)
-    )
+    if recording.url != IN_THREAD:
+        where = escape(recording.url)
+    elif attachment:
+        where = f"uploaded to this thread as file `{escape(attachment)}`"
+    else:
+        where = "prepared for attachment in this thread"
     return (
         f" · recording {where} — {escape(recording.case)} "
         f"captured {escape(recording.recorded_at)} against "
@@ -1134,6 +1279,7 @@ def historical_message(
     incident: dict[str, Any] | None,
     attempt: dict[str, Any] | None,
     recording: Recording | None = None,
+    attachment: str = "",
 ) -> tuple[str, str, str]:
     """A summary of a result that was reached before Slack existed here.
 
@@ -1154,7 +1300,7 @@ def historical_message(
         f"Historical result — repair ran earlier. {case}, repair {repair['id']}, "
         f"incident {repair.get('incident_id')}: verification {escape(verdict)} at "
         f"{escape(finished)} on head `{escape(head)}` (cases {escape(checks)}). "
-        f"{tail} {_links(repair)}{_video(repair, recording)}"
+        f"{tail} {_links(repair)}{_video(repair, recording, attachment)}"
     )
     return f"backfill:{repair['id']}", "historical", text
 
@@ -1225,6 +1371,7 @@ def result_message(
     attempt: dict[str, Any] | None,
     *,
     recording: Recording | None = None,
+    attachment: str = "",
 ) -> tuple[str, str, str]:
     """The final result for an accepted head, with its recording or without.
 
@@ -1243,7 +1390,7 @@ def result_message(
         f"repair {repair['id']} ({_case(repair, incident)}), "
         f"incident {repair.get('incident_id')}"
     )
-    video = _video(repair, recording)
+    video = _video(repair, recording, attachment)
     if not video:
         video = " · recording: none published for this head"
     return (
@@ -1388,6 +1535,7 @@ def main(argv: list[str] | None = None) -> int:
             "backfill",
             "result",
             "attach",
+            "amend",
             "correction",
             "status",
         ),
@@ -1404,6 +1552,19 @@ def main(argv: list[str] | None = None) -> int:
         "--text",
         default="",
         help="the correction to publish, verbatim; required for correction",
+    )
+    parser.add_argument(
+        "--ts",
+        default="",
+        help=(
+            "the timestamp of a result message this ledger recorded sending, "
+            "to rewrite in place; required for amend"
+        ),
+    )
+    parser.add_argument(
+        "--reason",
+        default="",
+        help="why the message at --ts is being corrected; kept in the ledger",
     )
     parser.add_argument(
         "--repair",
@@ -1540,6 +1701,43 @@ def main(argv: list[str] | None = None) -> int:
             if attempt["verdict"] == "passed"
         ]
         incident = state.incidents.get(int(repair["incident_id"]))
+        if args.command == "amend":
+            if not args.ts or recording is None:
+                raise SystemExit("amend needs --ts and the recording metadata")
+            if not args.reason.strip():
+                raise SystemExit("amend needs --reason")
+            passed = attempts[-1] if attempts else None
+            problem = result_problem(repair, passed)
+            if problem:
+                results.append(
+                    {"repair": repair_id, "state": "refused", "reason": problem}
+                )
+                continue
+            # Only a clip Slack acknowledged may be described as attached;
+            # the message being corrected is one that described an upload it
+            # could not see.
+            attachment = notifier.log.delivered_clip(repair_id, recording.sha)
+            if not attachment:
+                results.append(
+                    {
+                        "repair": repair_id,
+                        "state": "refused",
+                        "reason": "no delivered clip is recorded for this head",
+                    }
+                )
+                continue
+            _, _, text = result_message(
+                repair, incident, passed, recording=recording, attachment=attachment
+            )
+            results.append(
+                {
+                    "repair": repair_id,
+                    "ts": args.ts,
+                    "file_id": attachment,
+                    **notifier.amend(args.ts, text, args.reason.strip()),
+                }
+            )
+            continue
         if args.command == "attach":
             if recording is None or not args.clip:
                 raise SystemExit("attach needs --clip and the recording metadata")

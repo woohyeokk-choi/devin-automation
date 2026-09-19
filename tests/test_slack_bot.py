@@ -17,6 +17,7 @@ from portal.notify import (
     DISABLED,
     FAILED,
     HISTORICAL_THREADS,
+    IN_THREAD,
     SENT,
     UNKNOWN,
     NotificationLog,
@@ -82,6 +83,8 @@ class FakeBot:
         self.answers = list(answers) or ["1789900000.000100"]
         self.posts: list[dict[str, str]] = []
         self.uploads: list[dict[str, str]] = []
+        self.edits: list[dict[str, str]] = []
+        self.edit_answers: list[Any] = []
 
     def _answer(self, calls: int) -> Any:
         answer = self.answers[min(calls - 1, len(self.answers) - 1)]
@@ -92,6 +95,14 @@ class FakeBot:
     def post(self, text: str, *, thread_ts: str = "") -> str:
         self.posts.append({"text": text, "thread_ts": thread_ts})
         return str(self._answer(len(self.posts)))
+
+    def amend(self, ts: str, text: str) -> str:
+        self.edits.append({"ts": ts, "text": text})
+        answers = self.edit_answers or self.answers
+        answer = answers[min(len(self.edits) - 1, len(answers) - 1)]
+        if isinstance(answer, Exception):
+            raise answer
+        return str(answer)
 
     def upload(
         self, path: Path, *, title: str, comment: str, thread_ts: str = ""
@@ -515,6 +526,135 @@ def test_a_missing_clip_file_is_refused_before_any_call(
     )
     assert outcome["state"] == DISABLED
     assert bot.uploads == []
+
+
+# --- what a message may claim about a clip ---------------------------------
+
+
+IN_THREAD_CAPTURE = Recording(
+    url=IN_THREAD,
+    case="S1",
+    sha=HEAD,
+    recorded_at="2026-09-19T23:00:00+00:00",
+    scope="later CLI replay: baseline failure vs accepted-head pass",
+)
+
+
+def test_an_unsent_upload_is_never_described_as_uploaded(
+    log: NotificationLog, clip: Path
+) -> None:
+    # A result is written before its file is offered, so the metadata alone
+    # says a capture exists, not that Slack has it.
+    _, _, before = result_message(
+        REPAIR, INCIDENT, PASSED_ATTEMPT, recording=IN_THREAD_CAPTURE
+    )
+    assert "prepared for attachment in this thread" in before
+    assert "uploaded" not in before
+
+    upload_id = clip_upload_id(2, IN_THREAD_CAPTURE, clip)
+    failed = Notifier(log=log, bot=FakeBot(SlackRejected("not_in_channel")))
+    assert (
+        failed.attach(upload_id, clip, IN_THREAD_CAPTURE, REPAIR, PASSED_ATTEMPT)[
+            "state"
+        ]
+        == FAILED
+    )
+    assert log.delivered_clip(2, HEAD) == ""
+    _, _, after_failure = result_message(
+        REPAIR,
+        INCIDENT,
+        PASSED_ATTEMPT,
+        recording=IN_THREAD_CAPTURE,
+        attachment=log.delivered_clip(2, HEAD),
+    )
+    assert "uploaded" not in after_failure
+
+
+def test_only_a_clip_slack_acknowledged_is_called_uploaded(
+    log: NotificationLog, clip: Path
+) -> None:
+    bot = FakeBot("F0C33PMRVA6")
+    notifier = Notifier(log=log, bot=bot)
+    upload_id = clip_upload_id(2, IN_THREAD_CAPTURE, clip)
+    outcome = notifier.attach(
+        upload_id, clip, IN_THREAD_CAPTURE, REPAIR, PASSED_ATTEMPT
+    )
+    assert outcome["state"] == SENT and outcome["file_id"] == "F0C33PMRVA6"
+    assert log.delivered_clip(2, HEAD) == "F0C33PMRVA6"
+    # Another repair's ledger row cannot lend it that file.
+    assert log.delivered_clip(3, HEAD) == ""
+    _, _, text = result_message(
+        REPAIR,
+        INCIDENT,
+        PASSED_ATTEMPT,
+        recording=IN_THREAD_CAPTURE,
+        attachment=log.delivered_clip(2, HEAD),
+    )
+    assert "uploaded to this thread as file `F0C33PMRVA6`" in text
+
+
+def test_an_unknown_upload_is_not_promoted_to_a_delivered_clip(
+    log: NotificationLog, clip: Path
+) -> None:
+    notifier = Notifier(log=log, bot=FakeBot(Ambiguous("ReadTimeout")))
+    upload_id = clip_upload_id(2, IN_THREAD_CAPTURE, clip)
+    assert (
+        notifier.attach(upload_id, clip, IN_THREAD_CAPTURE, REPAIR, PASSED_ATTEMPT)[
+            "state"
+        ]
+        == UNKNOWN
+    )
+    assert log.delivered_clip(2, HEAD) == ""
+
+
+# --- correcting a message already posted -----------------------------------
+
+
+def test_only_a_message_this_ledger_sent_can_be_edited(
+    log: NotificationLog,
+) -> None:
+    bot = FakeBot("1789858187.458229")
+    notifier = Notifier(log=log, bot=bot)
+    assert notifier.publish("2:result:d", "result", "Result — original", 2) == SENT
+
+    # A parent message, another ledger's correction, anything not recorded
+    # here: refused without a call.
+    assert notifier.amend("1789854458.454909", "rewritten", "test")["state"] == DISABLED
+    assert bot.edits == []
+
+    outcome = notifier.amend("1789858187.458229", "Result — corrected", "stale clause")
+    assert outcome["state"] == SENT
+    assert bot.edits[0]["ts"] == "1789858187.458229"
+    assert SOURCE_LABEL in bot.edits[0]["text"]
+    assert len(bot.posts) == 1
+
+    # The superseded wording survives the edit Slack does not keep.
+    [record] = log.amendments()
+    assert "Result — original" in record["previous"]
+    assert "Result — corrected" in record["replacement"]
+    assert record["reason"] == "stale clause" and record["state"] == SENT
+
+
+def test_an_edit_that_may_not_have_applied_is_unknown(log: NotificationLog) -> None:
+    bot = FakeBot("1789858187.458229")
+    bot.edit_answers = [Ambiguous("ReadTimeout")]
+    notifier = Notifier(log=log, bot=bot)
+    notifier.publish("2:result:d", "result", "Result — original", 2)
+    outcome = notifier.amend("1789858187.458229", "Result — corrected", "why")
+    assert outcome["state"] == UNKNOWN
+    assert log.amendments()[0]["state"] == UNKNOWN
+    # The ledger still holds what the channel may still be showing.
+    assert "Result — original" in str(log.by_ts("1789858187.458229")["text"])
+
+
+def test_the_webhook_alone_cannot_edit_a_message(log: NotificationLog) -> None:
+    from tests.test_notify import Recorder
+
+    notifier = Notifier(log=log, webhook=WEBHOOK, transport=Recorder())
+    notifier.publish("2:result:d", "result", "Result — original", 2)
+    log.record_ts(1, "1789858187.458229")
+    outcome = notifier.amend("1789858187.458229", "corrected", "why")
+    assert outcome["state"] == DISABLED and "SLACK_BOT_TOKEN" in outcome["detail"]
 
 
 # --- the SDK client itself -------------------------------------------------
