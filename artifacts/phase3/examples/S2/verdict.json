@@ -1,0 +1,23 @@
+{
+  "scenario": "S2",
+  "traces": {
+    "save_first": "trace_7166a2d0f530",
+    "open_first": "trace_fecac5f5d7fd",
+    "discard": "trace_a424e7ccf4e5",
+    "open_after_discard": "trace_1a4e04449b25",
+    "save_second": "trace_89665110e283",
+    "reopen_stale_link": "trace_fc65cf751801"
+  },
+  "events": 31,
+  "baseline_defect_reproduced": [
+    "discarded_exploration_link_stays_gone",
+    "new_exploration_does_not_reuse_a_discarded_key"
+  ],
+  "expected_denials": 0,
+  "harness_failures": [],
+  "blocked_steps": [],
+  "missing_evidence": [],
+  "fixture_reset_verified": true,
+  "not_applicable": [],
+  "harness_healthy": true
+}

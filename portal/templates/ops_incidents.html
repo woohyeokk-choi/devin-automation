@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card">
+  <h2>Incidents</h2>
+  <p class="muted">
+    One incident per <strong>failure family</strong> — the same defect reproduced
+    ten times is still one incident. The three counts below are different things:
+    <strong>{{ totals.incidents }}</strong> incidents,
+    <strong>{{ totals.failed_actions }}</strong> failed user actions and
+    <strong>{{ totals.events }}</strong> evidence events. Expected denials (N1),
+    blocked setup and unregistered failures create none.
+    Repair dispatch is {{ 'enabled' if auto_repair_enabled else 'disabled (AUTO_REPAIR_ENABLED=false)' }};
+    observation runs either way.
+  </p>
+  <table>
+    <thead><tr>
+      <th>Incident</th><th>Scenario</th><th>Failed actions</th><th>Events</th>
+      <th>First seen</th><th>Last seen</th><th>Actor</th><th>Baseline</th><th>State</th>
+    </tr></thead>
+    <tbody>
+      {% for item in incidents %}
+      <tr>
+        <td><a href="/ops/incidents/{{ item.id }}">{{ item.title }}</a>
+          <div class="muted"><code>{{ item.family }}</code></div></td>
+        <td>{{ item.scenario }}</td>
+        <td>{{ item.occurrence_count }}</td>
+        <td>{{ item.event_count }}{% if item.derived_event_count %} ({{ item.derived_event_count }} from preview){% endif %}</td>
+        <td class="muted">{{ item.first_seen_at }}</td>
+        <td class="muted">{{ item.last_seen_at }}</td>
+        <td>{{ item.actor }}</td>
+        <td class="muted"><code>{{ item.baseline_sha[:12] }}</code> ({{ item.revision_strength }})</td>
+        <td><span class="pill {{ 'assertion_failed' if item.state == 'detected' else 'ok' }}">{{ item.state }}</span></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="muted">No incidents recorded yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Processing errors</h2>
+  {% if processing_errors %}
+  <table>
+    <thead><tr><th>Time (UTC)</th><th>Event</th><th>Reason</th></tr></thead>
+    <tbody>
+      {% for item in processing_errors %}
+      <tr><td class="muted">{{ item.ts_utc }}</td><td>{{ item.event_id or '—' }}</td><td>{{ item.reason }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">None — every observed event was classified.</p>
+  {% endif %}
+</div>
+{% endblock %}

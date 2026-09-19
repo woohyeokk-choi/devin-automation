@@ -28,6 +28,13 @@ services:
       PORTAL_RUN_ID: ${PORTAL_RUN_ID:-local}
       PORTAL_OPS_USERNAME: ${PORTAL_OPS_USERNAME:-operator}
       PORTAL_OPS_PASSWORD: ${PORTAL_OPS_PASSWORD:-operator-local}
+      PORTAL_DEMO_USERNAME: ${PORTAL_DEMO_USERNAME:-demo}
+      PORTAL_DEMO_PASSWORD: ${PORTAL_DEMO_PASSWORD:-demo-local}
+      PORTAL_COOKIE_SECRET: ${PORTAL_COOKIE_SECRET:-portal-local-dev-secret}
+      PORTAL_TARGET_REPO: ${PORTAL_TARGET_REPO:-woohyeokk-choi/superset}
+      # Only a preview/verification deployment sets this, and only here:
+      # parent scope is never accepted from a browser field.
+      PORTAL_PARENT_INCIDENT: ${PORTAL_PARENT_INCIDENT:-}
       PORTAL_DATA_DIR: /data
       PORTAL_PROVENANCE_PATH: /provenance/provenance.json
       AUTO_REPAIR_ENABLED: ${AUTO_REPAIR_ENABLED:-false}

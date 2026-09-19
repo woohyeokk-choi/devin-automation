@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block body %}
+{% if note %}<div class="banner">{{ note }}</div>{% endif %}
+<div class="card">
+  <h2>{{ incident.title }}</h2>
+  <p class="muted"><code>{{ incident.fingerprint }}</code></p>
+  <table>
+    <tbody>
+      <tr><th>Scenario</th><td>{{ incident.scenario }} · family <code>{{ incident.family }}</code></td></tr>
+      <tr><th>Failed user actions</th><td>{{ incident.occurrence_count }}</td></tr>
+      <tr><th>Evidence events</th><td>{{ incident.event_count }}{% if incident.derived_event_count %} ({{ incident.derived_event_count }} from a preview/verification run){% endif %}</td></tr>
+      <tr><th>First / last seen</th><td class="muted">{{ incident.first_seen_at }} → {{ incident.last_seen_at }}</td></tr>
+      <tr><th>Actor profile</th><td>{{ incident.actor }}</td></tr>
+      <tr><th>Target repository</th><td><code>{{ incident.target_repo }}</code></td></tr>
+      <tr><th>Baseline SHA</th><td><code>{{ incident.baseline_sha }}</code> (provenance: {{ incident.revision_strength }})</td></tr>
+      <tr><th>Fixture revision</th><td><code>{{ incident.fixture_revision or 'unmeasured' }}</code></td></tr>
+      <tr><th>State</th><td><span class="pill {{ 'assertion_failed' if incident.state == 'detected' else 'ok' }}">{{ incident.state }}</span>
+        <span class="muted">detected → candidate_fix → verified_in_preview</span></td></tr>
+      <tr><th>Fork issue</th><td>{{ incident.issue_url or 'not connected' }}</td></tr>
+      <tr><th>Repair session</th><td>{{ incident.session_url or 'not connected' }}</td></tr>
+      <tr><th>Pull request</th><td>{{ incident.pr_url or 'not connected' }}</td></tr>
+      <tr><th>Independent verification</th><td>{{ incident.verification or 'not run' }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Contract violations</h2>
+  <table>
+    <thead><tr><th>Assertion</th><th>Expected</th><th>Observed</th><th>Operation</th><th>Trace/step</th></tr></thead>
+    <tbody>
+      {% for event in incident.events if event.assertion and not event.assertion.holds %}
+      <tr>
+        <td><code>{{ event.assertion.name }}</code></td>
+        <td>{{ event.assertion.expected }}</td>
+        <td>{{ event.assertion.observed }}</td>
+        <td>{{ event.operation }}</td>
+        <td><a href="/ops/traces/{{ event.trace_id }}">{{ event.trace_id }}</a>/{{ event.step_index }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Traces</h2>
+  <table>
+    <thead><tr><th>Trace</th><th>Started (UTC)</th><th>Evidence events</th><th>Role</th></tr></thead>
+    <tbody>
+      {% for item in incident.traces %}
+      <tr>
+        <td><a href="/ops/traces/{{ item.trace_id }}">{{ item.trace_id }}</a></td>
+        <td class="muted">{{ item.started_at }}</td>
+        <td>{{ item.evidence }}</td>
+        <td>{{ item.role }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Handoff bundle</h2>
+  <p class="muted">
+    Built from stored evidence only, sanitized by the same allowlist as the log:
+    repository and fixture setup, the exact same-tab steps, every event and a
+    checksummed manifest.
+  </p>
+  <form method="post" action="/ops/incidents/{{ incident.id }}/export">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Write the handoff bundle</button>
+  </form>
+  <p>
+    {% for name in bundle_files %}
+    <a href="/ops/incidents/{{ incident.id }}/files/{{ name }}">{{ name }}</a>{% if not loop.last %} · {% endif %}
+    {% endfor %}
+  </p>
+</div>
+
+{% if incident.processing_errors %}
+<div class="card">
+  <h2>Processing errors</h2>
+  <table>
+    <thead><tr><th>Time (UTC)</th><th>Event</th><th>Reason</th></tr></thead>
+    <tbody>
+      {% for item in incident.processing_errors %}
+      <tr><td class="muted">{{ item.ts_utc }}</td><td>{{ item.event_id or '—' }}</td><td>{{ item.reason }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

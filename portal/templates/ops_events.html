@@ -42,6 +42,7 @@
     <a href="/ops/export.jsonl">Export JSONL</a>
   </form>
   <form method="post" action="/ops/fixtures/reset">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button class="secondary" type="submit">
       Reset the demo fixture to its documented starting state
     </button>

@@ -16,12 +16,32 @@ from clients.mcp_client import MCPClient, MCPError
 from clients.superset_client import SupersetClient
 
 from .config import Settings
-from .redaction import pick, safe_exception, scrub
+from .redaction import SafeError, pick, safe_error, safe_error_text, scrub
 from .tracing import Timer, Trace, new_id
 
 
-class UpstreamUnavailable(RuntimeError):
-    """The upstream service could not be reached or authenticated."""
+class UpstreamUnavailable(SafeError):
+    """The upstream service could not be reached or authenticated.
+
+    Built from structured facts the portal already knows — which service, which
+    operation, which exception type — rather than from the underlying
+    exception's text, which can carry a credentialed URL or a header dump.
+    """
+
+    def __init__(self, service: str, operation: str, cause: BaseException | str) -> None:
+        self.service = service
+        self.operation = operation
+        self.cause_type = cause if isinstance(cause, str) else type(cause).__name__
+        super().__init__(
+            f"{service} did not complete {operation} ({self.cause_type})"
+        )
+
+    def safe_detail(self) -> dict[str, Any]:
+        return {
+            "service": self.service,
+            "upstream_operation": self.operation,
+            "cause_type": self.cause_type,
+        }
 
 
 # Allowlists: only these keys of a request/response body are ever recorded.
@@ -60,10 +80,11 @@ class SupersetGateway:
                 "superset.login",
                 "blocked",
                 request_id=request_id,
-                message=safe_exception(exc),
+                message=safe_error_text(exc),
                 input={"profile": self.profile},
+                output={"error": safe_error(exc)},
             )
-            raise UpstreamUnavailable(safe_exception(exc)) from exc
+            raise UpstreamUnavailable("superset", "login", exc) from exc
         trace.log(
             "upstream_call",
             "superset.login",
@@ -105,15 +126,18 @@ class SupersetGateway:
                 operation,
                 "blocked",
                 request_id=request_id,
-                message=safe_exception(exc),
+                message=safe_error_text(exc),
                 input=pick(input_summary or {}, REQUEST_FIELDS),
+                output={"error": safe_error(exc)},
             )
-            raise UpstreamUnavailable(safe_exception(exc)) from exc
+            raise UpstreamUnavailable("superset", operation, exc) from exc
 
         try:
             body: Any = response.json()
         except ValueError:
-            body = {"message": response.text[:200]}
+            # A non-JSON body is an error page or a redirect to a login form;
+            # it is described, never quoted, because it is arbitrary text.
+            body = {"message": f"non-JSON response body ({len(response.content)} bytes)"}
 
         if response.status_code in (401, 403):
             outcome = "expected_denial" if self.profile == "restricted_viewer" else "error"
@@ -180,10 +204,11 @@ class MCPGateway:
                 "blocked",
                 request_id=request_id,
                 tool_name=tool,
-                message=safe_exception(exc),
+                message=safe_error_text(exc),
                 input=pick(input_summary or {}, REQUEST_FIELDS),
+                output={"error": safe_error(exc)},
             )
-            raise UpstreamUnavailable(safe_exception(exc)) from exc
+            raise UpstreamUnavailable("mcp", tool, exc) from exc
 
         # The MCP proxy reports validation failures as `isError: false` with an
         # "Error: ..." body, so the text is inspected as well.

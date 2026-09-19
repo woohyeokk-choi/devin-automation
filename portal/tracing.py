@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .events import EventStore, utcnow
-from .redaction import safe_exception, scrub
+from .redaction import safe_error, safe_error_text, scrub
 
 
 def new_id(prefix: str) -> str:
@@ -119,12 +119,18 @@ class Trace:
         return ok
 
     def blocked(self, operation: str, exc: BaseException | None = None, message: str | None = None) -> None:
-        """Environment/setup failure: never 'not reproduced', never 'verified'."""
+        """Environment/setup failure: never 'not reproduced', never 'verified'.
+
+        Only structured error metadata is recorded. An arbitrary exception's
+        text never reaches the log, because scrubbing free-form strings is a
+        safety net rather than a boundary.
+        """
         self.log(
             "lifecycle",
             operation,
             "blocked",
-            message=message or (safe_exception(exc) if exc else "blocked"),
+            message=message or (safe_error_text(exc) if exc else "blocked"),
+            output={"error": safe_error(exc)} if exc else None,
         )
 
 

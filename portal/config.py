@@ -69,8 +69,31 @@ class Settings:
     ops_password: str = field(
         default_factory=lambda: _env("PORTAL_OPS_PASSWORD", "operator-local")
     )
+    # The demo gate. Not customer authentication: it only proves the caller is
+    # an invited demo user, so that no anonymous client can pick a profile,
+    # mutate upstream state or mint events that an incident could be built on.
+    demo_username: str = field(
+        default_factory=lambda: _env("PORTAL_DEMO_USERNAME", "demo")
+    )
+    demo_password: str = field(
+        default_factory=lambda: _env("PORTAL_DEMO_PASSWORD", "demo-local")
+    )
+    cookie_secret: str = field(
+        default_factory=lambda: _env("PORTAL_COOKIE_SECRET", "portal-local-dev-secret")
+    )
     auto_repair_enabled: bool = field(
         default_factory=lambda: _env("AUTO_REPAIR_ENABLED", "false").lower() == "true"
+    )
+
+    # --- incidents ---------------------------------------------------------
+    target_repo: str = field(
+        default_factory=lambda: _env("PORTAL_TARGET_REPO", "woohyeokk-choi/superset")
+    )
+    #: Which incident this environment's runs belong to. Only a preview or
+    #: verification environment sets it, and only the operator can: parent
+    #: scope is deployment configuration, never a browser-supplied field.
+    parent_incident: str = field(
+        default_factory=lambda: _env("PORTAL_PARENT_INCIDENT", "")
     )
 
     @property

@@ -11,6 +11,7 @@ import json
 import sqlite3
 import sys
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -18,6 +19,7 @@ from typing import Any, Iterator
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id       TEXT NOT NULL UNIQUE,
     ts_utc         TEXT NOT NULL,
     trace_id       TEXT NOT NULL,
     request_id     TEXT,
@@ -68,7 +70,36 @@ class EventStore:
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
+        #: Called with every emitted event, after it is durable. The incident
+        #: engine subscribes here so observation is server-side only: an event
+        #: exists because the portal did something, never because a client
+        #: posted one.
+        self.observer: Any = None
+
+    def _migrate(self) -> None:
+        """Give events written before `event_id` existed an identity.
+
+        Kept in the store rather than a migration tool: a volume from an
+        earlier run must stay readable, and every historical event still
+        needs a stable id for incident deduplication.
+        """
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(events)")}
+        if "event_id" in columns:
+            return
+        self._conn.execute("ALTER TABLE events ADD COLUMN event_id TEXT")
+        stale = self._conn.execute(
+            "SELECT id FROM events WHERE event_id IS NULL"
+        ).fetchall()
+        for row in stale:
+            self._conn.execute(
+                "UPDATE events SET event_id = ? WHERE id = ?",
+                (f"evt_{uuid.uuid4().hex[:16]}", row["id"]),
+            )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS events_event_id ON events (event_id)"
+        )
 
     # ------------------------------------------------------------- writing
     def emit(self, event: dict[str, Any]) -> dict[str, Any]:
@@ -76,6 +107,7 @@ class EventStore:
         if event["outcome"] not in OUTCOMES:
             raise ValueError(f"unknown outcome {event['outcome']!r}")
         record = {
+            "event_id": event.get("event_id") or f"evt_{uuid.uuid4().hex[:16]}",
             "ts_utc": event.get("ts_utc") or utcnow(),
             "trace_id": event["trace_id"],
             "request_id": event.get("request_id"),
@@ -99,11 +131,12 @@ class EventStore:
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO events (ts_utc, trace_id, request_id, step_index, kind,
+                INSERT INTO events (event_id, ts_utc, trace_id, request_id,
+                    step_index, kind,
                     outcome, scenario, operation, actor, environment_kind, run_id,
                     http_status, tool_name, duration_ms, message, input_json,
                     output_json, assertion_json, revision_json)
-                VALUES (:ts_utc, :trace_id, :request_id, :step_index, :kind,
+                VALUES (:event_id, :ts_utc, :trace_id, :request_id, :step_index, :kind,
                     :outcome, :scenario, :operation, :actor, :environment_kind,
                     :run_id, :http_status, :tool_name, :duration_ms, :message,
                     :input_json, :output_json, :assertion_json, :revision_json)
@@ -120,6 +153,8 @@ class EventStore:
             )
             self._conn.commit()
             print(json.dumps(record, sort_keys=True), file=self._stream, flush=True)
+        if self.observer is not None:
+            self.observer(record)
         return record
 
     # ------------------------------------------------------------- reading

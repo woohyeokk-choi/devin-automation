@@ -29,6 +29,7 @@
 <div class="card">
   <h2>Change how this chart is sorted</h2>
   <form method="post" action="/settings/sort">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label for="descending">Order</label>
     <select name="descending" id="descending">
       <option value="true" {% if chart.order_desc %}selected{% endif %}>highest revenue first</option>

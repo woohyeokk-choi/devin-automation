@@ -200,8 +200,10 @@ Recommended changes to the proposed approach, with evidence:
   a clean denial. Artifacts in `artifacts/baseline/`. See §7b.
 - **Phase 2 — complete.** Portal, structured event log, redaction and operator
   viewer built and exercised through a browser against the running baseline.
-  See §7c.
-- Phases 3–7 — not started.
+  See §7c. Three review findings were closed afterwards — see §7d.
+- **Phase 3 — complete.** Incident model, protected console and handoff export
+  built on the tested portal slice. See §7e.
+- Phases 4–7 — not started.
 
 ## 7. Commands run and results (Phase 0)
 
@@ -419,6 +421,98 @@ not exposed and authorization is not weakened to manufacture coverage.
 - No authenticated public preview URL — the stack is loopback-only by design,
   and the admin MCP endpoint is not exposed merely to publish one.
 - No multi-user or load behaviour; the portal is single-operator by design.
+
+## 7d. Phase 2 review findings closed
+
+All three were reproduced before being fixed, and each has a regression test.
+
+| Finding | Fix | Regression |
+| --- | --- | --- |
+| `safe_exception(ValueError("Authorization: Bearer canary-…"))` returned the canary intact: the generic key/value scrubber matched `authorization:` and redacted only the scheme word, leaving the credential. `Trace.blocked` then carried it to stdout, SQLite and the export. | Inline `bearer|basic|digest|token|apikey` schemes are scrubbed *before* the key/value pass, and arbitrary exception text is no longer logged at all — only allowlisted structured metadata (`SafeError`), otherwise the message is withheld. | `tests/test_redaction_canary.py`: Bearer and Basic canaries in inline text, checked in all three sinks, plus a withheld arbitrary `ValueError`. |
+| `verdict("S2", {"save_first": ""}, [])` reported `harness_healthy=True`, and the exporter silently skipped blank trace ids. | Required trace *and* assertion maps per scenario; blank/missing ids and missing contract assertions are `missing_evidence` → unhealthy; the reset must be proved by its recorded assertion (`fixture_reset_reaches_the_documented_starting_state`, `holds=true`), not by a redirected HTTP 200; N1 must contain a real `expected_denial`; the CLI exits non-zero. Known product failures stay separate and unfixed. | `tests/test_verdict.py` (7 cases). |
+| Anonymous clients could select a `portal_profile` cookie, an unknown profile fell back to `analyst`, and state-changing routes had no CSRF. | Smallest authenticated demo gate on every route except `/healthz`; profile cookies signed with `itsdangerous`; a bad signature or unknown profile is a 400, never a fallback to the more capable identity; CSRF token on every write plus same-origin checks; demo roles still map to fixed server-side Superset credentials and the restricted 403 is preserved. Label changed from "Signed in as" to "Demo profile". | `tests/test_demo_gate.py` — each rejection asserts the status *and* that the event store gained nothing, so no rejected request leaves an event a repair job could be built from. |
+
+## 7e. Phase 3 results — incident console and handoff export
+
+### Model
+
+`portal/incidents.py` keeps its own SQLite database (`/data/incidents.sqlite`)
+fed by an observer on the event store, so an incident is only ever built from
+events the server itself wrote — never from a browser-supplied field.
+Observation is independent of `AUTO_REPAIR_ENABLED`, which gates external
+dispatch only.
+
+- **Failure families.** Two registered families: S2
+  `discarded_form_data_key_is_reused` (three assertions — key reuse on save,
+  the resurrected link on read, and the link-shows-its-own-state control) and
+  S1 `omitted_row_limit_is_reset`. Sibling assertions map to one incident;
+  the assertion name, route, trace and step survive as evidence.
+- **Fingerprint.** `sha256(target_repo, verified baseline SHA, family, actor)`,
+  truncated to 32 hex chars. Times, trace/request/event ids, form-data keys and
+  chart ids are excluded by construction. An environment whose running code is
+  `unmeasured` or does not match its checkout fingerprints as `unverified`, so
+  it cannot merge with the verified baseline.
+- **Delivery vs occurrence.** `incident_events.event_id` is a primary key
+  (duplicate delivery is a no-op inside `BEGIN IMMEDIATE`);
+  `incident_occurrences` is keyed `(incident_id, trace_id)`, so an occurrence is
+  one *failed user action*. The console labels incidents, failed actions and
+  evidence events as three separate numbers.
+- **Never an incident.** Expected N1 denials (two denial events from one
+  attempt still produce zero), `blocked`/`error` outcomes, unregistered
+  assertions and the portal's own harness checks. Events from a
+  `preview`/`reproduction`/`verification` environment attach to the parent named
+  by `PORTAL_PARENT_INCIDENT` (server configuration, operator-set) and add
+  evidence only — without a configured parent they are suppressed and recorded
+  as a processing error, which is what stops a repair session's own
+  reproduction from opening a second repair job.
+- **States.** `detected` → `candidate_fix` → `verified_in_preview`; nothing
+  self-promotes. Issue, session, PR and verification fields read
+  `not connected` because no integration exists yet.
+
+### Export
+
+`POST /ops/incidents/{id}/export` writes `incident.json`,
+`events.redacted.jsonl`, `reproduction.md` and `manifest.json` from stored
+evidence. The manifest lists the actual files with byte sizes and SHA-256,
+plus run id, environment kind, measured provenance (running-code hash, image
+id) and the repository/baseline SHA. `reproduction.md` carries the executable
+repository + fixture setup and the exact same-tab steps. Events are scrubbed a
+second time on the way in, because the bundle leaves the portal. No ZIP.
+
+### Verified in Phase 3
+
+| Check | Result |
+| --- | --- |
+| `python3 -m pytest tests -q` | 69 passed (24 new incident/bundle/route tests). |
+| `python3 -m flake8 portal scenarios scripts tests` | Clean. |
+| Repeated identical event | `duplicate_event`; incident, occurrence and event counts unchanged. |
+| New matching failed action | Occurrence +1, exactly once. |
+| Sibling assertions in one action | One occurrence, two evidence events. |
+| Concurrent duplicate ingestion (8 threads) | 1 stored, 7 `duplicate_event`. |
+| Restart recovery | Counts survive reopening the database *and* the container rebuild; a pre-restart event replays as a duplicate. |
+| HTTP 200 semantic failure | Creates the incident (outcome stays `assertion_failed`; no fabricated 5xx). |
+| Expected 403 / blocked / error / unregistered / harness | Suppressed, zero incidents. |
+| Preview event without a parent | Suppressed + processing error; with a configured parent, evidence only (`failed_actions` unchanged). |
+| Unmeasured baseline | Separate `unverified` incident, not merged. |
+| Export parsing + checksums | Four files written, JSON/JSONL parse, every SHA-256 recomputed and matched. |
+| Credential canary through the bundle | Absent from all four files. |
+| Console authorization | List, detail, file download and export are operator-only (401 anonymous and as the demo user); export also requires CSRF (403 without). |
+| Live replay | `scripts/export_examples.py --out artifacts/phase3/examples` → S2 6 actions/31 events, S1 3/25, N1 3/20, harness healthy in all three; console shows **2 incidents / 3 failed actions**, N1 contributing none. |
+
+### Evidence
+
+- `artifacts/phase3/examples/{S1,S2,N1}/` — replay events and verdicts.
+- `artifacts/phase3/handoff/<fingerprint>/` — the four-file bundles as written.
+- `artifacts/phase3/screenshots/` — incident console and browser demonstration.
+- Phase 1 and Phase 2 artifact paths are untouched.
+
+### Not covered in Phase 3
+
+- No issue, session, PR or verification data: those fields stay
+  `not connected` until Phase 4/5 wire real integrations.
+- No repair dispatch of any kind; `AUTO_REPAIR_ENABLED` stays `false`.
+- The preview/parent path is tested deterministically, but no preview
+  environment has actually been deployed yet (Phase 5).
 
 ## 8. Blockers and required credentials
 

@@ -64,7 +64,18 @@ Tests: `pip install -r requirements-dev.txt && python3 -m pytest tests -q`.
 | `/explorations/{key}` | Open a saved exploration link (the S2 stale-link surface). |
 | `/settings` | Chart settings read-back and table-sort change (the S1 surface). |
 | `/ops`, `/ops/traces/{id}`, `/ops/export.jsonl` | Operator event viewer, trace detail, JSONL export. HTTP Basic (`PORTAL_OPS_USERNAME` / `PORTAL_OPS_PASSWORD`). |
+| `/ops/incidents`, `/ops/incidents/{id}` | Incident console: one row per failure family, with counts, revisions and trace history (operator-only). |
+| `POST /ops/incidents/{id}/export`, `/ops/incidents/{id}/files/{name}` | Write and download the handoff bundle (operator-only, CSRF-protected). |
 | `POST /ops/fixtures/reset` | Deterministic fixture reset (operator-only). |
+
+Everything except `/healthz` is behind the demo gate (`PORTAL_DEMO_USERNAME` /
+`PORTAL_DEMO_PASSWORD`): an anonymous client cannot pick a profile, reach
+upstream or mint an event that an incident could later be built from. Profile
+cookies are signed; one that fails its signature or names an unknown profile is
+refused with 400 rather than falling back to the more capable `analyst`. Every
+state-changing form carries a CSRF token and cross-origin submissions are
+rejected. `tests/test_demo_gate.py` asserts each rejection *and* that the event
+store gained nothing.
 
 Every user action gets one `trace_id`; every upstream REST/MCP call inside it
 gets a `request_id` and a monotonic `step_index`. Outcomes are exactly one of:
@@ -118,6 +129,33 @@ python3 scripts/export_examples.py
   the three sinks.
 - All three ports bind to `127.0.0.1` only.
 
+## Incidents
+
+Registered semantic failures become incidents even though
+`AUTO_REPAIR_ENABLED=false` — that flag disables external repair *dispatch*,
+not observation. The console labels three different numbers explicitly:
+**incidents**, **failed user actions** (occurrences) and **evidence events**.
+
+| Rule | Behaviour |
+| --- | --- |
+| Failure family | Sibling assertions are one incident. S2's key reuse on save and the resurrected link on read are the same product defect seen twice; S1 is a separate family. The individual assertion and route survive as evidence. |
+| Fingerprint | `target repo + verified baseline SHA + failure family + actor profile`. Timestamps, trace/request/event ids, exploration keys and chart ids are deliberately excluded. An environment whose running code cannot be measured fingerprints as `unverified` instead of merging with the verified baseline. |
+| Delivery dedup | `event_id` is a primary key; replaying the same event is a no-op (`duplicate_event`), including across a restart and under concurrent delivery. |
+| Occurrence | One per *failed user action* (`incident_id, trace_id` is a composite key), so a second assertion in the same action does not double-count, and a genuine repeat increments exactly once. |
+| Never an incident | Expected N1 denials (two denial events from one attempt are still zero incidents), blocked setup, operational errors, unregistered assertions, and the portal's own harness checks. |
+| Derived environments | Events from a `preview`/`reproduction`/`verification` deployment attach to the parent incident named by `PORTAL_PARENT_INCIDENT` and add evidence only — they never create an incident, so a repair session's own reproduction cannot open a second repair job. The parent scope and environment kind come from server configuration; no browser field is trusted for either. |
+| State | `detected` → `candidate_fix` → `verified_in_preview`. Nothing self-promotes: a user's next attempt happening to work is not a fix. Issue, session, PR and verification fields read `not connected` until real data exists. |
+
+### Handoff bundle
+
+`POST /ops/incidents/{id}/export` writes four files from stored evidence only —
+`incident.json`, `events.redacted.jsonl`, `reproduction.md` and `manifest.json`
+(actual file list, byte sizes, SHA-256 per file, run/provenance versions,
+repository and baseline SHA). `reproduction.md` carries the executable
+repository/fixture setup and the exact same-tab steps, not just a localhost URL.
+Events pass the Phase 2 sanitizer a second time on the way in, because the
+bundle leaves the portal.
+
 ### Provenance
 
 `scripts/capture_provenance.py` measures the running container: Compose
@@ -135,6 +173,11 @@ presented as proof of what is running.
 - `artifacts/examples/{S1,S2,N1}/verdict.json` — machine-readable verdict per
   scenario, separating reproduced baseline defects from harness health.
 - `artifacts/examples/screenshots/` — portal and trace-viewer screenshots.
+- `artifacts/phase3/examples/{S1,S2,N1}/` — Phase 3 replay (fresh run path; the
+  Phase 1/2 paths above are left untouched).
+- `artifacts/phase3/handoff/<fingerprint>/` — the four-file handoff bundles as
+  the console wrote them.
+- `artifacts/phase3/screenshots/` — incident console and browser demonstration.
 
 ### Not covered
 

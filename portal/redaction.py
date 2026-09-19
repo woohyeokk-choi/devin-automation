@@ -54,23 +54,33 @@ SENSITIVE_KEYS = frozenset(
     }
 )
 
+# An auth scheme keeps its credential in the *next* token, so a
+# `key: value` rule that stops at the first whitespace would redact the scheme
+# name and publish the credential behind it. Every rule below therefore
+# consumes the scheme together with what follows it.
+_SCHEME = r"(?:bearer|basic|digest|token|apikey)"
+
 _SCRUBBERS: tuple[tuple[re.Pattern[str], str], ...] = (
     # user:password@host in any connection URI
     (
         re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)([^/\s:@]+):([^/\s@]+)@"),
         rf"\1{REDACTED}:{REDACTED}@",
     ),
-    # key=value / "key": "value" style credentials in free text and JSON blobs
+    # `Authorization: Bearer <token>` and every other scheme-prefixed credential
+    (
+        re.compile(rf"(?i)\b{_SCHEME}\s+[^\s,;\"'}})\]]+"),
+        REDACTED,
+    ),
+    # key=value / "key": "value" style credentials in free text and JSON blobs,
+    # including a scheme-prefixed value
     (
         re.compile(
             r"(?i)\b(password|passwd|pwd|secret|api[_-]?key|access[_-]?token|"
             r"refresh[_-]?token|csrf[_-]?token|token|cookie|authorization)\b"
-            r"(\"?\s*[:=]\s*\"?)([^\s,;&\"'})\]]+)"
+            rf"(\"?\s*[:=]\s*\"?)(?:{_SCHEME}\s+)?([^\s,;&\"'}})\]]+)"
         ),
         rf"\1\2{REDACTED}",
     ),
-    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{8,}"), f"Bearer {REDACTED}"),
-    (re.compile(r"(?i)\bbasic\s+[A-Za-z0-9+/=]{8,}"), f"Basic {REDACTED}"),
     # JWTs and Flask session cookies, which appear bare in logs and tracebacks
     (re.compile(r"\beyJ[A-Za-z0-9._\-]{10,}"), REDACTED),
     (re.compile(r"\bsession=[^\s;,\"']+"), f"session={REDACTED}"),
@@ -116,5 +126,35 @@ def pick(data: Any, allowed: Iterable[str]) -> dict[str, Any]:
     return {key: scrub(value) for key, value in data.items() if key in allowed}
 
 
-def safe_exception(exc: BaseException) -> str:
-    return scrub_text(f"{type(exc).__name__}: {exc}")
+WITHHELD = "<withheld: message of an unrecognised error type>"
+
+
+class SafeError(Exception):
+    """An error whose message the portal wrote itself, so it may be logged.
+
+    Pattern scrubbing of free-form text is a safety net, not a boundary: an
+    arbitrary third-party exception can stringify a request URL with embedded
+    credentials, a header dump or a response body in a shape no pattern
+    anticipates. Only errors raised here carry their message into the log;
+    everything else contributes its type and structured detail only.
+    """
+
+    def safe_detail(self) -> dict[str, Any]:
+        return {}
+
+
+def safe_error(exc: BaseException) -> dict[str, Any]:
+    """Structured, allowlisted error metadata — never a raw exception string."""
+    if isinstance(exc, SafeError):
+        return {
+            "error_type": type(exc).__name__,
+            "message": scrub_text(str(exc)),
+            **scrub(exc.safe_detail()),
+        }
+    return {"error_type": type(exc).__name__, "message": WITHHELD}
+
+
+def safe_error_text(exc: BaseException) -> str:
+    """One-line form of `safe_error`, for an event's `message` column."""
+    detail = safe_error(exc)
+    return f"{detail['error_type']}: {detail['message']}"

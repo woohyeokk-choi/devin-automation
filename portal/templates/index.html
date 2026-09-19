@@ -57,12 +57,14 @@
   {% endif %}
 
   <form class="inline" method="post" action="/explorations">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="dimension" value="{{ spec.dimension }}">
     <input type="hidden" name="sort" value="{{ spec.sort }}">
     <input type="hidden" name="row_limit" value="{{ spec.row_limit }}">
     <button type="submit">Save this exploration &amp; get a link</button>
   </form>
   <form class="inline" method="post" action="/tabs/new">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button class="secondary" type="submit">Start over in a fresh workspace (like a new browser tab)</button>
   </form>
 </div>
@@ -84,6 +86,7 @@
         <td>
           {% if not item.discarded_at %}
           <form class="inline" method="post" action="/explorations/{{ item.key }}/discard">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="secondary" type="submit">Discard</button>
           </form>
           {% endif %}

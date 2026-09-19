@@ -12,51 +12,54 @@ import secrets
 from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
 
 from .config import settings
 from .domain import DIMENSIONS, SORTS, Denied, ExplorationSpec, FixtureMissing, Portal
 from .events import EventStore
+from .handoff import FILES as BUNDLE_FILES, write_bundle
+from .incidents import IncidentStore
 from .provenance import summary as provenance_summary
+from .security import (
+    PROFILES,
+    apply_session_cookies,
+    csrf_guard,
+    csrf_token_of,
+    demo_guard,
+    ops_guard,
+    profile_of,
+    require_known_profile,
+)
 from .tracing import Trace
 from .upstream import UpstreamUnavailable
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 store = EventStore(settings.db_path)
+incidents = IncidentStore(
+    settings.db_path.with_name("incidents.sqlite"),
+    target_repo=settings.target_repo,
+    parent_fingerprint=settings.parent_incident,
+)
+# Observation, not dispatch: the incident model is fed from the server's own
+# event stream regardless of AUTO_REPAIR_ENABLED.
+store.observer = incidents.observe
 portal = Portal(settings, store)
 app = FastAPI(title="Synthetic Analytics portal", docs_url=None, redoc_url=None)
-security = HTTPBasic()
 
-PROFILES = {
-    "analyst": "Dana (analyst)",
-    "restricted_viewer": "Robin (restricted viewer)",
-}
+# Every route below the demo gate. `/healthz` stays open so a container health
+# check needs no credential; nothing else does, because an anonymous client
+# must not be able to mutate upstream state or mint events.
+GATED = [Depends(demo_guard)]
+# State-changing routes additionally prove the request came from this site.
+WRITE = [Depends(demo_guard), Depends(csrf_guard)]
 
 
 # ------------------------------------------------------------------ helpers
-def profile_of(request: Request) -> str:
-    value = request.cookies.get("portal_profile", "analyst")
-    return value if value in PROFILES else "analyst"
-
-
 def tab_of(request: Request) -> str:
     return request.cookies.get("portal_tab", "100001")
-
-
-def ops_guard(credentials: HTTPBasicCredentials = Depends(security)) -> str:
-    ok_user = secrets.compare_digest(credentials.username, settings.ops_username)
-    ok_pass = secrets.compare_digest(credentials.password, settings.ops_password)
-    if not (ok_user and ok_pass):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="operator login required",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    return credentials.username
 
 
 def base_context(request: Request, **extra: Any) -> dict[str, Any]:
@@ -64,6 +67,7 @@ def base_context(request: Request, **extra: Any) -> dict[str, Any]:
         "request": request,
         "profile": profile_of(request),
         "profiles": PROFILES,
+        "csrf_token": csrf_token_of(request),
         "dimensions": DIMENSIONS,
         "sorts": SORTS,
         "environment_kind": settings.environment_kind,
@@ -76,7 +80,10 @@ def base_context(request: Request, **extra: Any) -> dict[str, Any]:
 
 
 def render(name: str, request: Request, **extra: Any) -> HTMLResponse:
-    return TEMPLATES.TemplateResponse(name, base_context(request, **extra))
+    context = base_context(request, **extra)
+    response = TEMPLATES.TemplateResponse(request, name, context)
+    apply_session_cookies(response, context["profile"], context["csrf_token"])
+    return response
 
 
 def back(request: Request, trace: Trace | None = None, note: str | None = None,
@@ -98,7 +105,7 @@ def healthz() -> dict[str, str]:
     return {"status": "ok", "environment_kind": settings.environment_kind}
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", response_class=HTMLResponse, dependencies=GATED)
 def home(
     request: Request,
     dimension: str = "region",
@@ -141,16 +148,22 @@ def home(
     )
 
 
-@app.post("/profile")
+@app.post("/profile", dependencies=WRITE)
 def switch_profile(request: Request, profile: str = Form(...)) -> RedirectResponse:
-    profile = profile if profile in PROFILES else "analyst"
-    response = back(request, note=f"profile set to {PROFILES[profile]}")
-    response.set_cookie("portal_profile", profile)
+    """Switch demo profile by name; an unknown name is refused, not downgraded.
+
+    The name selects a fixed server-side Superset credential. A silent fallback
+    to `analyst` would let a typo or a probe pick the *more* capable identity,
+    so the request fails instead.
+    """
+    profile = require_known_profile(profile)
+    response = back(request, note=f"demo profile set to {PROFILES[profile]}")
+    apply_session_cookies(response, profile, csrf_token_of(request))
     response.set_cookie("portal_tab", tab_of(request))
     return response
 
 
-@app.post("/tabs/new")
+@app.post("/tabs/new", dependencies=WRITE)
 def start_another_exploration(request: Request) -> RedirectResponse:
     """Open a fresh exploration workspace, as a new browser tab would."""
     trace = portal.new_trace(profile_of(request), scenario="S2")
@@ -161,7 +174,7 @@ def start_another_exploration(request: Request) -> RedirectResponse:
     return response
 
 
-@app.post("/explorations")
+@app.post("/explorations", dependencies=WRITE)
 def save_exploration(
     request: Request,
     dimension: str = Form("region"),
@@ -190,7 +203,7 @@ def save_exploration(
     return back(request, trace, note="exploration saved", keep=spec.to_dict())
 
 
-@app.get("/explorations/{key}", response_class=HTMLResponse)
+@app.get("/explorations/{key}", response_class=HTMLResponse, dependencies=GATED)
 def open_exploration(request: Request, key: str) -> HTMLResponse:
     profile = profile_of(request)
     trace = portal.new_trace(profile, scenario="S2")
@@ -223,7 +236,7 @@ def open_exploration(request: Request, key: str) -> HTMLResponse:
     )
 
 
-@app.post("/explorations/{key}/discard")
+@app.post("/explorations/{key}/discard", dependencies=WRITE)
 def discard_exploration(request: Request, key: str) -> RedirectResponse:
     profile = profile_of(request)
     trace = portal.new_trace(profile, scenario="S2")
@@ -237,7 +250,7 @@ def discard_exploration(request: Request, key: str) -> RedirectResponse:
     return back(request, trace, note="exploration discarded")
 
 
-@app.get("/settings", response_class=HTMLResponse)
+@app.get("/settings", response_class=HTMLResponse, dependencies=GATED)
 def chart_settings(
     request: Request, trace_id: str | None = None, note: str | None = None
 ) -> HTMLResponse:
@@ -267,7 +280,7 @@ def chart_settings(
     )
 
 
-@app.post("/settings/sort")
+@app.post("/settings/sort", dependencies=WRITE)
 def change_sort(
     request: Request,
     descending: str = Form("true"),
@@ -338,7 +351,80 @@ def ops_export(trace_id: str | None = None, _: str = Depends(ops_guard)) -> Stre
     )
 
 
-@app.post("/ops/fixtures/reset")
+@app.get("/ops/incidents", response_class=HTMLResponse)
+def ops_incidents(request: Request, _: str = Depends(ops_guard)) -> HTMLResponse:
+    return render(
+        "ops_incidents.html",
+        request,
+        incidents=incidents.list(),
+        totals=incidents.totals(),
+        processing_errors=incidents.processing_errors(),
+    )
+
+
+@app.get("/ops/incidents/{incident_id}", response_class=HTMLResponse)
+def ops_incident(
+    request: Request, incident_id: int, note: str | None = None, _: str = Depends(ops_guard)
+) -> HTMLResponse:
+    incident = incidents.get(incident_id)
+    if incident is None:
+        raise HTTPException(status_code=404, detail="unknown incident")
+    return render(
+        "ops_incident.html",
+        request,
+        incident=incident,
+        bundle_files=BUNDLE_FILES,
+        note=note,
+    )
+
+
+def bundle_dir(incident: dict[str, Any]) -> Path:
+    return settings.data_dir / "handoff" / str(incident["fingerprint"])
+
+
+@app.post("/ops/incidents/{incident_id}/export", dependencies=[Depends(csrf_guard)])
+def ops_export_incident(
+    request: Request, incident_id: int, _: str = Depends(ops_guard)
+) -> RedirectResponse:
+    """Write the handoff bundle from stored evidence only."""
+    incident = incidents.get(incident_id)
+    if incident is None:
+        raise HTTPException(status_code=404, detail="unknown incident")
+    manifest = write_bundle(
+        incident,
+        bundle_dir(incident),
+        versions={
+            "portal_run_id": settings.run_id,
+            "environment_kind": settings.environment_kind,
+            "measured_at": portal.provenance.get("measured_at"),
+            "running_code_sha256": portal.provenance.get("source", {}).get(
+                "running_code_sha256"
+            ),
+            "container_image_id": portal.provenance.get("container", {}).get("image_id"),
+        },
+    )
+    query = urlencode({"note": f"bundle written ({len(manifest['files']) + 1} files)"})
+    return RedirectResponse(f"/ops/incidents/{incident_id}?{query}", status_code=303)
+
+
+@app.get("/ops/incidents/{incident_id}/files/{name}")
+def ops_bundle_file(
+    incident_id: int, name: str, _: str = Depends(ops_guard)
+) -> StreamingResponse:
+    incident = incidents.get(incident_id)
+    if incident is None or name not in BUNDLE_FILES:
+        raise HTTPException(status_code=404, detail="unknown bundle file")
+    path = bundle_dir(incident) / name
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="bundle not exported yet")
+    return StreamingResponse(
+        iter([path.read_text()]),
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
+@app.post("/ops/fixtures/reset", dependencies=[Depends(csrf_guard)])
 def ops_reset(request: Request, _: str = Depends(ops_guard)) -> RedirectResponse:
     """Restore the disposable fixture to its documented starting state.
 

@@ -42,8 +42,10 @@
   <a href="/">Dashboard</a>
   <a href="/settings">Chart settings</a>
   <a href="/ops">Operator log</a>
+  <a href="/ops/incidents">Incidents</a>
   <form class="inline" method="post" action="/profile">
-    <label for="profile">Signed in as</label>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="profile">Demo profile</label>
     <select name="profile" id="profile" onchange="this.form.submit()">
       {% for key, label in profiles.items() %}
       <option value="{{ key }}" {% if key == profile %}selected{% endif %}>{{ label }}</option>

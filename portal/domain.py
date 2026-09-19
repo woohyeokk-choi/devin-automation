@@ -16,6 +16,7 @@ from .config import Settings
 from .events import EventStore
 from .provenance import load as load_provenance
 from .provenance import summary as provenance_summary
+from .redaction import SafeError
 from .tracing import Trace
 from .upstream import MCPGateway, SupersetGateway, UpstreamUnavailable
 
@@ -54,16 +55,19 @@ class ExplorationSpec:
         return f"Revenue by {self.dimension} ({SORTS.get(self.sort, self.sort)})"
 
 
-class FixtureMissing(RuntimeError):
-    pass
+class FixtureMissing(SafeError):
+    """The environment is not set up: `blocked`, never a product verdict."""
 
 
-class Denied(RuntimeError):
+class Denied(SafeError):
     """The upstream refused this profile; an expected outcome, not a defect."""
 
     def __init__(self, status: int, what: str) -> None:
         super().__init__(f"HTTP {status}: this role may not {what}")
         self.status = status
+
+    def safe_detail(self) -> dict[str, Any]:
+        return {"denied_status": self.status}
 
 
 def _sort_of(params: dict[str, Any]) -> tuple[str | None, bool | None]:
@@ -446,7 +450,7 @@ class Portal:
         )
         chart_id = (result.get("chart") or {}).get("id")
         if not chart_id:
-            raise UpstreamUnavailable("MCP did not return a saved chart")
+            raise UpstreamUnavailable("mcp", "generate_chart", "no chart returned")
         return self.read_chart(trace, gateway, int(chart_id))
 
     def restore_fixture(
