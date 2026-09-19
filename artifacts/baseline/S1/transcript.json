@@ -1,0 +1,170 @@
+[
+  {
+    "step": "read chart after create",
+    "request": {
+      "method": "GET",
+      "url": "http://localhost:8088/api/v1/chart/5",
+      "headers": {
+        "User-Agent": "python-requests/2.34.2",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Content-Type": "application/json",
+        "X-CSRFToken": "<redacted>",
+        "Referer": "http://localhost:8088/",
+        "Cookie": "<redacted>"
+      },
+      "body": null
+    },
+    "response": {
+      "status": 200,
+      "headers": {
+        "Server": "Werkzeug/3.1.6 Python/3.11.14",
+        "Date": "Sat, 19 Sep 2026 15:02:20 GMT, Sat, 19 Sep 2026 15:02:20 GMT",
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": "866",
+        "ETag": "\"3224c991-a587-5682-9ed4-f052bb6bc082:gzip\"",
+        "Permissions-Policy": "browsing-topics=()",
+        "X-Frame-Options": "SAMEORIGIN",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "base-uri 'self'; default-src 'self'; img-src 'self' blob: data: https://apachesuperset.gateway.scarf.sh https://static.scarf.sh/ https://cdn.brandfolder.io ows.terrestris.de https://cdn.document360.io; worker-src 'self' blob:; connect-src 'self' https://api.mapbox.com https://events.mapbox.com https://tile.openstreetmap.org https://tile.osm.ch https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://*.maptiler.com https://tiles.stadiamaps.com https://tiles.versatiles.org https://*.protomaps.com https://*.maplibre.org; object-src 'none'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com https://use.typekit.net https://use.typekit.com; font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://use.typekit.net https://use.typekit.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'nonce-fK-R3w-MSe-UpWz2GF8sscSBl06lG0Wx'",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Vary": "Accept-Encoding, Cookie",
+        "Content-Encoding": "gzip",
+        "Access-Control-Allow-Origin": "https://tile.openstreetmap.org",
+        "Access-Control-Expose-Headers": "ETag",
+        "Connection": "close"
+      },
+      "body": {
+        "result": {
+          "cache_timeout": null,
+          "certification_details": null,
+          "certified_by": null,
+          "changed_on_delta_humanized": "now",
+          "dashboards": [],
+          "datasource_id": 1,
+          "datasource_name_text": "public.synthetic_orders",
+          "datasource_type": "table",
+          "datasource_url": "/explore/?datasource_type=table&datasource_id=1",
+          "datasource_uuid": "9e394ba5-553d-4ae1-9c24-9f06e02130f9",
+          "description": null,
+          "editors": [
+            {
+              "id": 3,
+              "img": "/api/v1/user/1/avatar.png",
+              "label": "Superset Admin",
+              "secondary_label": "admin@superset.com",
+              "type": 1
+            }
+          ],
+          "id": 5,
+          "is_managed_externally": false,
+          "params": "{\"viz_type\": \"table\", \"all_columns\": [\"region\"], \"metrics\": [{\"aggregate\": \"SUM\", \"column\": {\"column_name\": \"revenue\"}, \"expressionType\": \"SIMPLE\", \"label\": \"SUM(revenue)\", \"optionName\": \"metric_revenue\", \"sqlExpression\": null, \"hasCustomLabel\": false, \"datasourceWarning\": false}], \"groupby\": [\"region\"], \"query_mode\": \"aggregate\", \"row_limit\": 137, \"color_scheme\": \"googleCategory10c\", \"adhoc_filters\": [{\"clause\": \"WHERE\", \"expressionType\": \"SIMPLE\", \"subject\": \"order_ts\", \"operator\": \"TEMPORAL_RANGE\", \"comparator\": \"No filter\"}], \"_mcp_dashboard_time_filter_subject\": \"order_ts\"}",
+          "query_context": null,
+          "slice_name": "S1 synthetic orders by region",
+          "tags": [
+            {
+              "id": 1,
+              "name": "editor:1",
+              "type": 3
+            },
+            {
+              "id": 3,
+              "name": "type:chart",
+              "type": 2
+            }
+          ],
+          "thumbnail_url": "/api/v1/chart/5/thumbnail/3d60e650f9fd70316497871d4d32a2e5046d3ff51fd1ea4738a8598301e56da3/",
+          "url": "/explore/?slice_id=5",
+          "uuid": "a09230e2-6620-46c7-87b8-7e047edbcf27",
+          "viewers": [],
+          "viz_type": "table"
+        }
+      }
+    }
+  },
+  {
+    "step": "read chart after update",
+    "request": {
+      "method": "GET",
+      "url": "http://localhost:8088/api/v1/chart/5",
+      "headers": {
+        "User-Agent": "python-requests/2.34.2",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Content-Type": "application/json",
+        "X-CSRFToken": "<redacted>",
+        "Referer": "http://localhost:8088/",
+        "Cookie": "<redacted>"
+      },
+      "body": null
+    },
+    "response": {
+      "status": 200,
+      "headers": {
+        "Server": "Werkzeug/3.1.6 Python/3.11.14",
+        "Date": "Sat, 19 Sep 2026 15:02:20 GMT, Sat, 19 Sep 2026 15:02:20 GMT",
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": "886",
+        "ETag": "\"938af2f6-cbad-5802-afcf-16a867274932:gzip\"",
+        "Permissions-Policy": "browsing-topics=()",
+        "X-Frame-Options": "SAMEORIGIN",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "base-uri 'self'; default-src 'self'; img-src 'self' blob: data: https://apachesuperset.gateway.scarf.sh https://static.scarf.sh/ https://cdn.brandfolder.io ows.terrestris.de https://cdn.document360.io; worker-src 'self' blob:; connect-src 'self' https://api.mapbox.com https://events.mapbox.com https://tile.openstreetmap.org https://tile.osm.ch https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://*.maptiler.com https://tiles.stadiamaps.com https://tiles.versatiles.org https://*.protomaps.com https://*.maplibre.org; object-src 'none'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com https://use.typekit.net https://use.typekit.com; font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://use.typekit.net https://use.typekit.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'nonce-gxmZFQU82VpTn4Ph8eYZ9_iINluc6Sq0'",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Vary": "Accept-Encoding, Cookie",
+        "Content-Encoding": "gzip",
+        "Access-Control-Allow-Origin": "https://tile.openstreetmap.org",
+        "Access-Control-Expose-Headers": "ETag",
+        "Connection": "close"
+      },
+      "body": {
+        "result": {
+          "cache_timeout": null,
+          "certification_details": null,
+          "certified_by": null,
+          "changed_on_delta_humanized": "now",
+          "dashboards": [],
+          "datasource_id": 1,
+          "datasource_name_text": "public.synthetic_orders",
+          "datasource_type": "table",
+          "datasource_url": "/explore/?datasource_type=table&datasource_id=1",
+          "datasource_uuid": "9e394ba5-553d-4ae1-9c24-9f06e02130f9",
+          "description": null,
+          "editors": [
+            {
+              "id": 3,
+              "img": "/api/v1/user/1/avatar.png",
+              "label": "Superset Admin",
+              "secondary_label": "admin@superset.com",
+              "type": 1
+            }
+          ],
+          "id": 5,
+          "is_managed_externally": false,
+          "params": "{\"viz_type\": \"table\", \"all_columns\": [\"region\"], \"metrics\": [{\"aggregate\": \"SUM\", \"column\": {\"column_name\": \"revenue\"}, \"expressionType\": \"SIMPLE\", \"label\": \"SUM(revenue)\", \"optionName\": \"metric_revenue\", \"sqlExpression\": null, \"hasCustomLabel\": false, \"datasourceWarning\": false}], \"groupby\": [\"region\"], \"query_mode\": \"aggregate\", \"row_limit\": 1000, \"color_scheme\": \"googleCategory10c\", \"adhoc_filters\": [{\"clause\": \"WHERE\", \"expressionType\": \"SIMPLE\", \"subject\": \"order_ts\", \"operator\": \"TEMPORAL_RANGE\", \"comparator\": \"No filter\"}], \"_mcp_dashboard_time_filter_subject\": \"order_ts\", \"order_by_cols\": [\"[\\\"SUM(revenue)\\\", false]\"]}",
+          "query_context": null,
+          "slice_name": "S1 synthetic orders by region",
+          "tags": [
+            {
+              "id": 1,
+              "name": "editor:1",
+              "type": 3
+            },
+            {
+              "id": 3,
+              "name": "type:chart",
+              "type": 2
+            }
+          ],
+          "thumbnail_url": "/api/v1/chart/5/thumbnail/5773c29bcd777e8dab4e833063dd99f81a4fa113c777831461f79f113287fb07/",
+          "url": "/explore/?slice_id=5",
+          "uuid": "a09230e2-6620-46c7-87b8-7e047edbcf27",
+          "viewers": [],
+          "viz_type": "table"
+        }
+      }
+    }
+  }
+]

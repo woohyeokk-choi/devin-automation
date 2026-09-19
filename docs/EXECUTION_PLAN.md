@@ -3,7 +3,7 @@
 Single living plan. Updated at the end of every phase: decisions, phase status,
 commands actually run with their results, and open blockers.
 
-Last updated: Phase 0 (2026-09-19).
+Last updated: Phase 1 (2026-09-19).
 
 ---
 
@@ -90,10 +90,14 @@ Nothing in either repository is reset, force-pushed, merged or deleted.
   /api/v1/explore/form_data/<key>`.
 - S1 is **not** reachable from the standard compose stack: there is no `mcp`
   service or profile in any compose file at this commit (the MCP README's
-  `--profile mcp` instructions do not match the code here). The MCP server is
-  started separately via `superset mcp run --host --port 5008`
-  (`superset/cli/mcp.py`), and `fastmcp==3.4.7` appears only in
-  `requirements/development.txt`, so the `dev` build target is required.
+  `--profile mcp` instructions do not match the code here). The MCP server must
+  be started as a separate process via `superset mcp run --host <h> --port 5008`
+  (`superset/cli/mcp.py`).
+  *Correction (Phase 1):* the image choice is not constrained to `dev`. The
+  `superset` target installs `.[postgres,mysql,fastmcp]` (Dockerfile line 315),
+  so the batteries-included image ships the MCP dependency too; `dev` gets it
+  transitively from `requirements/development.txt` (`fastmcp==3.4.7`). What S1
+  needs is a separate MCP **service**, not a particular build target.
 - Superset AGENTS.md mandates `pre-commit run` on changed files; the repo has a
   `.pre-commit-config.yaml` (mypy, ruff, black/oxfmt, eslint).
 
@@ -175,20 +179,26 @@ Recommended changes to the proposed approach, with evidence:
 
 | Phase | Scope | Exit criteria |
 | --- | --- | --- |
-| 0 | Repo/branch state, feasibility assessment, this plan. | Plan committed; branch strategy agreed; blockers listed. *(in progress → report sent)* |
+| 0 | Repo/branch state, feasibility assessment, this plan. | Plan committed; branch strategy agreed; blockers listed. **Complete.** |
 | 1 | Environment and scenarios: build the light stack, `superset init`, load synthetic data, script S1/S2/N1 as executable scenario definitions, confirm or refute each candidate by real reproduction. | Stack boots; S1/S2 reproduce (or are replaced); N1 returns 403 with no repair path. |
 | 2 | Portal and logging: FastAPI portal over Superset, structured JSON logs from Superset config override + portal-side action logs, log intake into SQLite. | A failing user action produces a structured log record end to end. |
 | 3 | Incident console: fingerprinting, dedup, state machine, operator console linking logs → incident → reproduction. | Repeated failures collapse into one incident, visible in the console. |
 | 4 | GitHub + Devin integration: issue create-or-reuse on the fork, Devin API session creation with a reproduction-bearing prompt, session/PR tracking. Still `AUTO_REPAIR_ENABLED=false` — dry-run recorded, no paid sessions. | Controller produces the exact issue body and API payload it would send, stored and shown in the console. |
 | 5 | Independent verification and bounded feedback: replay the scenario against the PR commit, record `verified_in_preview` / failure, return failures to the same session with the two-follow-up cap. | Verification runs against a simulated/PR commit and the cap is enforced. |
-| 6 | Live API-created repairs: flip the flag for a controlled run; real session, real PR, real verification. | At least one incident reaches `verified_in_preview` from a live session. |
+| 6 | Live API-created repairs: flip the flag for a controlled run; real sessions, real PRs, real verification. | **Two independent live remediations reach `verified_in_preview`** (the pilot target). One successful incident is an intermediate milestone, not the exit criterion. |
 | 7 | README, evidence and Loom. | Evidence bundle and walkthrough complete. |
 
 ## 6. Phase status
 
-- **Phase 0 — in progress.** Repos inspected, baseline confirmed, feasibility
-  assessed, plan written. Awaiting review before Phase 1.
-- Phases 1–7 — not started.
+- **Phase 0 — complete.** Repos inspected, baseline confirmed, feasibility
+  assessed, plan written and reviewed. Decisions approved: S2 primary / S1
+  secondary, `docker-compose-light.yml` first, `baseline-394bca5` tag and
+  `runtime-repair/baseline` branch created at the baseline commit, `master`
+  untouched.
+- **Phase 1 — complete.** Light stack built and running, synthetic fixtures
+  seeded, S2 and S1 reproduced against the baseline commit and N1 confirmed as
+  a clean denial. Artifacts in `artifacts/baseline/`. See §7b.
+- Phases 2–7 — not started.
 
 ## 7. Commands run and results (Phase 0)
 
@@ -205,21 +215,108 @@ Recommended changes to the proposed approach, with evidence:
 No Superset build, no Superset code change, no Devin API call, and no paid
 session were made in this phase.
 
+## 7b. Phase 1 results
+
+### Stack
+
+| Fact | Value |
+| --- | --- |
+| Compose | `docker-compose-light.yml` + `stack/docker-compose.ports.yml` (publishes 8088; adds the MCP sidecar) |
+| Cold image build | `docker compose -f docker-compose-light.yml build superset-light` — **1m 08s** (log: `/home/ubuntu/artifacts/build_light.log`) |
+| Stack start | `up -d superset-light` — 34s to healthy (`/health` → 200) |
+| Frontend build | **not started** — the REST and MCP reproductions do not need it |
+| Container Python | 3.11.14 (web and MCP containers) |
+| `SUPERSET_CONFIG_PATH` | `/app/docker/pythonpath_dev/superset_config_docker_light.py` |
+| `CACHE_CONFIG` / `DATA_CACHE_CONFIG` | `SimpleCache`, TTL 300, prefix `superset_light_` (the light config overrides the Redis default; the light stack runs no Redis) |
+| `EXPLORE_FORM_DATA_CACHE_CONFIG` | `SupersetMetastoreCache`, TTL 604800, `JsonKeyValueCodec` — **Postgres `key_value` table**, inherited from `superset/config.py`, not overridden by the light config |
+| `FILTER_STATE_CACHE_CONFIG` | `SupersetMetastoreCache`, TTL 7776000, `JsonKeyValueCodec` — same metastore backend |
+| `RESULTS_BACKEND` | `FileSystemCache` at `/app/superset_home/sqllab` |
+
+Because the two temporary-cache configs are metastore-backed, S2's state is
+durable in Postgres and survives container restarts — the reproduction is not
+an artifact of an in-process cache.
+
+### S2 — REPRODUCED (primary)
+
+One cookie session, non-empty `tab_id=991177`, plain REST:
+create A → `K1` → `GET K1` 200 → `DELETE K1` 200 → `GET K1` **404** →
+create B → `K2` **== K1** → `GET K1` returns exploration **B**.
+
+The deleted key is handed out again and resurrects. Mechanism (hypothesis 1,
+confirmed, REST-only): `POST /api/v1/explore/form_data` reads `tab_id` from the
+query string and stores a contextual mapping
+`cache_key(session_id, tab_id, datasource_id, chart_id, datasource_type) → key`,
+but `ExploreFormDataRestApi.delete` builds `CommandParameters(key=key)` with no
+`tab_id`, so `DeleteFormDataCommand` deletes the mapping for `tab_id=None` and
+leaves the real one behind. Direct evidence: after the delete, one
+`superset_metastore_cache` row (the stale mapping) remains in `key_value`.
+
+The MCP session-id override (`MCPCreateFormDataCommand._get_session_id`) is a
+separate hypothesis and plays no part here — the MCP service is not involved.
+
+### S1 — REPRODUCED, narrower than the candidate (secondary)
+
+MCP `generate_chart` (saved, `row_limit=137`, `color_scheme='googleCategory10c'`)
+followed by `update_chart` with a config that only adds `sort_by`:
+**`row_limit` 137 → 1000**, `color_scheme` **preserved**.
+
+`update_chart` re-validates the caller's config into a fresh `TableChartConfig`
+and rebuilds `form_data`, so omitted fields take pydantic defaults.
+`row_limit: int = Field(1000)` is non-optional and always overwrites the stored
+value; `color_scheme` defaults to `None` and `add_color_scheme` only writes the
+key when truthy, so the stored scheme survives. The loss is therefore
+field-dependent — the incident should be framed as "omitted `row_limit` is
+reset", not "omitted settings are reset".
+
+MCP service facts: no compose file at this revision defines one, so it runs as
+the `superset-mcp-light` sidecar on the same image
+(`superset mcp run --host 0.0.0.0 --port 5008`); `fastmcp 3.4.7` is already in
+the image; auth via `MCP_DEV_USERNAME` in `stack/superset_config_mcp.py` (kept
+in this repo so the Superset checkout stays byte-identical); the tool-search
+transform is on, so tools are invoked through the `call_tool` proxy with the
+arguments wrapped in `request`.
+
+### N1 — PASS (control)
+
+`restricted_analyst` (role `Gamma`) performs the same explore write: **403**;
+the same user's chart listing returns 200. Authorization and CSRF stayed
+enabled throughout — the only change was adding a low-privilege user. The
+event must be classified `expected_denial`: no incident, no issue, no repair.
+
+### Artifacts
+
+`artifacts/README.md` (retrieval and re-run instructions),
+`artifacts/baseline/manifest.json` (fixture/config manifest), and
+`artifacts/baseline/{S1,S2,N1}/{reproduction.md,result.json,transcript.json}`.
+Transcripts are sanitized: cookies, CSRF tokens and authorization headers are
+`<redacted>`. No screenshots — all three scenarios are API-driven.
+
+### PR-verification constraint (recorded now, enforced in Phase 5)
+
+`docker-compose-light.yml` bind-mounts `./superset` and `./docker`, so an image
+rebuilt with baseline source mounted still runs baseline code. Verification
+must use an isolated clone at the exact PR SHA under its own Compose project
+name, or drop those mounts. Every `result.json` records the executed source SHA,
+the fixture revision and whether the tree was dirty.
+
 ## 8. Blockers and required credentials
 
 Nothing is stored in this file; all values go into session/org secrets.
 
-1. `DEVIN_API_KEY` — required from Phase 4 (dry-run payload signing/validation)
-   and mandatory for Phase 6. Not present.
+Credentials are requested at the moment they are needed, not up front. Neither
+of the two below blocks Phase 1, and offline payload simulation in Phase 4 does
+not require an API key.
+
+1. `DEVIN_API_KEY` — needed only for live session creation (Phase 6). Phase 4's
+   dry-run payload construction and validation runs fully offline.
 2. `GITHUB_TOKEN` (repo scope on `woohyeokk-choi/superset` and
-   `woohyeokk-choi/devin-automation`) — required for issue create-or-reuse and
-   PR/commit status reads from the controller process. Not present.
+   `woohyeokk-choi/devin-automation`) — needed when the controller actually
+   creates/reuses issues and reads PR state (Phase 4 live path onward).
 3. Confirmation that Devin API-created sessions can clone and push to
    `woohyeokk-choi/superset` (repo must be connected to the Devin org).
-4. Unconfirmed reproduction of S1/S2 — the largest technical risk; resolved in
-   Phase 1.
-5. Cold Docker build time for the Superset dev image is unmeasured and may
-   dominate Phase 1.
+4. ~~Unconfirmed reproduction of S1/S2~~ — resolved in Phase 1: both reproduce
+   at the baseline commit (S1 narrowed to `row_limit`).
+5. ~~Cold Docker build time unmeasured~~ — 1m 08s; not a constraint.
 
 ## 9. Standing constraints
 

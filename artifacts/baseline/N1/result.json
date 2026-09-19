@@ -1,0 +1,26 @@
+{
+  "scenario_id": "N1",
+  "recorded_at": "2026-09-19T15:03:03.398724+00:00",
+  "revision": {
+    "superset_checkout": "/home/ubuntu/repos/superset",
+    "superset_sha": "394bca55c792b7b3547e23f6e175a7cb0f0757e8",
+    "superset_describe": "baseline-394bca5",
+    "superset_dirty": "no",
+    "automation_sha": "48487ef758340006b8ee843951d6c608aab2f6a1"
+  },
+  "title": "Expected permission denial stays denied and starts no repair",
+  "is_control": true,
+  "restricted_user": "restricted_analyst",
+  "role": "Gamma",
+  "dataset_id": 1,
+  "denial_status": 403,
+  "denied_as_expected": true,
+  "allowed_action_status": 200,
+  "classification": "expected_denial",
+  "should_create_incident": false,
+  "expected": "403 (or equivalent denial) with no incident and no repair path",
+  "observed": "HTTP 403 on the restricted explore write",
+  "authorization_disabled": false,
+  "csrf_disabled": false,
+  "user_creation_output": "2026-09-19 15:03:02,269:WARNING:superset.extensions.discovery:Extensions path does not exist or is empty: /app/docker/extensions"
+}

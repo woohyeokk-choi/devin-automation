@@ -1,0 +1,51 @@
+# Overlay for the Superset light stack used by the runtime-repair scenarios.
+#
+# Two additions, both kept out of the Superset fork so the checkout stays
+# byte-identical to the revision under test:
+#   1. publish the Flask port of `superset-light` (docker-compose-light.yml
+#      publishes only the frontend dev server);
+#   2. run the MCP service as an explicit sidecar — the baseline revision has no
+#      MCP service in any compose file, and scenario S1 drives it.
+#
+# Host paths are absolute because Compose resolves relative paths against the
+# project directory (the Superset checkout), not against this file.
+#
+# Usage (from the Superset checkout):
+#   docker compose -f docker-compose-light.yml \
+#     -f /home/ubuntu/repos/devin-automation/stack/docker-compose.ports.yml \
+#     up -d superset-light superset-mcp-light
+services:
+  superset-light:
+    ports:
+      - "${SUPERSET_PORT_HOST:-8088}:8088"
+
+  superset-mcp-light:
+    image: superset-superset-light
+    command: ["superset", "mcp", "run", "--host", "0.0.0.0", "--port", "5008"]
+    restart: unless-stopped
+    user: root
+    env_file:
+      - path: /home/ubuntu/repos/superset/docker/.env
+        required: true
+      - path: /home/ubuntu/repos/superset/docker/.env-local
+        required: false
+    depends_on:
+      superset-light:
+        condition: service_started
+    ports:
+      - "${SUPERSET_MCP_PORT_HOST:-5008}:5008"
+    volumes:
+      - /home/ubuntu/repos/superset/docker:/app/docker
+      - /home/ubuntu/repos/superset/superset:/app/superset
+      - /home/ubuntu/repos/devin-automation/stack:/app/automation_stack
+      - superset_home_light:/app/superset_home
+    environment:
+      DATABASE_HOST: db-light
+      DATABASE_DB: superset_light
+      POSTGRES_DB: superset_light
+      SUPERSET_CONFIG_PATH: /app/automation_stack/superset_config_mcp.py
+      PYTHONPATH: /app/pythonpath:/app/docker/pythonpath_dev:/app/automation_stack
+
+volumes:
+  superset_home_light:
+    external: false

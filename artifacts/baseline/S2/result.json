@@ -1,0 +1,46 @@
+{
+  "scenario_id": "S2",
+  "recorded_at": "2026-09-19T15:03:40.968012+00:00",
+  "revision": {
+    "superset_checkout": "/home/ubuntu/repos/superset",
+    "superset_sha": "394bca55c792b7b3547e23f6e175a7cb0f0757e8",
+    "superset_describe": "baseline-394bca5",
+    "superset_dirty": "no",
+    "automation_sha": "48487ef758340006b8ee843951d6c608aab2f6a1"
+  },
+  "title": "Deleted explore form-data key is reused by the next exploration",
+  "reproduced": true,
+  "tab_id": "991177",
+  "dataset_id": 1,
+  "keys": {
+    "k1": "pkfdb3k84e7Sia46-DqETw",
+    "k2": "pkfdb3k84e7Sia46-DqETw",
+    "reused": true
+  },
+  "delete_status": 200,
+  "absence_status_after_delete": 404,
+  "k1_resurrected_after_create_b": true,
+  "expected": "K2 is a fresh key; K1 stays deleted and keeps returning 404 regardless of later explorations in the same tab",
+  "observed": "K2 == K1 (True); after the second exploration the deleted key resolves again (resurrected=True) and now serves the new exploration's form data",
+  "mechanism": "POST /api/v1/explore/form_data reads tab_id from the query string and stores a contextual mapping cache_key(session_id, tab_id, datasource_id, chart_id, datasource_type) -> key. DELETE /api/v1/explore/form_data/<key> builds CommandParameters(key=key) without tab_id, so the delete command deletes the contextual mapping for tab_id=None and leaves the real mapping in place. The next create finds that stale mapping and hands out the deleted key again.",
+  "code_paths": [
+    "superset/explore/form_data/api.py::ExploreFormDataRestApi.delete",
+    "superset/commands/explore/form_data/delete.py::DeleteFormDataCommand.run",
+    "superset/commands/explore/form_data/create.py::CreateFormDataCommand.run",
+    "superset/temporary_cache/utils.py::cache_key"
+  ],
+  "metastore_key_value_rows_after_delete": [
+    "superset_metastore_cache | c6288dde-e39d-3c8a-9d14-1fc3a6626948",
+    "superset_metastore_cache | 49927661-4891-3a83-ae8d-ffff053ec4ce",
+    "superset_metastore_cache | abcb778d-c674-3ccf-9e4e-f182edf2ab6a",
+    "superset_metastore_cache | 6d26d53d-7a31-360e-a1e0-068532d62eda",
+    "superset_metastore_cache | 0ae9f813-6bfe-3e54-8f31-63ae75c37f3b",
+    "superset_metastore_cache | 5d3b8598-081b-32f7-b6ee-41e122d31a79",
+    "superset_metastore_cache | 6fe8131c-d983-3ac0-963c-5515c59b0106",
+    "superset_metastore_cache | f46ceab1-3d0b-398c-92d9-352d6460d6a9",
+    "superset_metastore_cache | ddbd9025-1edb-3276-84d2-f0c19a69060d",
+    "superset_metastore_cache | cdb2a4f8-4e7a-32c5-86df-1f30af6cf5fc",
+    "superset_metastore_cache | b1bb79eb-246a-373a-a3f5-d0744512b75d"
+  ],
+  "cache_backend": "SupersetMetastoreCache (key_value table, Postgres)"
+}
