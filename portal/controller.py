@@ -93,6 +93,15 @@ CREATE TABLE IF NOT EXISTS repair_slot (
     repair_id  INTEGER NOT NULL,
     claimed_at TEXT NOT NULL
 );
+
+-- The run this state belongs to. Written once, on first use, so a restart
+-- configured differently is a refusal rather than a second issue and a
+-- second paid session for work this state already owns.
+CREATE TABLE IF NOT EXISTS repair_run (
+    slot       INTEGER PRIMARY KEY CHECK (slot = 1),
+    namespace  TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 #: Repair states. `candidate` means a PR exists and verification has not run;
@@ -315,6 +324,36 @@ class RepairStore:
                 "DELETE FROM repair_slot WHERE slot = 1 AND repair_id = ?", (repair_id,)
             )
 
+    # --- run namespace -----------------------------------------------------
+
+    def adopt_run(self, namespace: str) -> str:
+        """Bind this state to one run namespace, and keep it bound.
+
+        A deliberate re-run of an already repaired incident needs remote
+        identity of its own, because the fingerprint of a failure is the same
+        failure however often it is replayed. That namespace is part of every
+        marker, so it has to survive a restart: a worker that came back
+        without it would reconcile against nothing and create a second issue
+        and a second session for the run it is resuming. Changing it against
+        a state that already carries one is refused rather than merged.
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO repair_run (slot, namespace, created_at) "
+                "VALUES (1, ?, ?)",
+                (namespace, utcnow()),
+            )
+            row = self._conn.execute(
+                "SELECT namespace FROM repair_run WHERE slot = 1"
+            ).fetchone()
+        stored = str(row["namespace"]) if row else ""
+        if stored != namespace:
+            raise ValueError(
+                f"this state belongs to run {stored or '(production)'}, "
+                f"not {namespace or '(production)'}"
+            )
+        return stored
+
     # --- creation intent ---------------------------------------------------
 
     def intend(self, repair_id: int, kind: str, marker: str) -> tuple[dict[str, Any], bool]:
@@ -383,6 +422,7 @@ class Controller:
         incident_of: Callable[[int], dict[str, Any] | None] | None = None,
         verifier: Any = None,
         stale_after_minutes: int = 15,
+        run: str = "",
     ) -> None:
         if dispatch_enabled and (github is None or devin is None):
             # Missing live configuration is a refusal to dispatch, never a
@@ -402,6 +442,7 @@ class Controller:
         self.incident_of = incident_of or (lambda _id: None)
         self.verifier = verifier
         self.stale_after_minutes = stale_after_minutes
+        self.run = store.adopt_run(run)
 
     # --- proposal ----------------------------------------------------------
 
@@ -514,9 +555,14 @@ class Controller:
 
     def _propose(self, incident: dict[str, Any]) -> dict[str, Any]:
         attempt = 1
-        body = brief.issue_body(incident, attempt, self.versions)
+        body = brief.issue_body(incident, attempt, self.versions, self.run)
         request = brief.session_request(
-            incident, attempt, self.versions, issue_url="", acu_limit=self.budget.acu_limit
+            incident,
+            attempt,
+            self.versions,
+            issue_url="",
+            acu_limit=self.budget.acu_limit,
+            run=self.run,
         )
         # The clock starts when paid work does, not when a disabled proposal
         # is written: an empty deadline means "never activated".
@@ -526,7 +572,7 @@ class Controller:
                 "incident_id": int(incident["id"]),
                 "state": PROPOSED,
                 "attempt": attempt,
-                "issue_title": brief.issue_title(incident),
+                "issue_title": brief.issue_title(incident, self.run),
                 "issue_body": body,
                 "session_request": json.dumps(request, indent=2),
                 "acu_limit": self.budget.acu_limit,
@@ -543,7 +589,7 @@ class Controller:
         if self.github is None or self.devin is None:
             return Decision("skipped", "no live providers configured")
         attempt = int(repair["attempt"])
-        mark = brief.marker(incident, attempt)
+        mark = brief.marker(incident, attempt, self.run)
         try:
             issue_url = repair["issue_url"] or self._ensure_issue(repair, mark)
             self.store.update(repair_id, issue_url=issue_url)
@@ -621,6 +667,7 @@ class Controller:
             self.versions,
             issue_url,
             acu_limit=int(repair["acu_limit"]),
+            run=self.run,
         )
         self.store.update(int(repair["id"]), session_request=json.dumps(request, indent=2))
         try:
@@ -945,7 +992,8 @@ class Controller:
         # finds a confirmed intent and says nothing twice; a new commit is a
         # new marker and may be answered once.
         sha = candidate_sha or str(repair["pr_head_sha"] or "")
-        mark = f"{repair['fingerprint']}:{sha or 'no-sha'}:follow-up"
+        scope = f"{self.run}:" if self.run else ""
+        mark = f"{scope}{repair['fingerprint']}:{sha or 'no-sha'}:follow-up"
         intent, claimed = self.store.intend(repair_id, "message", mark)
         if intent["state"] == CONFIRMED:
             return Decision("skipped", "this follow-up was already delivered", repair_id)

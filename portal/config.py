@@ -63,6 +63,13 @@ class Settings:
         default_factory=lambda: _env("PORTAL_ENVIRONMENT_KIND", "baseline-light")
     )
     run_id: str = field(default_factory=lambda: _env("PORTAL_RUN_ID", "local"))
+    #: Namespace for a deliberate re-run of an already repaired incident. It
+    #: joins every issue/session marker, so the replay gets its own remote
+    #: objects instead of reconciling onto the original run's. Empty in
+    #: production, where a fingerprint should reuse what it already created.
+    run_namespace: str = field(
+        default_factory=lambda: _env("PORTAL_RUN_NAMESPACE", "")
+    )
     ops_username: str = field(
         default_factory=lambda: _env("PORTAL_OPS_USERNAME", "operator")
     )

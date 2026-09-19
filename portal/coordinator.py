@@ -149,6 +149,10 @@ def build_worker(
         web_port=config.verification_web_port,
         mcp_port=config.verification_mcp_port,
         incident_of=opened.incidents.get,
+        # A deliberate re-run of an already repaired incident carries its own
+        # namespace, so its issue and session are its own instead of the
+        # originals this fingerprint already created. The state remembers it.
+        run=config.run_namespace,
     )
     # Slack lives here and nowhere else: this process already holds the
     # credentials, and a webhook must never reach the portal container, a
@@ -331,7 +335,12 @@ def run() -> int:
         recovered = worker.catch_up()
         print(
             json.dumps(
-                {"coordinator": "running", "recovered_notifications": recovered, **report},
+                {
+                    "coordinator": "running",
+                    "run": worker.controller.run or "(production)",
+                    "recovered_notifications": recovered,
+                    **report,
+                },
                 indent=2,
             ),
             flush=True,

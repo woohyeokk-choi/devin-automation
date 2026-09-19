@@ -280,6 +280,66 @@ def test_a_restart_reuses_the_issue_and_session_it_already_created(
     assert len(second.github_api.issues) == 1
 
 
+def test_a_rerun_of_a_repaired_incident_does_not_adopt_the_original_objects(
+    repairs: RepairStore, incident: dict[str, Any], tmp_path: Path
+) -> None:
+    """The same failure, replayed on purpose, gets its own issue and session.
+
+    A fingerprint is the failure, not the occasion, so a demonstration re-run
+    of an incident that was already repaired reconciles straight onto the
+    first run's remote objects unless the run says who it is.
+    """
+    original = Wiring(repairs)
+    original.dispatch(incident)
+
+    rerun = Wiring(RepairStore(tmp_path / "rerun.sqlite"), run="fresh-demo-1")
+    rerun.github_api.issues = original.github_api.issues
+    rerun.devin_api.sessions = original.devin_api.sessions
+    assert rerun.dispatch(incident).action == "dispatched"
+    assert len(rerun.github_api.issues) == 2
+    assert len(rerun.devin_api.sessions) == 2
+    body = rerun.github_api.issues[-1]["body"]
+    assert brief.marker(incident, 1, "fresh-demo-1") in body
+    assert "fresh-demo-1" in rerun.github_api.issues[-1]["title"]
+    assert "repaired once before" in body
+
+
+def test_a_rerun_resumes_its_own_objects_after_a_restart(
+    incident: dict[str, Any], tmp_path: Path
+) -> None:
+    store = RepairStore(tmp_path / "run.sqlite")
+    first = Wiring(store, run="fresh-demo-1")
+    first.dispatch(incident)
+
+    second = Wiring(RepairStore(tmp_path / "run.sqlite"), run="fresh-demo-1")
+    second.github_api.issues = first.github_api.issues
+    second.devin_api.sessions = first.devin_api.sessions
+    assert second.dispatch(incident).action == "in_flight"
+    assert len(second.devin_api.sessions) == 1
+
+
+def test_a_state_keeps_the_run_it_was_started_under(tmp_path: Path) -> None:
+    store = RepairStore(tmp_path / "run.sqlite")
+    assert store.adopt_run("fresh-demo-1") == "fresh-demo-1"
+    assert store.adopt_run("fresh-demo-1") == "fresh-demo-1"
+    # Coming back without it would create a second issue and a second paid
+    # session for the run this state is already in the middle of.
+    with pytest.raises(ValueError):
+        store.adopt_run("")
+    with pytest.raises(ValueError):
+        RepairStore(tmp_path / "run.sqlite").adopt_run("fresh-demo-2")
+
+
+def test_production_markers_are_unchanged_by_the_run_option(
+    incident: dict[str, Any]
+) -> None:
+    assert brief.marker(incident, 1) == (
+        f"runtime-repair:{incident['fingerprint']}:attempt-1"
+    )
+    assert brief.issue_title(incident).startswith("[runtime-repair] ")
+    assert "Demonstration run" not in brief.issue_body(incident, 1, VERSIONS)
+
+
 def test_an_ambiguous_create_that_landed_is_reconciled_by_its_marker(
     repairs: RepairStore, incident: dict[str, Any]
 ) -> None:

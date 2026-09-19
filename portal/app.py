@@ -114,6 +114,7 @@ controller = build_controller(
     # queued proposal, rather than carrying it from the request that observed
     # the failure.
     incident_of=lambda incident_id: incidents.get(incident_id),
+    run=settings.run_namespace,
 )
 # Network work belongs off the request path: polling a session, and resolving
 # a creation claim whose worker died, happen on this timer.

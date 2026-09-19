@@ -96,14 +96,20 @@ OUTPUT_SCHEMA: dict[str, Any] = {
 }
 
 
-def marker(incident: dict[str, Any], attempt: int) -> str:
+def marker(incident: dict[str, Any], attempt: int, run: str = "") -> str:
     """Durable identity for one dispatch attempt, echoed into the remote object.
 
     The controller writes this before it calls anything. After a crash or an
     ambiguous timeout it searches for this string instead of creating a second
     issue or a second session.
+
+    A run namespace separates one deliberate re-run of a known incident from
+    the original: the fingerprint is the same failure and must stay the same,
+    so without a namespace this attempt would reconcile onto the issue and
+    session the first run created. Production leaves it empty.
     """
-    return f"runtime-repair:{incident['fingerprint']}:attempt-{attempt}"
+    scope = f"{run}:" if run else ""
+    return f"runtime-repair:{scope}{incident['fingerprint']}:attempt-{attempt}"
 
 
 def _contract(incident: dict[str, Any]) -> str:
@@ -121,9 +127,11 @@ def _contract(incident: dict[str, Any]) -> str:
     )
 
 
-def issue_body(incident: dict[str, Any], attempt: int, versions: dict[str, Any]) -> str:
+def issue_body(
+    incident: dict[str, Any], attempt: int, versions: dict[str, Any], run: str = ""
+) -> str:
     events, gaps = bundle_events(incident)
-    return f"""{reproduction_markdown(incident, events, gaps, versions)}
+    return f"""{_rerun_note(run)}{reproduction_markdown(incident, events, gaps, versions)}
 
 ## Contract
 
@@ -131,15 +139,47 @@ def issue_body(incident: dict[str, Any], attempt: int, versions: dict[str, Any])
 |---|---|---|
 {_contract(incident)}
 
-<!-- {marker(incident, attempt)} -->
+<!-- {marker(incident, attempt, run)} -->
 """
 
 
-def issue_title(incident: dict[str, Any]) -> str:
-    return f"[runtime-repair] {incident['title']}"
+def _rerun_note(run: str) -> str:
+    """Say, in the object itself, that a run is a repeat of a known failure."""
+    if not run:
+        return ""
+    return (
+        f"> Demonstration run `{run}`. This failure was diagnosed and repaired "
+        "once before, so this is a rehearsal of the pipeline on a known "
+        "defect, not a newly discovered one. The evidence below was captured "
+        "by this run.\n\n"
+    )
 
 
-def prompt(incident: dict[str, Any], attempt: int, versions: dict[str, Any], issue_url: str) -> str:
+def _prompt_rerun_note(run: str) -> str:
+    if not run:
+        return ""
+    return (
+        f"\nThis is demonstration run `{run}` of an incident that was "
+        "diagnosed and repaired once before: a known defect, replayed to "
+        "exercise the pipeline. Repository context about the earlier repair "
+        "may exist and you may read it, but reproduce the failure yourself "
+        "from the evidence below before changing anything, and say in your "
+        "report what you observed rather than what a previous fix did.\n"
+    )
+
+
+def issue_title(incident: dict[str, Any], run: str = "") -> str:
+    scope = f"[{run}]" if run else ""
+    return f"[runtime-repair]{scope} {incident['title']}"
+
+
+def prompt(
+    incident: dict[str, Any],
+    attempt: int,
+    versions: dict[str, Any],
+    issue_url: str,
+    run: str = "",
+) -> str:
     events, gaps = bundle_events(incident)
     automation = automation_pin(versions)
     evidence = [
@@ -148,7 +188,7 @@ def prompt(incident: dict[str, Any], attempt: int, versions: dict[str, Any], iss
     return f"""A user action in a synthetic-data analytics portal fails against
 Apache Superset at a fixed baseline commit. Reproduce it, fix the product
 code, and open a pull request.
-
+{_prompt_rerun_note(run)}
 {('Tracking issue: ' + issue_url) if issue_url else 'No tracking issue was created.'}
 
 ## Incident
@@ -217,13 +257,19 @@ def session_request(
     issue_url: str,
     *,
     acu_limit: int,
+    run: str = "",
 ) -> dict[str, Any]:
     """The exact v3 create-session body, recorded whether or not it is sent."""
     return {
-        "prompt": prompt(incident, attempt, versions, issue_url),
-        "title": f"[runtime-repair] {incident['title']}",
+        "prompt": prompt(incident, attempt, versions, issue_url, run),
+        "title": issue_title(incident, run),
         "repos": [incident["target_repo"]],
-        "tags": ["runtime-repair", incident["fingerprint"], marker(incident, attempt)],
+        "tags": [
+            "runtime-repair",
+            *([run] if run else []),
+            incident["fingerprint"],
+            marker(incident, attempt, run),
+        ],
         "max_acu_limit": acu_limit,
         "structured_output_required": True,
         "structured_output_schema": OUTPUT_SCHEMA,
