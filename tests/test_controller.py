@@ -824,6 +824,33 @@ def test_a_session_without_this_attempts_tag_is_never_adopted(
     assert devin.find_tagged(mark) is None
 
 
+def test_a_live_shaped_session_id_is_adopted_after_an_ambiguous_create(
+    wiring: Wiring, incident: dict[str, Any]
+) -> None:
+    """The v3 API answers with a bare identifier, not a `devin-` prefixed one.
+
+    Reconciliation that only recognised the prefixed spelling would miss the
+    session it had just created and open a second paid one.
+    """
+    mark = brief.marker(incident, 1)
+    bare = "fe54a690c0f146a6ad19f87e5b9a6d7e"
+    wiring.devin_api.sessions[bare] = {
+        "session_id": bare,
+        "url": f"https://app.devin.ai/sessions/{bare}",
+        "status": "running",
+        "status_detail": "working",
+        "acus_consumed": 0,
+        "pull_requests": [],
+        "structured_output": None,
+        "tags": ["runtime-repair", mark],
+    }
+    devin = Devin(wiring.devin_wire, api_key="cog_simulated", org_id="org-simulated")
+
+    found = devin.find_tagged(mark)
+
+    assert found is not None and found.session_id == bare
+
+
 def test_a_pull_request_is_not_reused_as_the_tracking_issue(
     wiring: Wiring, incident: dict[str, Any]
 ) -> None:

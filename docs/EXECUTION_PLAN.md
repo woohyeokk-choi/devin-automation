@@ -733,6 +733,32 @@ and the 401 vs 403 split.
 3. A first live dispatch with the flag on, then a real candidate PR run
    through the verifier on a machine with Docker headroom for a second stack.
 
+### Phase 6 preflight (read-only, no live creation)
+
+Run at `d4a0785` plus the session-id fix below. Nothing was created: no issue,
+no session, no message, no paid call.
+
+| Check | Result |
+| --- | --- |
+| Devin v3 auth (`cog_` service-user key, `org-6636418ab2fc4768997020264518843c`) | `GET /sessions` 200; documented `first`/`items` pagination answers |
+| Sessions tagged `runtime-repair` | none — reconciliation starts from an empty set |
+| `max_acu_limit` in a session read | absent; the API does not report a per-session cap back, so the limit is only what the create body asks for |
+| GitHub reads on `woohyeokk-choi/superset` | issues 200, pulls 200, `runtime-repair/baseline` = `394bca55c792b7b3547e23f6e175a7cb0f0757e8` |
+| GitHub writes (issue create, automation branch push) | unproven by reads; `GET /user` is 403 for this app credential and repository `permissions` report false. Not inferred from a successful read |
+| Coordinator host capability | `python3 -m portal.coordinator check` with `PORTAL_DATA_DIR`, `PORTAL_AUTOMATION_DIR`, `PORTAL_VERIFICATION_WORKSPACE`, `PORTAL_BASELINE_SHA` → `can_verify=true`, `dispatch_enabled=false` |
+| Shared-state handoff at published code | `scripts/check_shared_state.py` over a scratch directory: portal container proposes, host coordinator claims, `trace_events {"shared-trace": 2}`, prompt carries the request/response summary |
+| Baseline services | web `/health` 200, portal `/healthz` 200, MCP answers; the baseline project's MCP container still shows Docker `unhealthy` because it was created before the overlay probe fix — candidate stacks use the fixed overlay |
+
+One preflight blocker was found and fixed: the v3 API returns a bare
+32-character session id, and `Devin.find_tagged` only recognised the
+`devin-` spelling, so reconciliation after an ambiguous create would have
+missed the session it had just paid for and opened a second one. Both
+spellings are now accepted and nothing else is
+(`test_a_live_shaped_session_id_is_adopted_after_an_ambiguous_create`).
+
+Live launch stays blocked on confirmed GitHub issue-create/push permission for
+the coordinator's credential and the service user's `ManageOrgSessions`.
+
 ## 8. Blockers and required credentials
 
 Nothing is stored in this file; all values go into session/org secrets.

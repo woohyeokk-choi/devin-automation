@@ -11,6 +11,7 @@ event, a bundle, the console or a stored request copy.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Iterator
 
@@ -24,6 +25,17 @@ DEVIN_API = "https://api.devin.ai"
 DEVIN_KEY_PREFIX = "cog_"
 DEVIN_ORG_PREFIX = "org-"
 DEVIN_SESSION_PREFIX = "devin-"
+#: The v3 API answers with a bare 32-character identifier; the same session is
+#: written `devin-<id>` elsewhere. Both name one session.
+DEVIN_BARE_SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
+
+
+def names_a_session(session_id: str) -> bool:
+    """Either spelling of a session identifier, and nothing else."""
+    return bool(session_id) and (
+        session_id.startswith(DEVIN_SESSION_PREFIX)
+        or bool(DEVIN_BARE_SESSION_ID.match(session_id))
+    )
 
 
 class NotConfigured(Exception):
@@ -299,8 +311,6 @@ class Devin:
         does not actually carry this attempt's marker.
         """
         for session in self.sessions_tagged(tag):
-            if tag in session.tags and session.session_id.startswith(
-                DEVIN_SESSION_PREFIX
-            ):
+            if tag in session.tags and names_a_session(session.session_id):
                 return session
         return None
