@@ -594,7 +594,7 @@ usable, not entirely healthy. Recorded in `artifacts/phase4/bootstrap/`.
 | Phase 4 bootstrap called "clean" while its own provenance said `checkout_dirty=true` | The historical evidence and its `provenance.json` are unchanged; `artifacts/phase4/bootstrap/README.md` carries a correction. New evidence in `artifacts/phase5/bootstrap/` is a fresh clone of pushed automation code (`c7ba960`, clean) and Superset at `394bca5` (clean), in its own Compose project `phase5check` on ports 8288/5208/8290. |
 | MCP container `unhealthy` | The sidecar inherited the *web* image's healthcheck (`docker/docker-healthcheck.sh` → `/health`), a route the MCP listener does not serve. The overlay replaces it with an MCP `initialize` against `127.0.0.1:5008/mcp` requiring `serverInfo`. The container reports `healthy`. Independently, `portal.validator.mcp_readiness` speaks `initialize` + `tools/list` before S1 runs: server `Superset MCP Server 3.4.7`, protocol `2025-06-18`, tools `get_instance_info, health_check, search_tools, call_tool`. |
 | Restricted 401 treated as an expected denial | `SupersetGateway` classifies 401 as `blocked` with structured `authentication_failure` metadata, and only 403 from the restricted profile as `expected_denial`. The N1 validator case blocks on any 401 and on any 5xx, since neither answers the authorization question. |
-| Provenance strength claimed rather than measured | `portal/measure.py` measures each service the verification actually uses: container/image/compose identity, the hash of the Python tree *inside* the container, the host path its mount points at and that tree's hash, checkout SHA and dirty flag, config-file revision, fixture table row count and content digest, plus `measured_at` and the selected automation ref. A candidate whose measured source hash or SHA disagrees with the head under test is blocked, not passed. |
+| Provenance strength claimed rather than measured | `portal/measure.py` measures each service the verification actually uses: container/image/compose identity, the hash of the Python tree *inside* the container, the host path its mount points at and that tree's hash, checkout SHA and dirty flag, config-file revision, and a fixture digest over the region/channel/product revenue aggregate the chart-data API returns (its row count is that grouped projection, not the seeded records), plus `measured_at` and the selected automation ref. A candidate whose measured source hash or SHA disagrees with the head under test is blocked, not passed. |
 
 ### The verification loop
 
@@ -643,7 +643,7 @@ with 403.
 | `provenance_problem` accepted `source_mount="/tmp/candidate-other/superset"` for `checkout="/tmp/candidate"`, `clean` omitted, `measured_at="not-a-time"` and no container measurements at all | Fail-closed throughout: mounts are compared by resolved path ancestry (a lookalike sibling is rejected), `clean` must be exactly `True`, `measured_at` must parse, be no older than 6 hours and not be in the future, both web and MCP must report container id, image id, `running` state, a non-`unhealthy` health, a mount inside the candidate checkout, a source SHA equal to the tested head, and a `code_hash` equal to the trusted checkout's. Automation ref, config revision and fixture content must be present. An absent measurement is never a true one. |
 | `check_scope(["superset/config.py"])` was allowed, since every `superset/` and `tests/` path was | Scope is per failure family (`SCOPE_BY_FAMILY`): the form-data/key-value tree for the discarded-key defect, the chart/MCP tree for the row-limit defect. Global configuration, app startup, initialization and authentication, CI, Docker bootstrap, dependencies, fixtures, the validator and the automation repository are rejected outright, and an unregistered family falls back to review-required. A test-only diff is rejected too. This is a path boundary and nothing more: it does not prove the change is semantically safe. |
 | `IsolatedStack._seed` omitted the Compose namespace, so `seed_synthetic.py` defaulted to the baseline `superset` project | `_seed` passes `SUPERSET_COMPOSE_PROJECT`, `COMPOSE_PROJECT_NAME` and the derived `-db-light-1` / `-superset-light-1` container names. The restricted Gamma user is created idempotently by the published seed (`ensure_restricted_user`), which N1 imports rather than duplicating; no manual rescue command is involved. A failed preparation takes down only that candidate project and removes only its checkout. |
-| The Dockerized portal has no git or Docker CLI, yet the in-app worker builds `IsolatedStack` from host subprocesses | `portal/coordinator.py` documents and implements the split: the portal container observes, records incidents and writes proposals with `AUTO_REPAIR_ENABLED=false` and no git, Docker or repair credential; a trusted **host coordinator** with `AUTO_REPAIR_ENABLED=true` owns git, Docker, the candidate workspace and the controller credentials, and drains the same durable SQLite state. `python3 -m portal.coordinator capability` reports what the hosting process can actually do (`can_verify`), so the portal's honest answer is `false` rather than a runtime crash. Candidate containers still get no socket and no credential. |
+| The Dockerized portal has no git or Docker CLI, yet the in-app worker builds `IsolatedStack` from host subprocesses | `portal/coordinator.py` documents and implements the split: the portal container observes, records incidents and writes proposals with `AUTO_REPAIR_ENABLED=false` and no git, Docker or repair credential; a trusted **host coordinator** with `AUTO_REPAIR_ENABLED=true` owns git, Docker, the candidate workspace and the controller credentials, and drains the same durable SQLite state. `python3 -m portal.coordinator check` reports what the hosting process can actually do (`can_verify`), so the portal's honest answer is `false` rather than a runtime crash. Candidate containers still get no socket and no credential. |
 
 ### Integrated baseline run through `IsolatedStack.prepare()`
 
@@ -655,9 +655,13 @@ fresh clean checkout of published automation `58ab5be`:
   database, cache and volumes; the baseline stack was untouched.
 - `provenance_problem` empty: clean checkout at the tested commit, equal
   `code_hash` on the host and inside both containers, MCP `healthy`, fixture
-  measured as 60 rows read back through the chart-data API.
+  digested through the chart-data API as 60 grouped rows — the
+  region/channel/product revenue aggregate of the 600 seeded records, not the
+  records themselves.
 - Exit code 1 — a product-contract failure, not a blocked run: the same three
-  baseline defects, with every setup and control check holding and N1 passing.
+  failing target assertions, with every setup and control check holding and N1
+  passing. They come from **two** defects: S2's discarded form-data key shows
+  up twice, on save and on the stale link, and S1's row-limit reset once.
 - Cleanup left no candidate container, volume or workspace directory.
 
 Two real automation defects surfaced only because this path was actually run:
@@ -672,6 +676,11 @@ checkout whose bytecode the container had written as root. Both are fixed.
 | --- | --- |
 | `coordinator.run` opened `IncidentStore` without its event log, so `IncidentStore.get` returned `trace_events={}` and a coordinator-built handoff carried failing assertions with no request sequence | `portal.coordinator.open_state` opens all four stores as one thing, attaches the shared `EventStore` and drains it (catch-up covers an observer that died mid-write); `build_worker` is what `run` itself uses, so the production path and the tests share the wiring. Its `providers` argument lets injected clients travel that same path. |
 | `stack/docker-compose.portal.yml` mounted the named volume `portal_data:/data` while the coordinator documented a shared host directory — the portal's queue and the coordinator's could silently be two queues | The mount is `${PORTAL_DATA_DIR:?...}:/data`, required rather than defaulted, and the named volume is gone. Both processes write those SQLite files, so the container runs as `${PORTAL_UID:-10001}:${PORTAL_GID:-10001}`: files created 0644 by one uid are read-only to the other. The portal's `AUTO_REPAIR_ENABLED` is fixed to `false` in the Compose file instead of passed through, so sourcing a shared `.env` cannot turn the container into a second dispatcher. Credentials stay in the coordinator's environment and no Docker socket is mounted. |
+
+Enabling dispatch also needs two things on the target fork that the
+controller does not create: **Issues** enabled, and a `runtime-repair` label
+for the issues it opens or reuses. Both are in place on
+`woohyeokk-choi/superset`; another fork needs them created first.
 
 `artifacts/phase5/wiring/` — the real portal image, `--network none`, running
 as the coordinator's uid, recorded an upstream call, a failed assertion and a

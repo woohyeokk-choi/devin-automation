@@ -16,8 +16,9 @@ prepared by hand, and no `run.sh` wrapper stood in for the code path.
 Exit code 1 is a product-contract failure, not a blocked run. `provenance_problem`
 was empty: the checkout was clean and at the tested commit, both containers ran
 the candidate source (equal `code_hash` inside each container and on the host),
-the MCP sidecar reported `healthy`, and the fixture was measured by reading its
-60 rows back through the chart-data API.
+the MCP sidecar reported `healthy`, and the fixture was measured through the
+chart-data API as 60 grouped rows — the region/channel/product revenue
+aggregate of the 600 seeded records, not the records themselves.
 
 ## What the validator found
 

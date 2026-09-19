@@ -145,10 +145,14 @@ def config_revision(paths: list[Path]) -> str:
 def fixture_digest(
     base_url: str, dataset_table: str, username: str, password: str
 ) -> dict[str, Any]:
-    """A digest of the fixture rows as the product itself returns them.
+    """A digest of the fixture as the product itself returns it.
 
     Read back through `/api/v1/chart/data`, not from the seed script: the
     question is what the running stack holds, and a recipe cannot answer it.
+    The query groups by region, channel and product and sums revenue, so the
+    digest covers an aggregate projection of the seeded records rather than
+    the records themselves: it detects fixture content that would change a
+    scenario's numbers, not every possible row-level difference.
     """
     try:
         client = SupersetClient(base_url)
@@ -188,8 +192,13 @@ def fixture_digest(
     return {
         "kind": "content",
         "rows": len(rows),
+        "grouping": ["region", "channel", "product"],
         "digest": hashlib.sha256(material.encode()).hexdigest()[:32],
-        "description": "sha256 of the fixture rows read back through the chart-data API",
+        "description": (
+            "sha256 of the region/channel/product revenue aggregate the "
+            "chart-data API returns for the fixture; `rows` counts that "
+            "projection, not the seeded records"
+        ),
     }
 
 

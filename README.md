@@ -216,10 +216,15 @@ durable SQLite state the portal writes to. Candidate containers get neither
 the Docker socket nor any credential.
 
 ```bash
-python3 -m portal.coordinator capability     # what this process can do
+python3 -m portal.coordinator check          # what this process can do
 python3 -m portal.coordinator baseline <superset-sha> --out result.json
 python3 -m portal.coordinator run            # drain proposals, poll, verify
 ```
+
+Two things have to exist on the target fork before dispatch is enabled, and
+the controller creates neither at run time: **Issues** enabled, and a
+`runtime-repair` label for the issues it opens or reuses. Both are in place on
+`woohyeokk-choi/superset`; on another fork, create them first.
 
 #### The shared state directory
 
@@ -263,7 +268,9 @@ python3 -m portal.coordinator baseline 394bca55c792b7b3547e23f6e175a7cb0f0757e8 
 ```
 
 The validator also runs standalone, which is how it is proved to catch the
-defects it claims to:
+defects it claims to. **Two** defects are reproduced here — S2's discarded
+form-data key and S1's row-limit reset — and they fail **three** target
+assertions, because S2 is visible both on save and on the stale link:
 
 ```bash
 python3 -m portal.validator --case S2 --case S1 --case N1 \
@@ -280,9 +287,14 @@ nothing about a different process in a different container.
 `scripts/capture_provenance.py` measures the running container: Compose
 project/service, container and image id, a hash of the Python tree **inside**
 the container, the host path its mount points at and that tree's hash, the
-checkout SHA and dirty flag, and the fixture row count/content revision. When
+checkout SHA and dirty flag, and the fixture content revision. When
 it cannot measure, the event says `unmeasured` — a host git HEAD is never
 presented as proof of what is running.
+
+The fixture revision digests the region/channel/product revenue aggregate the
+chart-data API returns, so its `rows` count is that grouped projection (60),
+not the 600 seeded records. It catches fixture content that would move a
+scenario's numbers rather than every possible row-level difference.
 
 ## Artifacts
 
