@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sqlite3
 import sys
@@ -57,6 +58,8 @@ from .controller import (
 from .events import utcnow
 from .redaction import scrub_text
 from .transport import Ambiguous, HttpTransport, Refused, Transport, is_simulated
+
+log = logging.getLogger("portal.notify")
 
 WEBHOOK_HOST = "hooks.slack.com"
 WEBHOOK_PATH = "/services/"
@@ -93,7 +96,16 @@ CREATE TABLE IF NOT EXISTS notifications (
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS notification_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
+
+#: When this ledger started speaking for the deployment. Records older than
+#: it were reached before Slack existed here and are the backfill command's
+#: business, not a restart's.
+WATERMARK = "reconcile_since"
 
 
 def redact_webhook(text: str, webhook: str) -> str:
@@ -210,6 +222,23 @@ class NotificationLog:
                 "SELECT * FROM notifications ORDER BY id"
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def watermark(self, now: str) -> str:
+        """The instant this ledger took responsibility, written down once.
+
+        Set on first read and never moved, so a restart can tell a repair
+        that finished while the coordinator was down from one that finished
+        before any of this existed.
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO notification_meta (key, value) VALUES (?, ?)",
+                (WATERMARK, now),
+            )
+            row = self._conn.execute(
+                "SELECT value FROM notification_meta WHERE key = ?", (WATERMARK,)
+            ).fetchone()
+        return str(row["value"])
 
     def totals(self) -> dict[str, int]:
         with self._lock:
@@ -529,6 +558,63 @@ def message_for(
             f"{_links(repair)}",
         )
     return None
+
+
+#: The decision a repair's persisted state implies, for records whose
+#: announcement may have been lost. A state is the committed fact; the
+#: `Decision` that produced it lived only in the process that crashed.
+STATE_ACTIONS = {
+    DISPATCHED: "dispatched",
+    CANDIDATE: "candidate",
+    VERIFIED: "verified",
+    NEEDS_ATTENTION: "parked",
+    TERMINAL: "stopped",
+}
+
+
+def message_for_state(
+    repair: dict[str, Any], incident: dict[str, Any] | None = None
+) -> tuple[str, str, str] | None:
+    """The message this repair's current state deserves, if any."""
+    action = STATE_ACTIONS.get(str(repair.get("state") or ""))
+    return message_for(action, repair, incident) if action else None
+
+
+def reconcile(
+    repairs: list[dict[str, Any]],
+    notifier: Notifier,
+    incident_of: Callable[[int], dict[str, Any] | None],
+    *,
+    since: str = "",
+) -> list[str]:
+    """Announce committed outcomes whose announcement was lost.
+
+    `advance()` commits a state and the announcement follows it, so a crash
+    in between loses that message for good: nothing ever revisits a decision
+    object. A restart therefore re-derives each repair's message from the
+    row itself and enqueues only the event ids the ledger has never seen.
+
+    Only the current state of each repair is announced, not its whole
+    history, and nothing older than the ledger's watermark: a restart owes
+    the channel the outcome it is missing, not a replay of everything that
+    ever happened. Repair states are read and never written.
+    """
+    watermark = since or notifier.log.watermark(utcnow())
+    announced: list[str] = []
+    for repair in sorted(repairs, key=lambda row: int(row["id"])):
+        try:
+            if str(repair.get("updated_at") or "") < watermark:
+                continue
+            message = message_for_state(
+                repair, incident_of(int(repair["incident_id"]))
+            )
+            if message is None or notifier.log.get(message[0]) is not None:
+                continue
+            notifier.publish(*message, repair_id=int(repair["id"]))
+            announced.append(message[0])
+        except Exception:  # noqa: BLE001 - a status message may not break a repair
+            log.exception("could not reconcile notifications for a repair")
+    return announced
 
 
 def _checks(repair: dict[str, Any]) -> str:

@@ -318,7 +318,16 @@ def run() -> int:
         raise SystemExit("this process cannot host the runner; see the report above")
     with single_instance(settings.data_dir):
         worker, _state = build_worker(settings)
-        print(json.dumps({"coordinator": "running", **report}, indent=2), flush=True)
+        # A previous process may have committed an outcome and died before
+        # saying so; that message is only recoverable from the stored rows.
+        recovered = worker.catch_up()
+        print(
+            json.dumps(
+                {"coordinator": "running", "recovered_notifications": recovered, **report},
+                indent=2,
+            ),
+            flush=True,
+        )
         try:
             while True:
                 try:

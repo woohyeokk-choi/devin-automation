@@ -373,3 +373,43 @@ def test_a_broken_notifier_cannot_change_a_repair(
     assert [d.action for d in worker.tick()] == ["dispatched"]
     repair = repairs.by_fingerprint(incident["fingerprint"])
     assert repair is not None and repair["session_id"]
+
+
+def test_a_dispatch_whose_process_died_before_speaking_is_announced_on_restart(
+    repairs: RepairStore, incident: dict[str, Any], tmp_path: Path
+) -> None:
+    """The crash window between advance() and the message is real."""
+    from portal.notify import NotificationLog, Notifier
+
+    from test_notify import WEBHOOK, Recorder
+
+    ledger = tmp_path / "notifications.sqlite"
+    NotificationLog(ledger).watermark("2000-01-01T00:00:00.000+00:00")
+
+    # First process: dispatch commits, then nothing gets said.
+    crashed = RepairWorker(worker_controller(repairs, {1: incident}, fakes()[:2]))
+    crashed.controller.consider(incident)
+    assert [d.action for d in crashed.tick()] == ["dispatched"]
+
+    wire = Recorder()
+    restarted = RepairWorker(
+        worker_controller(repairs, {1: incident}, fakes()[:2]),
+        notifier=Notifier(
+            log=NotificationLog(ledger), webhook=WEBHOOK, transport=wire
+        ),
+    )
+
+    recovered = restarted.catch_up()
+
+    assert len(recovered) == 1 and len(wire.calls) == 1
+    assert "Suspected defect — investigation started" in wire.calls[0]["json"]["text"]
+    # Neither a further restart nor the live pass repeats it: the event id
+    # is the same either way, and the ledger already holds it.
+    assert restarted.catch_up() == []
+    restarted.tick()
+    started = [
+        call
+        for call in wire.calls
+        if "investigation started" in call["json"]["text"]
+    ]
+    assert len(started) == 1

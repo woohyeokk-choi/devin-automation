@@ -961,3 +961,26 @@ not require an API key.
 - No production deployment; success stops at `verified_in_preview`.
 - Credentials only in secrets — never in this plan, commits or logs.
 - One phase per prompt; stop and report at each phase boundary.
+
+### Restart recovery for alerts (review follow-up)
+
+`_announce` only ever sees the `Decision` objects of the pass it is in, and
+they are produced after `controller.advance()` has committed state. A process
+that dies in that window loses a session-start or final-result message
+permanently, because nothing revisits a decision.
+
+`portal.notify.reconcile` closes it from the stored rows: on startup
+`RepairWorker.catch_up` maps each repair's persisted state to the action it
+implies (`dispatched`, `candidate`, `verified`, `parked`, `stopped`), builds
+the same message under the same stable event id, and enqueues only ids absent
+from the ledger. Constraints kept: current state only (no history replay),
+nothing older than a one-off watermark written into `notification_meta` the
+first time the ledger is consulted, no writes to repair or verification
+records, no new dependency. `coordinator run` reports the recovered ids as
+`recovered_notifications`.
+
+Tests: `tests/test_notify.py` (recovery, watermark suppression, per-state
+coverage, read-only, one bad row not silencing others) and
+`tests/test_worker.py::test_a_dispatch_whose_process_died_before_speaking_is_announced_on_restart`
+— a first worker commits a dispatch and says nothing, a second announces it
+once, and neither a further restart nor the live pass repeats it.

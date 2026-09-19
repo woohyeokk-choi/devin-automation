@@ -18,7 +18,7 @@ from typing import Any, Callable
 from .brief import BASE_BRANCH
 from .controller import Controller, Decision, RepairStore
 from .isolation import IsolatedStack, replay_through_validator
-from .notify import Notifier, message_for
+from .notify import Notifier, message_for, reconcile
 from .providers import Devin, GitHub, NotConfigured
 from .transport import HttpTransport, Transport
 from .verification import VerificationStore, Verifier
@@ -203,6 +203,28 @@ class RepairWorker:
         self._announce(decisions)
         return decisions
 
+    def catch_up(self) -> list[str]:
+        """Announce outcomes committed while nobody was there to announce them.
+
+        `_announce` only ever sees the decisions of the pass it is in, so a
+        crash between the controller's write and the message loses that
+        message permanently. On startup the persisted repairs are re-read and
+        anything the ledger has never seen is enqueued under the same event
+        id the live pass would have used. Repairs are not modified, and the
+        ledger's watermark keeps history that predates it out of the channel.
+        """
+        if self.notifier is None:
+            return []
+        try:
+            return reconcile(
+                self.controller.store.list(),
+                self.notifier,
+                self.controller.incident_of,
+            )
+        except Exception:  # noqa: BLE001 - a status message may not break a repair
+            log.exception("notification catch-up failed")
+            return []
+
     def _announce(self, decisions: list[Decision]) -> None:
         """Tell the channel what already happened.
 
@@ -247,6 +269,7 @@ class RepairWorker:
         if self._thread is not None or not self.controller.dispatch_enabled:
             # Nothing to poll while dispatch is off: no session exists.
             return
+        self.catch_up()
         self._thread = threading.Thread(
             target=self._run, name="repair-worker", daemon=True
         )

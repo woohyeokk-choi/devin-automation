@@ -459,6 +459,16 @@ python3 -m portal.notify backfill --repair 1 --repair 2
 - **Never part of the repair.** The worker announces only after the controller
   has written its decision, and every notifier failure is swallowed into the
   ledger; no delivery can change an outcome or start a session.
+- **A crash cannot lose a message.** Announcing after the write opens a window
+  where a process dies having committed an outcome and said nothing, and the
+  decision that carried it exists nowhere. On startup `RepairWorker.catch_up`
+  re-derives each repair's message from the stored row (`portal.notify
+  .reconcile`) and enqueues only event ids the ledger has never seen, so the
+  recovered message and the live one collapse into a single row. It announces
+  each repair's current state only — not its history — never writes to a
+  repair, and skips anything older than the ledger's one-off watermark, so
+  results that predate the notifier stay the `backfill` command's business.
+  `coordinator run` prints what it recovered as `recovered_notifications`.
 - `backfill` reads stored repair / incident / verification rows, prefixes
   *Historical result — repair ran earlier*, and writes nothing back to that
   history. It does not start dispatch and does not flood: only the repairs

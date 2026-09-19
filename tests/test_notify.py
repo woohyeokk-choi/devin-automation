@@ -27,7 +27,10 @@ from portal.notify import (
     NotificationLog,
     Notifier,
     historical_message,
+    PREVIEW_ONLY,
+    _fingerprint,
     message_for,
+    reconcile,
     webhook_problem,
 )
 from portal.redaction import REDACTED, scrub
@@ -457,3 +460,92 @@ def test_a_recording_link_carries_its_scope_and_head_or_is_withheld() -> None:
 
     _, _, none = historical_message(REPAIR, ASSESSED, {"verdict": "passed"})
     assert "recording" not in none
+
+
+# --- restart recovery ------------------------------------------------------
+
+
+def _ledger(tmp_path: Path, name: str = "n.sqlite") -> NotificationLog:
+    return NotificationLog(tmp_path / name)
+
+
+def test_a_restart_announces_an_outcome_whose_message_died_with_the_process(
+    tmp_path: Path,
+) -> None:
+    """The state is committed; the Decision that carried it is gone."""
+    wire = Recorder(Response(200))
+    notifier = Notifier(log=_ledger(tmp_path), webhook=WEBHOOK, transport=wire)
+    # The ledger takes responsibility before the repair reaches its outcome,
+    # which is what separates a lost message from history.
+    notifier.log.watermark("2026-09-19T22:00:00.000+00:00")
+
+    announced = reconcile([REPAIR], notifier, lambda _id: INCIDENT)
+
+    assert announced == [f"2:verified:{'f' * 40}"]
+    assert "Verification passed" in wire.calls[0]["json"]["text"]
+    assert PREVIEW_ONLY in wire.calls[0]["json"]["text"]
+    # A second restart owes the channel nothing.
+    assert reconcile([REPAIR], notifier, lambda _id: INCIDENT) == []
+    assert len(wire.calls) == 1
+
+
+def test_a_restart_does_not_replay_results_older_than_the_ledger(
+    tmp_path: Path,
+) -> None:
+    """Backfill exists for history; a restart is not a re-announcement."""
+    wire = Recorder(Response(200))
+    notifier = Notifier(log=_ledger(tmp_path), webhook=WEBHOOK, transport=wire)
+    notifier.log.watermark("2026-09-19T23:00:00.000+00:00")
+
+    assert reconcile([REPAIR], notifier, lambda _id: INCIDENT) == []
+    assert wire.calls == []
+
+
+def test_the_watermark_is_written_once_and_never_moves(tmp_path: Path) -> None:
+    log = _ledger(tmp_path)
+    first = log.watermark("2026-09-19T22:00:00.000+00:00")
+    assert log.watermark("2026-09-20T09:00:00.000+00:00") == first
+
+
+def test_reconciliation_covers_the_lifecycle_states_and_ignores_the_rest(
+    tmp_path: Path,
+) -> None:
+    dispatched = REPAIR | {"id": 3, "state": DISPATCHED, "acu_limit": 20}
+    running = REPAIR | {"id": 4, "state": "running"}
+    parked = REPAIR | {"id": 5, "state": NEEDS_ATTENTION, "attention": "no verifier"}
+    notifier = Notifier(log=_ledger(tmp_path), webhook="")
+    notifier.log.watermark("2026-09-19T22:00:00.000+00:00")
+
+    announced = reconcile(
+        [dispatched, running, parked], notifier, lambda _id: INCIDENT
+    )
+
+    assert announced == [
+        "3:session:18b04127f4a44af6a9c71f9eb3eaba9e",
+        f"5:attention:{_fingerprint('no verifier')}",
+    ]
+    assert [row["kind"] for row in notifier.log.list()] == [
+        "investigation_started",
+        "needs_attention",
+    ]
+
+
+def test_reconciliation_never_writes_to_a_repair(tmp_path: Path) -> None:
+    """A message may not change the thing it reports on."""
+    before = dict(REPAIR)
+    notifier = Notifier(log=_ledger(tmp_path), webhook="")
+    notifier.log.watermark("2026-09-19T22:00:00.000+00:00")
+    reconcile([REPAIR], notifier, lambda _id: INCIDENT)
+    assert REPAIR == before
+
+
+def test_one_unreportable_repair_does_not_silence_the_others(
+    tmp_path: Path,
+) -> None:
+    broken = {"id": 9, "state": VERIFIED}  # no incident_id
+    notifier = Notifier(log=_ledger(tmp_path), webhook="")
+    notifier.log.watermark("2026-09-19T22:00:00.000+00:00")
+
+    assert reconcile([broken, REPAIR], notifier, lambda _id: INCIDENT) == [
+        f"2:verified:{'f' * 40}"
+    ]
