@@ -1,0 +1,393 @@
+{
+  "scenario_id": "S1",
+  "recorded_at": "2026-09-19T22:16:48.273692+00:00",
+  "revision": {
+    "superset_checkout": "/home/ubuntu/phase8/replay-647565f/stacks/candidatefe266eac51a9",
+    "superset_sha": "fe266eac51a996760a75997ff94b3270c9ef73b1",
+    "superset_describe": "fe266ea",
+    "superset_dirty": "no",
+    "automation_sha": "647565f57151eae686f225626189d5f6cab5c438"
+  },
+  "title": "MCP chart update resets omitted color_scheme / row_limit",
+  "reproduced": false,
+  "chart_id": 104,
+  "dataset_id": 22,
+  "mcp_service": {
+    "url": "http://127.0.0.1:5608/mcp",
+    "transport": "streamable-http (stateless)",
+    "started_by": "stack/docker-compose.ports.yml service `superset-mcp-light`, image superset-superset-light, command `superset mcp run --host 0.0.0.0 --port 5008`",
+    "dependency": "fastmcp 3.4.7, present in the built image (Dockerfile `superset` target installs the fastmcp extra; the `dev` target gets it via requirements/development.txt)",
+    "auth": "MCP_DEV_USERNAME=admin from stack/superset_config_mcp.py",
+    "tool_access": "tool search transform is on, so tools are invoked through the `call_tool` proxy"
+  },
+  "fields": {
+    "row_limit": {
+      "before": 137,
+      "after": 137,
+      "reset": false
+    },
+    "color_scheme": {
+      "before": "googleCategory10c",
+      "after": "googleCategory10c",
+      "reset": false
+    }
+  },
+  "reset_fields": [],
+  "expected": "an update that only changes sort_by keeps row_limit 137 and color_scheme 'googleCategory10c'",
+  "observed": "row_limit 137 -> 137, color_scheme 'googleCategory10c' -> 'googleCategory10c'",
+  "mechanism": "update_chart validates the caller's config into a fresh TableChartConfig and rebuilds form_data from it, so fields the caller omits take their pydantic defaults rather than the persisted values. `row_limit: int = Field(1000)` is non-optional, so the rebuild always writes 1000 over the stored limit. `color_scheme` defaults to None and chart_utils.add_color_scheme only writes the key when it is truthy, which is why the stored scheme survives at this revision \u2014 the data loss is field-dependent, not uniform. The additive `add_columns` path preserves the existing configuration; the `config` path does not.",
+  "code_paths": [
+    "superset/mcp_service/chart/tool/update_chart.py::update_chart",
+    "superset/mcp_service/chart/schemas.py::TableChartConfig",
+    "superset/mcp_service/chart/chart_utils.py::add_color_scheme"
+  ],
+  "mcp_calls": [
+    {
+      "tool": "generate_chart",
+      "arguments": {
+        "dataset_id": 22,
+        "chart_name": "S1 synthetic orders by region",
+        "save_chart": true,
+        "generate_preview": false,
+        "config": {
+          "chart_type": "table",
+          "columns": [
+            {
+              "name": "region"
+            },
+            {
+              "name": "revenue",
+              "aggregate": "SUM"
+            }
+          ],
+          "row_limit": 137,
+          "color_scheme": "googleCategory10c"
+        }
+      },
+      "result": {
+        "chart": {
+          "id": 104,
+          "slice_name": "S1 synthetic orders by region",
+          "viz_type": "table",
+          "chart_type_display_name": "Table",
+          "datasource_name": "public.synthetic_orders",
+          "datasource_type": "table",
+          "url": "http://localhost:8888/explore/?slice_id=104",
+          "description": null,
+          "cache_timeout": null,
+          "changed_on": "2026-09-19T22:16:47.951403",
+          "changed_on_humanized": "now",
+          "created_on": "2026-09-19T22:16:47.951400",
+          "created_on_humanized": "now",
+          "certified_by": null,
+          "certification_details": null,
+          "uuid": "dc677e49-e7de-4a23-a8d7-601ecf394e7d",
+          "deleted_at": null,
+          "tags": [
+            {
+              "id": 4,
+              "name": "editor:1",
+              "type": "3",
+              "description": null
+            },
+            {
+              "id": 2,
+              "name": "type:chart",
+              "type": "2",
+              "description": null
+            }
+          ],
+          "filters": {
+            "adhoc_filters": [
+              {
+                "clause": "WHERE",
+                "expression_type": "SIMPLE",
+                "subject": "order_ts",
+                "operator": "TEMPORAL_RANGE",
+                "comparator": "No filter",
+                "sql_expression": null
+              }
+            ],
+            "time_range": null,
+            "granularity_sqla": null,
+            "extra_filters": [],
+            "filters": [],
+            "where": null,
+            "having": null,
+            "dashboard_filters": [],
+            "active_filters": [],
+            "active_time_range": null
+          },
+          "form_data": {
+            "viz_type": "table",
+            "all_columns": [
+              "region"
+            ],
+            "metrics": [
+              {
+                "aggregate": "SUM",
+                "column": {
+                  "column_name": "revenue"
+                },
+                "expressionType": "SIMPLE",
+                "label": "SUM(revenue)",
+                "optionName": "metric_revenue",
+                "sqlExpression": null,
+                "hasCustomLabel": false,
+                "datasourceWarning": false
+              }
+            ],
+            "groupby": [
+              "region"
+            ],
+            "query_mode": "aggregate",
+            "row_limit": 137,
+            "color_scheme": "googleCategory10c",
+            "adhoc_filters": [
+              {
+                "clause": "WHERE",
+                "expressionType": "SIMPLE",
+                "subject": "order_ts",
+                "operator": "TEMPORAL_RANGE",
+                "comparator": "No filter"
+              }
+            ],
+            "_mcp_dashboard_time_filter_subject": "order_ts"
+          },
+          "form_data_key": null,
+          "is_unsaved_state": false
+        },
+        "previews": {},
+        "capabilities": {
+          "supports_interaction": false,
+          "supports_real_time": false,
+          "supports_drill_down": true,
+          "supports_export": true,
+          "optimal_formats": [
+            "url",
+            "ascii",
+            "table"
+          ],
+          "data_types": []
+        },
+        "semantics": {
+          "primary_insight": "Displays detailed data in tabular format",
+          "data_story": "This chart provides insights into the selected dataset",
+          "recommended_actions": [
+            "Review data patterns and trends",
+            "Consider filtering or drilling down for more detail",
+            "Export chart for reporting or sharing"
+          ],
+          "anomalies": [],
+          "statistical_summary": {}
+        },
+        "explore_url": "http://localhost:8888/explore/?slice_id=104",
+        "chart_type_label": "table chart",
+        "embed_code": null,
+        "api_endpoints": {
+          "data": "http://localhost:8888/api/v1/chart/104/data/",
+          "export": "http://localhost:8888/api/v1/chart/104/export/"
+        },
+        "form_data": {
+          "viz_type": "table",
+          "all_columns": [
+            "region"
+          ],
+          "metrics": [
+            {
+              "aggregate": "SUM",
+              "column": {
+                "column_name": "revenue"
+              },
+              "expressionType": "SIMPLE",
+              "label": "SUM(revenue)",
+              "optionName": "metric_revenue",
+              "sqlExpression": null,
+              "hasCustomLabel": false,
+              "datasourceWarning": false
+            }
+          ],
+          "groupby": [
+            "region"
+          ],
+          "query_mode": "aggregate",
+          "row_limit": 137,
+          "color_scheme": "googleCategory10c",
+          "adhoc_filters": [
+            {
+              "clause": "WHERE",
+              "expressionType": "SIMPLE",
+              "subject": "order_ts",
+              "operator": "TEMPORAL_RANGE",
+              "comparator": "No filter"
+            }
+          ],
+          "_mcp_dashboard_time_filter_subject": "order_ts"
+        },
+        "form_data_key": "gmyqQ1uUoPapT8w7K0NyDQ",
+        "performance": {
+          "query_duration_ms": 590,
+          "estimated_cost": null,
+          "cache_status": "miss",
+          "optimization_suggestions": []
+        },
+        "accessibility": {
+          "color_blind_safe": true,
+          "alt_text": "Chart showing S1 synthetic orders by region",
+          "high_contrast_available": false
+        },
+        "success": true,
+        "error": null,
+        "warnings": [
+          "Table with mostly aggregated metrics could be visualized as a chart"
+        ],
+        "schema_version": "2.0",
+        "api_version": "v1"
+      }
+    },
+    {
+      "tool": "update_chart",
+      "arguments": {
+        "identifier": 104,
+        "generate_preview": false,
+        "config": {
+          "chart_type": "table",
+          "columns": [
+            {
+              "name": "region"
+            },
+            {
+              "name": "revenue",
+              "aggregate": "SUM"
+            }
+          ],
+          "sort_by": [
+            "SUM(revenue)"
+          ]
+        }
+      },
+      "result": {
+        "chart": {
+          "id": 104,
+          "slice_name": "S1 synthetic orders by region",
+          "viz_type": "table",
+          "chart_type_display_name": null,
+          "datasource_name": null,
+          "datasource_type": null,
+          "url": "http://localhost:8888/explore/?slice_id=104",
+          "description": null,
+          "cache_timeout": null,
+          "changed_on": null,
+          "changed_on_humanized": null,
+          "created_on": null,
+          "created_on_humanized": null,
+          "certified_by": null,
+          "certification_details": null,
+          "uuid": "dc677e49-e7de-4a23-a8d7-601ecf394e7d",
+          "deleted_at": null,
+          "tags": [],
+          "filters": null,
+          "form_data": null,
+          "form_data_key": null,
+          "is_unsaved_state": false
+        },
+        "previews": {
+          "url": {
+            "type": "url",
+            "preview_url": "http://localhost:8888/explore/?slice_id=104",
+            "width": 800,
+            "height": 600,
+            "supports_interaction": true
+          }
+        },
+        "capabilities": {
+          "supports_interaction": false,
+          "supports_real_time": false,
+          "supports_drill_down": true,
+          "supports_export": true,
+          "optimal_formats": [
+            "url",
+            "ascii",
+            "table"
+          ],
+          "data_types": []
+        },
+        "semantics": {
+          "primary_insight": "Displays detailed data in tabular format",
+          "data_story": "This chart provides insights into the selected dataset",
+          "recommended_actions": [
+            "Review data patterns and trends",
+            "Consider filtering or drilling down for more detail",
+            "Export chart for reporting or sharing"
+          ],
+          "anomalies": [],
+          "statistical_summary": {}
+        },
+        "explore_url": "http://localhost:8888/explore/?slice_id=104",
+        "chart_type_label": null,
+        "embed_code": null,
+        "api_endpoints": {
+          "data": "http://localhost:8888/api/v1/chart/104/data/",
+          "export": "http://localhost:8888/api/v1/chart/104/export/"
+        },
+        "form_data": {
+          "viz_type": "table",
+          "all_columns": [
+            "region"
+          ],
+          "metrics": [
+            {
+              "aggregate": "SUM",
+              "column": {
+                "column_name": "revenue"
+              },
+              "expressionType": "SIMPLE",
+              "label": "SUM(revenue)",
+              "optionName": "metric_revenue",
+              "sqlExpression": null,
+              "hasCustomLabel": false,
+              "datasourceWarning": false
+            }
+          ],
+          "groupby": [
+            "region"
+          ],
+          "query_mode": "aggregate",
+          "row_limit": 137,
+          "color_scheme": "googleCategory10c",
+          "adhoc_filters": [
+            {
+              "clause": "WHERE",
+              "expressionType": "SIMPLE",
+              "subject": "order_ts",
+              "operator": "TEMPORAL_RANGE",
+              "comparator": "No filter"
+            }
+          ],
+          "_mcp_dashboard_time_filter_subject": "order_ts",
+          "order_by_cols": [
+            "[\"SUM(revenue)\", false]"
+          ]
+        },
+        "form_data_key": null,
+        "performance": {
+          "query_duration_ms": 67,
+          "estimated_cost": null,
+          "cache_status": "miss",
+          "optimization_suggestions": []
+        },
+        "accessibility": {
+          "color_blind_safe": true,
+          "alt_text": "Updated chart showing S1 synthetic orders by region",
+          "high_contrast_available": false
+        },
+        "success": true,
+        "error": null,
+        "warnings": [],
+        "schema_version": "2.0",
+        "api_version": "v1"
+      }
+    }
+  ],
+  "persistence_path": "slices.params (Postgres metadata DB), read back via GET /api/v1/chart/<id>"
+}

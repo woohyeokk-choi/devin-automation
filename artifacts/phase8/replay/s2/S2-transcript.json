@@ -1,0 +1,247 @@
+[
+  {
+    "step": "create A (tab_id set)",
+    "request": {
+      "method": "POST",
+      "url": "http://127.0.0.1:8588/api/v1/explore/form_data?tab_id=991177",
+      "headers": {
+        "User-Agent": "python-requests/2.32.3",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Content-Type": "application/json",
+        "X-CSRFToken": "<redacted>",
+        "Referer": "http://127.0.0.1:8588/",
+        "Cookie": "<redacted>",
+        "Content-Length": "382"
+      },
+      "body": {
+        "datasource_id": 22,
+        "datasource_type": "table",
+        "form_data": "{\"datasource\": \"22__table\", \"viz_type\": \"table\", \"granularity_sqla\": \"order_ts\", \"groupby\": [\"region\"], \"metrics\": [\"count\"], \"row_limit\": 100, \"adhoc_filters\": [{\"expressionType\": \"SIMPLE\", \"subject\": \"channel\", \"operator\": \"==\", \"comparator\": \"web\", \"clause\": \"WHERE\"}]}"
+      }
+    },
+    "response": {
+      "status": 201,
+      "headers": {
+        "Server": "Werkzeug/3.1.6 Python/3.11.14",
+        "Date": "Sat, 19 Sep 2026 22:15:47 GMT",
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": "38",
+        "Permissions-Policy": "browsing-topics=()",
+        "X-Frame-Options": "SAMEORIGIN",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "base-uri 'self'; default-src 'self'; img-src 'self' blob: data: https://apachesuperset.gateway.scarf.sh https://static.scarf.sh/ https://cdn.brandfolder.io ows.terrestris.de https://cdn.document360.io; worker-src 'self' blob:; connect-src 'self' https://api.mapbox.com https://events.mapbox.com https://tile.openstreetmap.org https://tile.osm.ch https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://*.maptiler.com https://tiles.stadiamaps.com https://tiles.versatiles.org https://*.protomaps.com https://*.maplibre.org; object-src 'none'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com https://use.typekit.net https://use.typekit.com; font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://use.typekit.net https://use.typekit.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'nonce-uKKVQP1HISMowwSOOOYF8El7BY6_6qUV'",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Vary": "Accept-Encoding, Cookie",
+        "Access-Control-Allow-Origin": "https://tile.openstreetmap.org",
+        "Access-Control-Expose-Headers": "ETag",
+        "Connection": "close"
+      },
+      "body": {
+        "key": "Zh94YIjkopD_paOtCiGsng"
+      }
+    }
+  },
+  {
+    "step": "read K1",
+    "request": {
+      "method": "GET",
+      "url": "http://127.0.0.1:8588/api/v1/explore/form_data/Zh94YIjkopD_paOtCiGsng",
+      "headers": {
+        "User-Agent": "python-requests/2.32.3",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Content-Type": "application/json",
+        "X-CSRFToken": "<redacted>",
+        "Referer": "http://127.0.0.1:8588/",
+        "Cookie": "<redacted>"
+      },
+      "body": null
+    },
+    "response": {
+      "status": 200,
+      "headers": {
+        "Server": "Werkzeug/3.1.6 Python/3.11.14",
+        "Date": "Sat, 19 Sep 2026 22:15:47 GMT",
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": "338",
+        "Permissions-Policy": "browsing-topics=()",
+        "X-Frame-Options": "SAMEORIGIN",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "base-uri 'self'; default-src 'self'; img-src 'self' blob: data: https://apachesuperset.gateway.scarf.sh https://static.scarf.sh/ https://cdn.brandfolder.io ows.terrestris.de https://cdn.document360.io; worker-src 'self' blob:; connect-src 'self' https://api.mapbox.com https://events.mapbox.com https://tile.openstreetmap.org https://tile.osm.ch https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://*.maptiler.com https://tiles.stadiamaps.com https://tiles.versatiles.org https://*.protomaps.com https://*.maplibre.org; object-src 'none'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com https://use.typekit.net https://use.typekit.com; font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://use.typekit.net https://use.typekit.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'nonce-SoZXD1C52b4z-Q3xcWkyuP_iZ-4UC6L2'",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Vary": "Accept-Encoding, Cookie",
+        "Access-Control-Allow-Origin": "https://tile.openstreetmap.org",
+        "Access-Control-Expose-Headers": "ETag",
+        "Connection": "close"
+      },
+      "body": {
+        "form_data": "{\"datasource\": \"22__table\", \"viz_type\": \"table\", \"granularity_sqla\": \"order_ts\", \"groupby\": [\"region\"], \"metrics\": [\"count\"], \"row_limit\": 100, \"adhoc_filters\": [{\"expressionType\": \"SIMPLE\", \"subject\": \"channel\", \"operator\": \"==\", \"comparator\": \"web\", \"clause\": \"WHERE\"}]}"
+      }
+    }
+  },
+  {
+    "step": "delete K1 (no tab_id accepted by the route)",
+    "request": {
+      "method": "DELETE",
+      "url": "http://127.0.0.1:8588/api/v1/explore/form_data/Zh94YIjkopD_paOtCiGsng",
+      "headers": {
+        "User-Agent": "python-requests/2.32.3",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Content-Type": "application/json",
+        "X-CSRFToken": "<redacted>",
+        "Referer": "http://127.0.0.1:8588/",
+        "Cookie": "<redacted>",
+        "Content-Length": "0"
+      },
+      "body": null
+    },
+    "response": {
+      "status": 200,
+      "headers": {
+        "Server": "Werkzeug/3.1.6 Python/3.11.14",
+        "Date": "Sat, 19 Sep 2026 22:15:47 GMT",
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": "40",
+        "Permissions-Policy": "browsing-topics=()",
+        "X-Frame-Options": "SAMEORIGIN",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "base-uri 'self'; default-src 'self'; img-src 'self' blob: data: https://apachesuperset.gateway.scarf.sh https://static.scarf.sh/ https://cdn.brandfolder.io ows.terrestris.de https://cdn.document360.io; worker-src 'self' blob:; connect-src 'self' https://api.mapbox.com https://events.mapbox.com https://tile.openstreetmap.org https://tile.osm.ch https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://*.maptiler.com https://tiles.stadiamaps.com https://tiles.versatiles.org https://*.protomaps.com https://*.maplibre.org; object-src 'none'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com https://use.typekit.net https://use.typekit.com; font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://use.typekit.net https://use.typekit.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'nonce-zwTS3ZPoTWuOsYud03qVoYZkixC1Ngr_'",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Vary": "Accept-Encoding, Cookie",
+        "Access-Control-Allow-Origin": "https://tile.openstreetmap.org",
+        "Access-Control-Expose-Headers": "ETag",
+        "Connection": "close"
+      },
+      "body": {
+        "message": "Deleted successfully"
+      }
+    }
+  },
+  {
+    "step": "read K1 after delete (expect 404)",
+    "request": {
+      "method": "GET",
+      "url": "http://127.0.0.1:8588/api/v1/explore/form_data/Zh94YIjkopD_paOtCiGsng",
+      "headers": {
+        "User-Agent": "python-requests/2.32.3",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Content-Type": "application/json",
+        "X-CSRFToken": "<redacted>",
+        "Referer": "http://127.0.0.1:8588/",
+        "Cookie": "<redacted>"
+      },
+      "body": null
+    },
+    "response": {
+      "status": 404,
+      "headers": {
+        "Server": "Werkzeug/3.1.6 Python/3.11.14",
+        "Date": "Sat, 19 Sep 2026 22:15:47 GMT",
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": "29",
+        "Permissions-Policy": "browsing-topics=()",
+        "X-Frame-Options": "SAMEORIGIN",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "base-uri 'self'; default-src 'self'; img-src 'self' blob: data: https://apachesuperset.gateway.scarf.sh https://static.scarf.sh/ https://cdn.brandfolder.io ows.terrestris.de https://cdn.document360.io; worker-src 'self' blob:; connect-src 'self' https://api.mapbox.com https://events.mapbox.com https://tile.openstreetmap.org https://tile.osm.ch https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://*.maptiler.com https://tiles.stadiamaps.com https://tiles.versatiles.org https://*.protomaps.com https://*.maplibre.org; object-src 'none'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com https://use.typekit.net https://use.typekit.com; font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://use.typekit.net https://use.typekit.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'nonce-py1qitQGzvd-fZc0bGWx6GF51G2V9q6i'",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Vary": "Accept-Encoding, Cookie",
+        "Access-Control-Allow-Origin": "https://tile.openstreetmap.org",
+        "Access-Control-Expose-Headers": "ETag",
+        "Connection": "close"
+      },
+      "body": {
+        "message": "Not found"
+      }
+    }
+  },
+  {
+    "step": "create B (same tab_id)",
+    "request": {
+      "method": "POST",
+      "url": "http://127.0.0.1:8588/api/v1/explore/form_data?tab_id=991177",
+      "headers": {
+        "User-Agent": "python-requests/2.32.3",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Content-Type": "application/json",
+        "X-CSRFToken": "<redacted>",
+        "Referer": "http://127.0.0.1:8588/",
+        "Cookie": "<redacted>",
+        "Content-Length": "386"
+      },
+      "body": {
+        "datasource_id": 22,
+        "datasource_type": "table",
+        "form_data": "{\"datasource\": \"22__table\", \"viz_type\": \"table\", \"granularity_sqla\": \"order_ts\", \"groupby\": [\"product\"], \"metrics\": [\"count\"], \"row_limit\": 250, \"adhoc_filters\": [{\"expressionType\": \"SIMPLE\", \"subject\": \"channel\", \"operator\": \"==\", \"comparator\": \"retail\", \"clause\": \"WHERE\"}]}"
+      }
+    },
+    "response": {
+      "status": 201,
+      "headers": {
+        "Server": "Werkzeug/3.1.6 Python/3.11.14",
+        "Date": "Sat, 19 Sep 2026 22:15:48 GMT",
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": "38",
+        "Permissions-Policy": "browsing-topics=()",
+        "X-Frame-Options": "SAMEORIGIN",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "base-uri 'self'; default-src 'self'; img-src 'self' blob: data: https://apachesuperset.gateway.scarf.sh https://static.scarf.sh/ https://cdn.brandfolder.io ows.terrestris.de https://cdn.document360.io; worker-src 'self' blob:; connect-src 'self' https://api.mapbox.com https://events.mapbox.com https://tile.openstreetmap.org https://tile.osm.ch https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://*.maptiler.com https://tiles.stadiamaps.com https://tiles.versatiles.org https://*.protomaps.com https://*.maplibre.org; object-src 'none'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com https://use.typekit.net https://use.typekit.com; font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://use.typekit.net https://use.typekit.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'nonce-8qRkmTI-p_2YIfVWoi3zz_chusZmBtAE'",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Vary": "Accept-Encoding, Cookie",
+        "Access-Control-Allow-Origin": "https://tile.openstreetmap.org",
+        "Access-Control-Expose-Headers": "ETag",
+        "Connection": "close"
+      },
+      "body": {
+        "key": "x2bhCvPgseUvKqy0Symapg"
+      }
+    }
+  },
+  {
+    "step": "read K1 after create B",
+    "request": {
+      "method": "GET",
+      "url": "http://127.0.0.1:8588/api/v1/explore/form_data/Zh94YIjkopD_paOtCiGsng",
+      "headers": {
+        "User-Agent": "python-requests/2.32.3",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Content-Type": "application/json",
+        "X-CSRFToken": "<redacted>",
+        "Referer": "http://127.0.0.1:8588/",
+        "Cookie": "<redacted>"
+      },
+      "body": null
+    },
+    "response": {
+      "status": 404,
+      "headers": {
+        "Server": "Werkzeug/3.1.6 Python/3.11.14",
+        "Date": "Sat, 19 Sep 2026 22:15:48 GMT",
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": "29",
+        "Permissions-Policy": "browsing-topics=()",
+        "X-Frame-Options": "SAMEORIGIN",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "base-uri 'self'; default-src 'self'; img-src 'self' blob: data: https://apachesuperset.gateway.scarf.sh https://static.scarf.sh/ https://cdn.brandfolder.io ows.terrestris.de https://cdn.document360.io; worker-src 'self' blob:; connect-src 'self' https://api.mapbox.com https://events.mapbox.com https://tile.openstreetmap.org https://tile.osm.ch https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://*.maptiler.com https://tiles.stadiamaps.com https://tiles.versatiles.org https://*.protomaps.com https://*.maplibre.org; object-src 'none'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com https://use.typekit.net https://use.typekit.com; font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://use.typekit.net https://use.typekit.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'nonce-8jTEGEpFgHLyn21acMJEXjl0wH3OI9Su'",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Vary": "Accept-Encoding, Cookie",
+        "Access-Control-Allow-Origin": "https://tile.openstreetmap.org",
+        "Access-Control-Expose-Headers": "ETag",
+        "Connection": "close"
+      },
+      "body": {
+        "message": "Not found"
+      }
+    }
+  }
+]

@@ -104,7 +104,25 @@ Neither repair ever received product feedback, because no product check failed.
 
 ## Video evidence
 
-**No recording of either repaired product exists.** Every clip taken with
+Two **exact-SHA local replays** were recorded on 2026-09-19 22:14–22:17 UTC,
+one per accepted repair, and published under
+[`artifacts/phase8/replay`](../artifacts/phase8/replay): each runs the
+unchanged authoritative scenario against a fresh isolated stack at the
+baseline and again at the accepted head.
+
+| Case | Baseline `394bca55c792b7b3547e23f6e175a7cb0f0757e8` | Accepted head |
+| --- | --- | --- |
+| S2 | discarded key `K1` is reused and resurrected (200) | `d234055eaf85a70d5e5ec5a7a7256ee43d02dde6` — fresh key, `K1` stays 404 |
+| S1 | sort-only update drops `row_limit` 137 → 1000 | `fe266eac51a996760a75997ff94b3270c9ef73b1` — `row_limit` stays 137 |
+
+These are replays, not the original verifications, and they carry their own
+timestamps and provenance; the phase 6 records are unchanged. The pinned light
+image has no compiled frontend, so the chart editor cannot be filmed: the
+footage is scenario output plus the persisted REST read-back, not the
+product's own controls. The stacks were scratch namespaces on loopback ports
+and were torn down.
+
+**No recording of either repaired product's UI exists.** Every clip taken with
 Devin's native recorder so far is a portal or operator-console walk-through on
 the **unfixed baseline** `394bca55c792b7b3547e23f6e175a7cb0f0757e8`, which is
 what the running stack serves because neither product PR is merged:
@@ -133,16 +151,11 @@ python3 -m portal.notify backfill --repair 1 \
 
 Missing video is an honest omission, not a failed repair.
 
-**What a real before/after clip would take** (not run; requires authorization):
-for one case, start the existing baseline stack, perform the user action on
-`/settings` (S1) or the exploration save (S2) and film the wrong read-back;
-then have `IsolatedStack.prepare()` build a candidate stack at the already
-accepted head — `fe266eac51a996760a75997ff94b3270c9ef73b1` for S1,
-`d234055eaf85a70d5e5ec5a7a7256ee43d02dde6` for S2 — and film the same action
-returning the correct state. About 10–15 minutes of stack build per case on
-this host, no Devin session, no product edit, no merge, no public exposure;
-the new clip gets its own timestamp and provenance and leaves the phase 6
-artifacts untouched.
+The before/after clips described above were produced this way:
+`IsolatedStack.prepare()` built one stack at the baseline and one at each
+accepted head, the same scenario ran against both, and the clip shows
+`git rev-parse HEAD` of the running checkout before each run. No Devin
+session, product edit, merge or public exposure was involved.
 
 ## What this does not show
 

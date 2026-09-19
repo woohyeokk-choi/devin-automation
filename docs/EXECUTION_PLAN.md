@@ -984,3 +984,23 @@ coverage, read-only, one bad row not silencing others) and
 `tests/test_worker.py::test_a_dispatch_whose_process_died_before_speaking_is_announced_on_restart`
 — a first worker commits a dispatch and says nothing, a second announces it
 once, and neither a further restart nor the live pass repeats it.
+
+### Exact-SHA local replay recordings (phase 8)
+
+Both accepted repairs now have a short clip of the same user scenario failing
+at the baseline and passing at the accepted head, recorded 2026-09-19
+22:14–22:17 UTC, published under `artifacts/phase8/replay/` with each run's
+`result.json`, sanitized `transcript.json` and environment manifest.
+
+Method: `IsolatedStack.prepare()` built three scratch stacks on loopback ports
+(baseline `394bca55`, S2 head `d234055e`, S1 head `fe266eac`); the unchanged
+scenarios `scenarios/s2_form_data_key_reuse.py` and
+`scenarios/s1_mcp_update_resets_fields.py` ran against them, with
+`git rev-parse HEAD` of the running checkout shown before each run; all three
+stacks were torn down afterwards.
+
+Limits recorded with the evidence: the pinned light image has no compiled
+frontend, so the chart editor could not be filmed and the footage is scenario
+output plus the persisted REST read-back; N1 was not re-run; phase 6 records
+are unchanged; no repair session, product edit, merge, deployment or Slack
+send was involved.

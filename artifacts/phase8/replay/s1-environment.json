@@ -1,0 +1,63 @@
+{
+  "project": "candidatefe266eac51a9",
+  "base_url": "http://127.0.0.1:8688",
+  "mcp_url": "http://127.0.0.1:5608/mcp",
+  "checkout": "/home/ubuntu/phase8/replay-647565f/stacks/candidatefe266eac51a9",
+  "head_sha": "fe266eac51a996760a75997ff94b3270c9ef73b1",
+  "provenance": {
+    "measured_at": "2026-09-19T22:14:01.095+00:00",
+    "automation_ref": "647565f57151eae686f225626189d5f6cab5c438",
+    "compose_project": "candidatefe266eac51a9",
+    "checkout": {
+      "path": "/home/ubuntu/phase8/replay-647565f/stacks/candidatefe266eac51a9",
+      "source_sha": "fe266eac51a996760a75997ff94b3270c9ef73b1",
+      "clean": true,
+      "code_hash": "df0861b8afe7263353effbf2b6ca0623"
+    },
+    "config_revision": "491043576833080a",
+    "fixture": {
+      "kind": "content",
+      "rows": 60,
+      "grouping": [
+        "region",
+        "channel",
+        "product"
+      ],
+      "digest": "47bea47eb499e2b929604bd1a5863a58",
+      "description": "sha256 of the region/channel/product revenue aggregate the chart-data API returns for the fixture; `rows` counts that projection, not the seeded records"
+    },
+    "web": {
+      "service": "superset-light",
+      "container_id": "b6dda13a995e",
+      "image_id": "sha256:412361b3ed6f227003a179482cce7325e3cbe53cdb7349080612c9c16a4705d2",
+      "state": "running",
+      "health": "starting",
+      "source_mount": "/home/ubuntu/phase8/replay-647565f/stacks/candidatefe266eac51a9/superset",
+      "config_path": "/app/docker/pythonpath_dev/superset_config_docker_light.py",
+      "code_hash": "df0861b8afe7263353effbf2b6ca0623",
+      "source_sha": "fe266eac51a996760a75997ff94b3270c9ef73b1",
+      "clean": true
+    },
+    "mcp": {
+      "service": "superset-mcp-light",
+      "container_id": "9b21bfb9e706",
+      "image_id": "sha256:412361b3ed6f227003a179482cce7325e3cbe53cdb7349080612c9c16a4705d2",
+      "state": "running",
+      "health": "healthy",
+      "source_mount": "/home/ubuntu/phase8/replay-647565f/stacks/candidatefe266eac51a9/superset",
+      "config_path": "/app/automation_stack/superset_config_mcp.py",
+      "code_hash": "df0861b8afe7263353effbf2b6ca0623",
+      "source_sha": "fe266eac51a996760a75997ff94b3270c9ef73b1",
+      "clean": true
+    }
+  },
+  "commands": [
+    "git init --quiet /home/ubuntu/phase8/replay-647565f/stacks/candidatefe266eac51a9",
+    "git remote add origin https://github.com/woohyeokk-choi/superset.git",
+    "git fetch --depth 1 origin fe266eac51a996760a75997ff94b3270c9ef73b1",
+    "git checkout --quiet FETCH_HEAD",
+    "docker compose --project-name candidatefe266eac51a9 -f docker-compose-light.yml -f /home/ubuntu/repos/devin-automation/stack/docker-compose.ports.yml up -d superset-light superset-mcp-light",
+    "wait for http://127.0.0.1:8688/health",
+    "python3 scripts/seed_synthetic.py"
+  ]
+}

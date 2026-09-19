@@ -16,6 +16,7 @@ means `verified_in_preview` — never merged, never deployed.
 | Repair 1 (S2) | issue [#1](https://github.com/woohyeokk-choi/superset/issues/1) → session [`4b7011c7…`](https://app.devin.ai/sessions/4b7011c76c1e4ec8bf28cb373b614577) → PR [#2](https://github.com/woohyeokk-choi/superset/pull/2) @ `d234055eaf85a70d5e5ec5a7a7256ee43d02dde6` |
 | Repair 2 (S1) | issue [#3](https://github.com/woohyeokk-choi/superset/issues/3) → session [`18b04127…`](https://app.devin.ai/sessions/18b04127f4a44af6a9c71f9eb3eaba9e) → PR [#4](https://github.com/woohyeokk-choi/superset/pull/4) @ `fe266eac51a996760a75997ff94b3270c9ef73b1` |
 | Evidence | `artifacts/phase6/S2/`, `artifacts/phase6/S1/` |
+| Exact-SHA replay clips | `artifacts/phase8/replay/` — baseline vs accepted head per case, recorded later, not the original verification |
 | Numbers, with the caveats | [docs/results.md](results.md) |
 | Design decisions and full history | [docs/EXECUTION_PLAN.md](EXECUTION_PLAN.md) |
 | Loom walkthrough | _pending — to be recorded_ |
