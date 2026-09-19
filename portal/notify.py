@@ -1979,6 +1979,100 @@ def _bootstrap(notifier: Notifier, config: Settings) -> int:
     return 0 if parents and not problems else 2
 
 
+#: The decision each recorded message announced, so a message already sent
+#: can be rendered again without guessing what it was about.
+KIND_ACTIONS = {
+    "investigation_started": "dispatched",
+    "pull_request": "candidate",
+    "verified": "verified",
+    "awaiting_merge": "awaiting_merge",
+    "merge_verified": "merge_verified",
+    "merge_failed": "merge_failed",
+    "blocked": "blocked",
+    "verification_failed": "followed_up",
+    "needs_attention": "parked",
+    "terminal": "stopped",
+}
+
+
+def _owned_by(author: dict[str, str], bot_id: str, app_id: str) -> str:
+    """Empty when Slack says this app posted the message, else the reason.
+
+    An edit is destructive to whatever was there before, so a message whose
+    author cannot be read is left alone rather than assumed to be ours.
+    """
+    if not author.get("readable"):
+        return f"author unreadable ({author.get('detail') or 'no detail'})"
+    if bot_id and author.get("bot_id") != bot_id:
+        return f"posted by bot {author.get('bot_id') or 'unknown'}"
+    if app_id and author.get("app_id") != app_id:
+        return f"posted by app {author.get('app_id') or 'unknown'}"
+    return ""
+
+
+def _restyle(
+    notifier: Notifier,
+    config: Settings,
+    timestamps: list[str],
+    archive: Path,
+    bot_id: str,
+    app_id: str,
+) -> int:
+    """Re-render messages this ledger already sent as cards, in place.
+
+    The wording of a lifecycle state is presentation; the state itself is
+    not touched, and neither is any message this ledger did not record
+    sending. Each message is read from Slack first, and the payload before
+    and after the edit is written next to the state for inspection.
+    """
+    state = _state(config)
+    archive.mkdir(parents=True, exist_ok=True)
+    results = []
+    for ts in timestamps:
+        row = notifier.log.by_ts(ts)
+        if row is None:
+            results.append({"ts": ts, "state": "refused", "reason": "not in this ledger"})
+            continue
+        action = KIND_ACTIONS.get(str(row["kind"]) or "")
+        repair = state.repairs.get(int(row["repair_id"] or 0))
+        incident = (
+            state.incidents.get(int(repair["incident_id"])) if repair else None
+        )
+        card = card_for(action, repair, incident) if action and repair else None
+        if card is None:
+            results.append(
+                {"ts": ts, "state": "refused", "reason": f"no card for kind {row['kind']}"}
+            )
+            continue
+        if notifier.bot is None:
+            results.append({"ts": ts, "state": "refused", "reason": "no bot transport"})
+            continue
+        mismatch = _owned_by(notifier.bot.author_of(ts), bot_id, app_id)
+        if mismatch:
+            results.append({"ts": ts, "state": "refused", "reason": mismatch})
+            continue
+        before = {
+            "ts": ts,
+            "kind": row["kind"],
+            "text": row["text"],
+            "blocks": _payload(row) or [],
+            "fallback": row["fallback"],
+        }
+        outcome = notifier.amend(ts, str(row["text"]), "readability: Block Kit card", card)
+        after = {
+            "ts": ts,
+            "text": row["text"],
+            "fallback": card.fallback,
+            "blocks": card.blocks(),
+            "outcome": outcome,
+        }
+        (archive / f"{ts}-before.json").write_text(json.dumps(before, indent=2))
+        (archive / f"{ts}-after.json").write_text(json.dumps(after, indent=2))
+        results.append({"ts": ts, **outcome})
+    print(json.dumps({"restyle": results}, indent=2))
+    return 0 if all(item.get("state") == SENT for item in results) else 2
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Slack status notifications.")
     parser.add_argument(
@@ -1991,6 +2085,7 @@ def main(argv: list[str] | None = None) -> int:
             "attach",
             "amend",
             "correction",
+            "restyle",
             "status",
         ),
     )
@@ -2014,6 +2109,30 @@ def main(argv: list[str] | None = None) -> int:
             "the timestamp of a result message this ledger recorded sending, "
             "to rewrite in place; required for amend"
         ),
+    )
+    parser.add_argument(
+        "--message",
+        action="append",
+        default=[],
+        help=(
+            "timestamp of a message this ledger sent, to re-render as a card "
+            "in place (repeatable); required for restyle"
+        ),
+    )
+    parser.add_argument(
+        "--archive",
+        default="",
+        help="directory for the before/after payloads of a restyle",
+    )
+    parser.add_argument(
+        "--owner-bot",
+        default="",
+        help="the bot id every restyled message must belong to",
+    )
+    parser.add_argument(
+        "--owner-app",
+        default="",
+        help="the app id every restyled message must belong to",
     )
     parser.add_argument(
         "--reason",
@@ -2127,6 +2246,18 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 2
+
+    if args.command == "restyle":
+        if not args.message or not args.archive:
+            raise SystemExit("restyle needs --message <ts> and --archive <dir>")
+        return _restyle(
+            notifier,
+            settings,
+            list(args.message),
+            Path(args.archive),
+            args.owner_bot,
+            args.owner_app,
+        )
 
     if args.command == "test":
         event_id, kind, text = test_message(settings.run_id)

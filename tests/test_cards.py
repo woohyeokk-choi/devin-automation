@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from portal import notify
 from portal.controller import AWAITING_MERGE, DISPATCHED, MERGED
 from portal.notify import (
     SENT,
@@ -26,6 +27,24 @@ from test_slack_bot import FakeBot
 
 HEAD = "7bb8de7b136f9afdc39d31b4c6809b3de467c461"
 MERGE = "a" * 40
+
+
+class _StubState:
+    """Just the two lookups a restyle makes, with this run's records."""
+
+    class _Repairs:
+        @staticmethod
+        def get(repair_id: int) -> dict[str, Any]:
+            return dict(REPAIR, id=repair_id)
+
+    class _Incidents:
+        @staticmethod
+        def get(incident_id: int) -> dict[str, Any]:
+            return dict(INCIDENT, id=incident_id)
+
+    repairs = _Repairs()
+    incidents = _Incidents()
+
 
 REPAIR: dict[str, Any] = {
     "id": 1,
@@ -298,3 +317,84 @@ def test_no_card_body_is_longer_than_a_readable_paragraph(action: str) -> None:
     for block in card.blocks():
         if block["type"] == "section":
             assert len(block["text"]["text"]) <= 600
+
+
+# --- restyling messages already sent ---------------------------------------
+
+
+def test_a_message_posted_by_another_app_is_left_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bot = FakeBot()
+    bot.simulated = False
+    bot.authors["1789859861.249849"] = {
+        "readable": "yes",
+        "bot_id": "B0SOMEONEELSE",
+        "app_id": "A0SOMEONEELSE",
+        "detail": "",
+    }
+    notifier = _notifier(tmp_path, bot)
+    notifier.publish("1:dispatched:a", "investigation_started", "prose", 1)
+    notifier.log.record_ts(1, "1789859861.249849")
+    monkeypatch.setattr(notify, "_state", lambda _config: _StubState())
+
+    code = notify._restyle(
+        notifier,
+        cast(Any, None),
+        ["1789859861.249849"],
+        tmp_path / "archive",
+        "B0C2NAG01RD",
+        "A0C35KD8H8R",
+    )
+
+    assert code == 2 and bot.edits == []
+    # Nothing is written about a message this app may not touch.
+    assert not (tmp_path / "archive" / "1789859861.249849-before.json").exists()
+
+
+def test_restyling_edits_an_owned_message_once_and_archives_both_payloads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bot = FakeBot()
+    bot.simulated = False
+    bot.authors["1789859861.249849"] = {
+        "readable": "yes",
+        "bot_id": "B0C2NAG01RD",
+        "app_id": "A0C35KD8H8R",
+        "detail": "",
+    }
+    notifier = _notifier(tmp_path, bot)
+    notifier.publish("1:dispatched:a", "investigation_started", "long prose", 1)
+    notifier.log.record_ts(1, "1789859861.249849")
+    monkeypatch.setattr(notify, "_state", lambda _config: _StubState())
+
+    code = notify._restyle(
+        notifier,
+        cast(Any, None),
+        ["1789859861.249849"],
+        tmp_path / "archive",
+        "B0C2NAG01RD",
+        "A0C35KD8H8R",
+    )
+
+    assert code == 0 and len(bot.edits) == 1
+    assert bot.edits[0]["blocks"][0]["type"] == "header"
+    before = json.loads(
+        (tmp_path / "archive" / "1789859861.249849-before.json").read_text()
+    )
+    after = json.loads(
+        (tmp_path / "archive" / "1789859861.249849-after.json").read_text()
+    )
+    assert before["text"] == "long prose" and before["blocks"] == []
+    assert after["outcome"]["state"] == SENT
+    # The detail a message carried stays in the ledger after the edit.
+    assert notifier.log.by_ts("1789859861.249849")["text"] == "long prose"
+
+
+def test_an_unreadable_author_is_not_treated_as_our_own() -> None:
+    assert notify._owned_by(
+        {"readable": "", "detail": "missing_scope"}, "B0", "A0"
+    ).startswith("author unreadable")
+    assert not notify._owned_by(
+        {"readable": "yes", "bot_id": "B0", "app_id": "A0"}, "B0", "A0"
+    )
