@@ -113,5 +113,13 @@ Neither repair ever received product feedback, because no product check failed.
 - The two results above were announced to Slack by `portal.notify backfill`
   after the fact, marked *Historical result — repair ran earlier*; no Slack
   message was part of either live run.
+- **Five messages reached the channel, not the three authorized.** Two
+  simulated lifecycle lines (`ts 1789854423.113499`, `ts 1789854433.643299`,
+  naming `simulated-repo` issue 1 / session `simulated-1`) were posted by the
+  test suite, because `build_worker()` built the notifier from the ambient
+  `SLACK_WEBHOOK_URL` even when the providers were fakes. Simulated wiring now
+  refuses a real transport at runtime, with a canary-webhook regression that
+  intercepts sockets and asserts zero outbound calls. The channel history is
+  preserved unedited; the tests were not entirely offline.
 - Two defects, two repairs, one repository, on a fork with a synthetic
   fixture. Nothing here establishes a rate on real customer incidents.

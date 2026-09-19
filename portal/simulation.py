@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, ClassVar
 
 from .transport import Ambiguous, Refused, Response
 
@@ -39,6 +39,10 @@ class FakeTransport:
 
     handler: Callable[[Recorded], Response]
     calls: list[Recorded] = field(default_factory=list)
+    #: Read by anything holding a real credential: a repair driven by this
+    #: wire is not real, and must not produce a real side effect anywhere
+    #: else either.
+    simulated: ClassVar[bool] = True
 
     def request(
         self,

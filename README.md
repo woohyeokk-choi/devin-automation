@@ -406,12 +406,29 @@ scenario's numbers rather than every possible row-level difference.
 
 ## Status notifications (optional)
 
+`#superset-alerts` is the production-like **incident-response feed** for
+portal failures: an on-call reader watching whether a real user action broke
+and what happened about it. It is not a chat channel, and nothing listens
+there.
+
 `portal/notify.py` posts one short English line to a Slack incoming webhook
 when the lifecycle actually moves: session started, pull request available,
 independent verification passed / blocked / failed, a same-session follow-up,
 needs-attention, and terminal stop. Polling, queueing and progress are silent,
 and an expected authenticated 403 never becomes an incident, so it can never
 become an alert.
+
+What each line is allowed to claim tracks what has actually been established:
+
+| Moment | Says |
+| --- | --- |
+| Incident admitted | *Suspected defect — investigation started* — failing action, expected vs observed, trace id, baseline SHA, occurrence count, why it was admitted, the bounded plan. An eligibility rule ran; nothing has reproduced anything. |
+| Pull request opened | *Pull request available (provisional)* — the exact head, and the session's own reproduction claim labelled as its claim. Nothing is accepted yet. |
+| Replay passed | The tested head, the attempt it came from, and *verified in isolated preview; not merged/deployed*. |
+| Replay blocked / failed | *not completed*, plus what happens next. A follow-up reuses the same session and budget. |
+
+A recording link is included only when one is passed to `backfill
+--recording`; the notifier never invents a video.
 
 ```bash
 export SLACK_WEBHOOK_URL='https://hooks.slack.com/services/...'   # host only
@@ -441,6 +458,29 @@ python3 -m portal.notify backfill --repair 1 --repair 2
   *Historical result — repair ran earlier*, and writes nothing back to that
   history. It does not start dispatch and does not flood: only the repairs
   named on the command line are sent, once.
+- **Simulated wiring cannot reach the channel.** `Transport` carries a
+  `simulated` marker and `portal.transport.is_simulated` fails closed, so a
+  transport that does not declare itself is treated as scripted.
+  `build_worker()` passes that state to `build_notifier`, and a simulated
+  notifier drops the webhook before any code reads it, recording *simulated
+  repair: real delivery refused*; a deliberately sandboxed destination is
+  prefixed `[SIMULATED]`.
+
+### Incident: five posts, two of them unintended
+
+Three posts were authorized (one connectivity test, one historical summary
+per accepted repair). Five were made. Before the runtime refusal above
+existed, `build_worker()` built the notifier unconditionally from the ambient
+`SLACK_WEBHOOK_URL`, so a test wired with FakeGitHub and FakeDevin still held
+a real transport and posted two simulated lifecycle lines naming
+`simulated-repo` issue 1 and session `simulated-1`
+(`ts 1789854423.113499`, `ts 1789854433.643299`).
+
+The regression in `tests/test_deployment.py` sets a **fake canary** webhook,
+intercepts `socket.connect`/`connect_ex`/`create_connection`, runs the
+simulated dispatch and asserts zero outbound connections and no canary in the
+ledger; `tests/conftest.py` clears the ambient variable as a second layer.
+The channel history is left exactly as it is.
 
 ## Artifacts
 

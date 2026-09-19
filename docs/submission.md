@@ -49,7 +49,11 @@ statuses), nothing is merged or deployed, human touch time and cost per repair
 were not measured, the API's `acus_consumed: 0.0` is reported exactly as
 returned rather than as a cost claim, and Slack is outbound status only — a
 webhook notifier with a durable ledger, no Q&A, no exactly-once guarantee, and
-no message sent during either live run.
+no message sent during either live run. Five messages reached the channel
+rather than the three authorized: two were simulated lifecycle lines posted by
+the test suite, which inherited the ambient webhook; simulated wiring now
+refuses a real transport at runtime, proven by a canary-webhook regression
+with sockets intercepted.
 
 ## Safety boundaries worth knowing
 

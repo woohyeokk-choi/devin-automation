@@ -228,7 +228,7 @@ def test_each_lifecycle_moment_has_a_stable_distinct_id() -> None:
     ids = {message[0] for message in (dispatched, candidate, attention)}
     assert len(ids) == 3
     assert "18b04127f4a44af6a9c71f9eb3eaba9e" in dispatched[0]
-    assert "Not verified yet" in candidate[2]
+    assert "provisional" in candidate[2] and "decides" in candidate[2]
     assert "PR unusable" in attention[2]
 
 
@@ -335,3 +335,103 @@ def test_a_redirect_is_not_followed(log: NotificationLog, hook: HTTPServer) -> N
     notifier.webhook = url
     assert notifier.publish("e1", "verified", "hello") == PENDING
     assert len(_Hook.received) == 1
+
+
+# --- what the lifecycle is allowed to claim --------------------------------
+
+#: An incident as the store hands it over: the failing action, the contract
+#: that broke, and why it was admitted.
+ASSESSED = INCIDENT | {
+    "baseline_sha": "394bca55c792b7b3547e23f6e175a7cb0f0757e8",
+    "occurrence_count": 3,
+    "admission_reason": "registered S1 contract failure on the baseline revision",
+    "events": [
+        {
+            "trace_id": "trace-77",
+            "operation": "portal.update_chart_sort",
+            "assertion": {
+                "name": "omitted_row_limit_preserved",
+                "expected": 137,
+                "observed": 1000,
+                "holds": False,
+            },
+        }
+    ],
+}
+
+
+def test_the_first_message_says_suspected_and_carries_the_assessment() -> None:
+    """An eligibility rule ran. Nothing has reproduced anything yet."""
+    _, kind, text = message_for(
+        "dispatched", REPAIR | {"state": DISPATCHED, "acu_limit": 20}, ASSESSED
+    )
+    assert kind == "investigation_started"
+    assert text.startswith("Suspected defect — investigation started.")
+    assert "confirmed" not in text
+    # what failed, expected versus observed, and where it was seen
+    assert "portal.update_chart_sort" in text
+    assert "137" in text and "1000" in text
+    assert "trace-77" in text and "394bca55c792" in text
+    # why it is eligible, and what the bounded plan is
+    assert "registered S1 contract failure" in text
+    assert "reproduces first" in text and "20 requested ACUs" in text
+    assert "replay of the pull request SHA decides acceptance" in text
+
+
+def test_a_pull_request_is_provisional_and_quotes_the_session_as_the_source() -> None:
+    _, _, text = message_for(
+        "candidate",
+        REPAIR
+        | {
+            "state": CANDIDATE,
+            "agent_output": json.dumps(
+                {
+                    "reproduced": True,
+                    "classification": "product_defect",
+                    "summary": "form_data key reused after discard",
+                }
+            ),
+        },
+        ASSESSED,
+    )
+    assert "provisional" in text
+    assert "session reports the failure confirmed (product_defect)" in text
+    assert "form_data key reused after discard" in text
+    assert "Nothing is accepted yet" in text
+    assert "verified in isolated preview" not in text
+
+
+def test_a_failed_or_blocked_verification_is_not_completion() -> None:
+    _, _, failed = message_for(
+        "followed_up", REPAIR | {"follow_ups": 1}, ASSESSED
+    )
+    _, _, blocked = message_for(
+        "blocked", REPAIR | {"attention": "candidate stack init exited 1"}, ASSESSED
+    )
+    for text in (failed, blocked):
+        assert "not completed" in text
+        assert "Next:" in text
+        assert "verified in isolated preview" not in text
+
+
+def test_the_final_message_points_at_the_replay_and_invents_no_video() -> None:
+    _, _, text = message_for(
+        "verified",
+        REPAIR
+        | {
+            "verification": json.dumps(
+                {"verdict": "passed", "attempt_id": 9, "at": "2026-09-19T22:24:51+00:00"}
+            )
+        },
+        ASSESSED,
+    )
+    assert "registered checks replayed in attempt 9" in text
+    assert "verified in isolated preview; not merged/deployed" in text
+    assert "recording" not in text
+
+    _, _, historical = historical_message(
+        REPAIR, ASSESSED, {"verdict": "passed", "cases": "S1,N1"},
+        recording_url="https://example.invalid/replay.mp4",
+    )
+    assert historical.startswith("Historical result — repair ran earlier.")
+    assert "recording https://example.invalid/replay.mp4" in historical

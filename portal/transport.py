@@ -14,7 +14,7 @@ client. The distinction the controller depends on is the three outcomes:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 import requests
 from urllib3.exceptions import NewConnectionError
@@ -69,6 +69,12 @@ class Response:
 
 
 class Transport(Protocol):
+    #: False for a wire that reaches the network, True for a scripted one.
+    #: A simulated repair must not be able to reach a real destination just
+    #: because the process that runs it happens to hold a real credential,
+    #: so callers that own a credential read this before using it.
+    simulated: bool
+
     def request(
         self,
         method: str,
@@ -78,6 +84,18 @@ class Transport(Protocol):
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Response: ...
+
+
+def is_simulated(transport: Transport) -> bool:
+    """Whether this wire is scripted. A wire that does not say counts as one.
+
+    Fail closed: the question is only ever asked before using a real
+    credential, and "unsure" is not permission.
+    """
+    try:
+        return bool(transport.simulated)
+    except AttributeError:
+        return True
 
 
 @dataclass
@@ -91,6 +109,7 @@ class HttpTransport:
 
     timeout: float = 30.0
     allow_redirects: bool = True
+    simulated: ClassVar[bool] = False
 
     def request(
         self,

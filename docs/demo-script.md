@@ -13,6 +13,8 @@ When the completed S1 session is opened, say the sentence verbatim:
 | | |
 | --- | --- |
 | Portal / operator console | <http://127.0.0.1:8091/ops> — private VM loopback, not published |
+| S1 chart surface | <http://127.0.0.1:8091/settings> — the chart settings page where the sort change is made |
+| Fixture state | Reset the synthetic Table chart to `row_limit` **137** (and `googleCategory10c`) **before** recording, otherwise the read-back shows 1000 → 1000 and the failure does not appear |
 | Console login | HTTP basic, operator account; credentials come from the container environment (`docker inspect live-portal-1`), never typed on screen. Log in **before** recording so the browser has the session |
 | Baseline Superset | <http://127.0.0.1:8088/health> — should read `OK` |
 | Devin session (S1) | <https://app.devin.ai/sessions/18b04127f4a44af6a9c71f9eb3eaba9e> |
@@ -27,9 +29,10 @@ verdict is read from the stored artifact — do not imply a live preview.
 
 ## Screen-by-screen
 
-### 0:00–0:35 · What, and the pain (portal, `/` chart page)
+### 0:00–0:35 · What, and the pain (portal, `/settings`)
 
-Screen: the synthetic analytics portal, the Table chart with row limit 137.
+Screen: the chart settings page of the synthetic analytics portal, the Table
+chart reading back row limit 137.
 
 > "This is a small analytics portal on a fork of Apache Superset. A user
 > changes only the sort order of this chart. Watch the row limit."
@@ -69,8 +72,9 @@ Spend the longest single block here, in the session itself, not the dashboard:
 - the tests it ran and its pre-commit output;
 - the pull request it opened: [#4](https://github.com/woohyeokk-choi/superset/pull/4).
 
-> "The controller created the fork issue and exactly one session, capped at 20
-> ACUs and 120 minutes, owned by a service user. I did not touch the fix."
+> "The controller created the fork issue and exactly one session, requested a 20
+> ACU limit plus a controller 120-minute deadline, owned by a service user.
+> I did not touch the fix."
 
 ### 3:15–4:00 · Independent verification (`/ops/incidents/2`, repair section)
 
@@ -104,6 +108,9 @@ Hard stop by 5:00.
 
 ## Do not say
 
+- That Slack alerted the channel during either live repair: both channel
+  summaries were sent afterwards from stored records, marked *Historical
+  result — repair ran earlier*.
 - That Slack Q&A works, or that either repair alerted the channel while it
   ran — the notifier is outbound status only, and the two messages in
   `#superset-alerts` are backfills marked "Historical result".

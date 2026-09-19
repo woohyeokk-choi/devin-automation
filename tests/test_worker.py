@@ -346,7 +346,7 @@ def test_the_worker_announces_a_dispatch_and_says_nothing_about_polling(
     controller.consider(incident)
     assert [d.action for d in worker.tick()] == ["dispatched"]
     assert len(wire.calls) == 1
-    assert "Repair session started" in wire.calls[0]["json"]["text"]
+    assert "Suspected defect — investigation started" in wire.calls[0]["json"]["text"]
 
     # The next pass only polls a running session: nothing new to say.
     assert [d.action for d in worker.tick()] == ["running"]

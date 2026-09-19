@@ -213,8 +213,10 @@ class RepairWorker:
         """
         if self.notifier is None:
             return
-        try:
-            for decision in decisions:
+        for decision in decisions:
+            # Per decision, so one unannounceable transition does not silence
+            # the rest of the pass.
+            try:
                 if decision.repair_id is None:
                     continue
                 repair = self.controller.store.get(decision.repair_id)
@@ -227,9 +229,12 @@ class RepairWorker:
                 )
                 if message is not None:
                     self.notifier.publish(*message, repair_id=decision.repair_id)
+            except Exception:  # noqa: BLE001 - a status message may not break a repair
+                log.exception("status notification failed for %s", decision.action)
+        try:
             self.notifier.deliver_due()
         except Exception:  # noqa: BLE001 - a status message may not break a repair
-            log.exception("status notification failed")
+            log.exception("status notification retry pass failed")
 
     def _run(self) -> None:
         while not self._stop.wait(self.interval):

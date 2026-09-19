@@ -9,6 +9,8 @@ one's queue and its evidence.
 
 from __future__ import annotations
 
+import json
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,7 @@ import pytest
 
 from portal.config import Settings
 from portal.controller import DISPATCHED, PROPOSED, RepairStore
+from portal.notify import DISABLED, SIMULATED_REFUSAL
 from portal.coordinator import build_worker, open_state, single_instance
 from portal.events import EventStore
 from portal.incidents import IncidentStore
@@ -226,3 +229,83 @@ def test_the_lock_is_free_once_the_coordinator_leaves(state_dir: Path) -> None:
 
     with single_instance(state_dir):
         pass
+
+
+# --- ambient credentials ---------------------------------------------------
+
+#: Shaped exactly like the real thing and worth nothing. The real webhook is
+#: never read by a test; this is what the tests prove cannot be used.
+CANARY_WEBHOOK = "https://hooks.slack.com/services/T00CANARY/B00CANARY/canary0000"
+
+
+@pytest.fixture()
+def no_outbound(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Break the socket layer, so an escaped call fails loudly here."""
+    escaped: list[str] = []
+
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        escaped.append(str(args[1:2]))
+        raise AssertionError("a simulated run tried to open a socket")
+
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    monkeypatch.setattr(socket.socket, "connect_ex", forbidden)
+    monkeypatch.setattr(socket, "create_connection", forbidden)
+    return escaped
+
+
+def test_a_simulated_repair_refuses_the_ambient_webhook(
+    state_dir: Path, monkeypatch: pytest.MonkeyPatch, no_outbound: list[str]
+) -> None:
+    """Holding the credential is not permission to use it.
+
+    The channel is a production incident feed and cannot tell a scripted
+    repair from a real one, so the refusal belongs in the wiring, not in
+    whichever environment a test or simulation happens to run in.
+    """
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", CANARY_WEBHOOK)
+    events, _incidents = portal_side(deployment(state_dir, dispatch=False))
+    events.emit(upstream_call("trace-simulated"))
+    events.emit(event(event_id="assert-1", trace_id="trace-simulated", step=2))
+
+    providers, _devin_api, _devin_wire = fake_providers()
+    worker, _state = build_worker(
+        deployment(state_dir, dispatch=True), providers=providers
+    )
+
+    assert [d.action for d in worker.tick() if d.action != "deferred"] == ["dispatched"]
+    assert no_outbound == []
+
+    notifier = worker.notifier
+    assert notifier is not None
+    assert notifier.webhook == "", "the webhook must not survive on the notifier"
+    assert notifier.problem == SIMULATED_REFUSAL
+    rows = notifier.log.list()
+    assert [row["state"] for row in rows] == [DISABLED]
+    assert rows[0]["detail"] == SIMULATED_REFUSAL
+    assert rows[0]["text"].startswith("[SIMULATED] ")
+    assert CANARY_WEBHOOK not in json.dumps([dict(row) for row in rows])
+
+
+def test_the_live_wiring_still_takes_the_configured_webhook(
+    state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal is about simulated providers, not about tests being quiet."""
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", CANARY_WEBHOOK)
+    worker, _state = build_worker(deployment(state_dir, dispatch=False))
+
+    assert worker.notifier is not None
+    assert worker.notifier.enabled
+
+
+def test_the_network_guard_would_have_caught_a_real_send(
+    tmp_path: Path, no_outbound: list[str]
+) -> None:
+    """The proof above is only worth what this fixture is worth."""
+    from portal.notify import NotificationLog, Notifier
+
+    notifier = Notifier(
+        log=NotificationLog(tmp_path / "notifications.sqlite"),
+        webhook=CANARY_WEBHOOK,
+    )
+    assert notifier.publish("e1", "verified", "would have been posted") != "sent"
+    assert no_outbound, "the socket guard never saw the attempt"

@@ -68,6 +68,7 @@ from .incidents import IncidentStore
 from .isolation import IsolatedStack, replay_through_validator
 from .notify import build_notifier
 from .providers import Devin, GitHub
+from .transport import is_simulated
 from .verification import RunnerError, VerificationStore, provenance_problem
 from .worker import RepairWorker, build_controller
 
@@ -143,8 +144,19 @@ def build_worker(
     )
     # Slack lives here and nowhere else: this process already holds the
     # credentials, and a webhook must never reach the portal container, a
-    # repair prompt or a candidate stack.
-    return RepairWorker(controller, notifier=build_notifier(config)), opened
+    # repair prompt or a candidate stack. Injected providers mean the repair
+    # is scripted, and a scripted repair is not allowed to post into the
+    # production incident feed just because this process could — the channel
+    # cannot tell the difference, so the refusal is here rather than in the
+    # caller's environment.
+    notifier = build_notifier(config, simulated=_is_simulated(providers))
+    return RepairWorker(controller, notifier=notifier), opened
+
+
+def _is_simulated(providers: tuple[GitHub, Devin] | None) -> bool:
+    return providers is not None and any(
+        is_simulated(provider.transport) for provider in providers
+    )
 
 
 def _tool(*argv: str) -> str:

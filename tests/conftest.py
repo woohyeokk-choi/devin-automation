@@ -20,6 +20,12 @@ os.environ.setdefault("SUPERSET_MCP_URL", "http://127.0.0.1:1/mcp")
 os.environ.setdefault("PORTAL_ENVIRONMENT_KIND", "test")
 os.environ.setdefault("PORTAL_RUN_ID", "test")
 
+# Belt and braces around the runtime refusal in `build_notifier`: the suite
+# runs in a shell that may hold the real webhook, and a test has no business
+# posting into the incident channel even if some future wiring forgets to
+# declare itself simulated.
+os.environ.pop("SLACK_WEBHOOK_URL", None)
+
 from portal.controller import RepairStore  # noqa: E402
 from portal.incidents import IncidentStore  # noqa: E402
 

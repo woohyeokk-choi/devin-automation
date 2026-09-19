@@ -888,12 +888,48 @@ exports. Nothing here can change a repair outcome or start a session: the
 worker announces only after the controller has written its decision, and
 notifier failures are swallowed into the ledger.
 
-Three real messages were sent to `#superset-alerts`, all authorized:
-`connectivity-test:2026-09-19T21:47:22.152+00:00`, `backfill:1` and
-`backfill:2`, each `sent`. The two backfills are marked "Historical result —
-repair ran earlier" and were read from the stored repair/verification records
-without touching them; re-running the command sends nothing. All other
-testing uses a fake transport or a loopback HTTP server.
+**Five real messages reached `#superset-alerts`, not the three that were
+authorized.** The three authorized ones are the connectivity test
+(`ts 1789854442.246559`) and the two historical backfills
+(`ts 1789854458.454909`, `ts 1789854458.664169`), marked "Historical result —
+repair ran earlier" and read from the stored repair/verification records
+without touching them; re-running the command sends nothing.
+
+The two unintended ones (`ts 1789854423.113499`, `ts 1789854433.643299`) were
+simulated lifecycle lines naming `simulated-repo` issue 1 and session
+`simulated-1`, posted by the test suite. Root cause: `build_worker()`
+constructed `build_notifier(config)` unconditionally, and `build_notifier`
+reads the ambient `SLACK_WEBHOOK_URL`, so a worker wired with FakeGitHub and
+FakeDevin still held a real `HttpTransport` to the production-like incident
+channel. Hiding the environment variable in one test would not have been a
+fix — the process could hold the credential for any other reason.
+
+The fix refuses the real transport at runtime. `Transport` now carries a
+`simulated` marker (`HttpTransport` false, `FakeTransport` true) and
+`portal.transport.is_simulated` fails closed: a transport that does not
+declare itself counts as simulated. `build_worker()` passes
+`simulated=_is_simulated(providers)` and a simulated `Notifier` drops the
+webhook before any code can read it, records `simulated repair: real delivery
+refused`, and prefixes deliberately sandboxed messages `[SIMULATED]`. The
+regression in `tests/test_deployment.py` sets a **fake canary** webhook,
+patches `socket.connect`/`connect_ex`/`create_connection`, runs the simulated
+dispatch and asserts zero outbound connections and no canary anywhere in the
+ledger; `tests/conftest.py` also clears the ambient variable as a second
+layer. The channel history is preserved as-is; nothing was deleted or edited,
+and no further real message has been sent.
+
+The message content follows the incident-response contract rather than the
+internal state names. The first line is *"Suspected defect — investigation
+started"* — an eligibility rule ran, nothing has reproduced anything — and
+carries the failing action, expected versus observed, trace id, baseline SHA,
+occurrence count, why the case was admitted, and the bounded plan. A pull
+request is announced as *provisional*, quoting the session's own
+reproduction claim as the session's claim. Only the independent replay of the
+exact head produces *"verified in isolated preview; not merged/deployed"*,
+with the attempt it came from. Blocked and failed validations say explicitly
+that the repair is **not completed** and what happens next; neither consumes a
+new session. A recording link appears only when one is supplied to the CLI
+(`--recording`), so no video is ever implied.
 
 Native conversational Slack sync remains owner-only for service-user sessions
 and is not used or claimed here.

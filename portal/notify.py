@@ -56,10 +56,14 @@ from .controller import (
 )
 from .events import utcnow
 from .redaction import scrub_text
-from .transport import Ambiguous, HttpTransport, Refused, Transport
+from .transport import Ambiguous, HttpTransport, Refused, Transport, is_simulated
 
 WEBHOOK_HOST = "hooks.slack.com"
 WEBHOOK_PATH = "/services/"
+
+#: Why a simulated worker refuses to deliver, in the ledger where an operator
+#: sees it rather than in a comment.
+SIMULATED_REFUSAL = "simulated repair: real delivery refused"
 
 PENDING, SENT, FAILED, UNKNOWN, DISABLED = (
     "pending",
@@ -229,6 +233,11 @@ class Notifier:
     transport: Transport | None = None
     max_attempts: int = MAX_ATTEMPTS
     now: Callable[[], datetime] | None = None
+    #: The repairs this notifier speaks for are simulated. Holding a real
+    #: credential is then not permission to use it: the channel is a
+    #: production incident feed, and a scripted repair posting into it is
+    #: indistinguishable from a real one.
+    simulated: bool = False
     problem: str = field(init=False, default="")
 
     def __post_init__(self) -> None:
@@ -236,6 +245,14 @@ class Notifier:
             lambda: datetime.now(timezone.utc)
         )
         self.problem = webhook_problem(self.webhook) if self.webhook else ""
+        if self.simulated and not (
+            self.transport is not None and is_simulated(self.transport)
+        ):
+            # Fail closed, and drop the value rather than remembering it: an
+            # ambient SLACK_WEBHOOK_URL must not become reachable through a
+            # simulated worker by any later code path.
+            self.webhook = ""
+            self.problem = SIMULATED_REFUSAL
         # Slack answers a webhook with `ok`, not JSON, and must never be
         # followed to another host: a redirect off hooks.slack.com would post
         # the message body somewhere nobody approved.
@@ -249,6 +266,8 @@ class Notifier:
         self, event_id: str, kind: str, text: str, repair_id: int | None = None
     ) -> str:
         """Record a message and try to deliver it. Returns its ledger state."""
+        if self.simulated:
+            text = f"[SIMULATED] {text}"
         row = self.log.enqueue(event_id, kind, text, repair_id)
         if row is None:
             existing = self.log.get(event_id)
@@ -356,6 +375,68 @@ def _links(repair: dict[str, Any]) -> str:
     return " · ".join(parts)
 
 
+def _mismatch(incident: dict[str, Any] | None) -> str:
+    """The first failing assertion as `expected … observed …`.
+
+    What the channel needs is the contract that broke, not the whole trace:
+    the issue and the console hold the rest.
+    """
+    for event in (incident or {}).get("events") or []:
+        assertion = event.get("assertion") or {}
+        if assertion and not assertion.get("holds"):
+            return (
+                f"`{escape(str(assertion.get('name', '')))}` expected "
+                f"`{_short(json.dumps(assertion.get('expected')), 80)}`, observed "
+                f"`{_short(json.dumps(assertion.get('observed')), 80)}`"
+            )
+    return ""
+
+
+def _operation(incident: dict[str, Any] | None) -> str:
+    for event in (incident or {}).get("events") or []:
+        operation = str(event.get("operation") or "")
+        if operation:
+            return escape(operation)
+    return ""
+
+
+def _trace(incident: dict[str, Any] | None) -> str:
+    for event in (incident or {}).get("events") or []:
+        trace_id = str(event.get("trace_id") or "")
+        if trace_id:
+            return escape(trace_id)
+    return ""
+
+
+def _eligibility(incident: dict[str, Any] | None) -> str:
+    """Why this failure was admitted, as the incident store recorded it.
+
+    A default is not a judgement: admission means a registered case failed
+    its contract, and nothing stronger.
+    """
+    reason = str((incident or {}).get("admission_reason") or "")
+    return escape(reason or "registered contract failure on a supported case")
+
+
+def _reproduction(repair: dict[str, Any]) -> str:
+    """What the repair session itself claimed, labelled as its own claim."""
+    raw = str(repair.get("agent_output") or "")
+    if not raw:
+        return "the session reported no structured result yet"
+    try:
+        output = json.loads(raw)
+    except ValueError:
+        return "the session's structured result could not be read"
+    if not isinstance(output, dict):
+        return "the session's structured result could not be read"
+    verdict = "confirmed" if output.get("reproduced") else "not reproduced"
+    return (
+        f"session reports the failure {verdict} "
+        f"({escape(str(output.get('classification') or 'unclassified'))}): "
+        f"{_short(str(output.get('summary') or ''), 200)}"
+    )
+
+
 def _short(text: str, limit: int = 220) -> str:
     text = " ".join(str(text or "").split())
     return escape(text[:limit] + "…" if len(text) > limit else text)
@@ -379,39 +460,59 @@ def message_for(
 
     if action == "dispatched" and state == DISPATCHED:
         session = str(repair.get("session_id") or "")
+        occurrences = int((incident or {}).get("occurrence_count") or 1)
         return (
             f"{repair_id}:session:{session}",
-            "session_started",
-            f"Repair session started — {stem}. {_links(repair)}",
+            "investigation_started",
+            # Only an eligibility rule has run at this point. Nothing has
+            # reproduced anything, so this says suspected and says who
+            # decides.
+            f"Suspected defect — investigation started. {stem}. "
+            f"Failing action `{_operation(incident)}`"
+            f"{f': {_mismatch(incident)}' if _mismatch(incident) else ''}. "
+            f"Trace {_trace(incident)}, base SHA "
+            f"`{escape(str((incident or {}).get('baseline_sha') or '')[:12])}`, "
+            f"occurrence {occurrences}. Eligible: {_eligibility(incident)}. "
+            f"Plan: the session reproduces first, then fixes in scope and opens a "
+            f"pull request, within {repair.get('acu_limit')} requested ACUs and the "
+            f"deadline {escape(str(repair.get('deadline_utc') or ''))}; independent "
+            f"replay of the pull request SHA decides acceptance. {_links(repair)}",
         )
     if action == "candidate" and state == CANDIDATE:
         return (
             f"{repair_id}:pr:{head}",
             "pull_request",
-            f"Pull request ready for verification — {stem}, head `{escape(head[:12])}`. "
-            f"{_links(repair)}. Not verified yet.",
+            f"Pull request available (provisional) — {stem}, head "
+            f"`{escape(head[:12])}`. {_reproduction(repair)}. Nothing is accepted "
+            f"yet: independent replay of this exact SHA runs next and decides. "
+            f"{_links(repair)}",
         )
     if action == "verified":
         return (
             f"{repair_id}:verified:{head}",
             "verified",
-            f"Verification passed — {stem}, tested head `{escape(head)}`. "
-            f"{PREVIEW_ONLY}. {_links(repair)}",
+            f"Verification passed — {stem}, tested head `{escape(head)}` "
+            f"({_checks(repair)}). {_reproduction(repair)}. {PREVIEW_ONLY}. "
+            f"{_links(repair)}{_video(repair)}",
         )
     if action == "blocked":
         return (
             f"{repair_id}:blocked:{head}:{repair.get('attempt')}",
             "blocked",
-            f"Verification blocked (no verdict, environment problem) — {stem}, "
-            f"head `{escape(head[:12])}`: {_short(repair.get('attention'))}",
+            f"Verification blocked, not completed (no verdict, environment "
+            f"problem) — {stem}, head `{escape(head[:12])}`: "
+            f"{_short(repair.get('attention'))}. Next: the coordinator retries "
+            f"the same SHA; the repair stays unaccepted until a replay produces "
+            f"a verdict.",
         )
     if action == "followed_up":
         return (
             f"{repair_id}:failed:{head}",
             "verification_failed",
-            f"Verification failed — {stem}, head `{escape(head[:12])}`. "
-            f"Follow-up {repair.get('follow_ups')} of 2 sent to the same session. "
-            f"{_links(repair)}",
+            f"Verification failed, not completed — {stem}, head "
+            f"`{escape(head[:12])}`. Next: follow-up {repair.get('follow_ups')} of 2 "
+            f"went back to the same session with the failing checks; no new "
+            f"session and no extra budget. {_links(repair)}",
         )
     if action in ("parked", "waiting") and state == NEEDS_ATTENTION:
         return (
@@ -430,6 +531,39 @@ def message_for(
     return None
 
 
+def _checks(repair: dict[str, Any]) -> str:
+    """Which replay produced the verdict, so the claim can be looked up.
+
+    The per-check results live in the stored report rather than in a chat
+    message: this points at the attempt that holds them.
+    """
+    raw = str(repair.get("verification") or "")
+    if not raw:
+        return "replay recorded in the operator console"
+    try:
+        record = json.loads(raw)
+    except ValueError:
+        return "replay recorded in the operator console"
+    if not isinstance(record, dict):
+        return "replay recorded in the operator console"
+    return (
+        f"registered checks replayed in attempt "
+        f"{escape(str(record.get('attempt_id') or '?'))} at "
+        f"{escape(str(record.get('at') or ''))}"
+    )
+
+
+def _video(repair: dict[str, Any]) -> str:
+    """A recording link only if one exists.
+
+    Nothing in the lifecycle records video, so this is empty unless an
+    operator supplies a link (the backfill command does): an invented or
+    unrelated recording would be worse than none.
+    """
+    url = str(repair.get("recording_url") or "")
+    return f" · recording {escape(url)}" if url else ""
+
+
 def _fingerprint(text: Any) -> str:
     return sha256(str(text or "").encode("utf-8")).hexdigest()[:12]
 
@@ -438,6 +572,7 @@ def historical_message(
     repair: dict[str, Any],
     incident: dict[str, Any] | None,
     attempt: dict[str, Any] | None,
+    recording_url: str = "",
 ) -> tuple[str, str, str]:
     """A summary of a result that was reached before Slack existed here.
 
@@ -459,6 +594,7 @@ def historical_message(
         f"incident {repair.get('incident_id')}: verification {escape(verdict)} at "
         f"{escape(finished)} on head `{escape(head)}` (cases {escape(checks)}). "
         f"{tail} {_links(repair)}"
+        f"{_video({**repair, 'recording_url': recording_url})}"
     )
     return f"backfill:{repair['id']}", "historical", text
 
@@ -482,13 +618,23 @@ def webhook_from_environment() -> str:
 
 
 def build_notifier(
-    config: Settings = settings, *, transport: Transport | None = None
+    config: Settings = settings,
+    *,
+    transport: Transport | None = None,
+    simulated: bool = False,
 ) -> Notifier:
-    """The notifier this deployment gets: configured, or a recording no-op."""
+    """The notifier this deployment gets: configured, or a recording no-op.
+
+    `simulated=True` refuses the ambient webhook outright. The channel is a
+    production incident feed, so a scripted repair may reach it only through
+    a transport the caller passes in deliberately, and says `[SIMULATED]`
+    when it does.
+    """
     return Notifier(
         log=NotificationLog(config.data_dir / "notifications.sqlite"),
         webhook=webhook_from_environment(),
         transport=transport,
+        simulated=simulated,
     )
 
 
@@ -507,6 +653,14 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         help="repair id to summarise (repeatable); required for backfill",
+    )
+    parser.add_argument(
+        "--recording",
+        default="",
+        help=(
+            "link to a recording of this repair's replay, included verbatim; "
+            "omit it unless the recording shows this repair"
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -563,7 +717,10 @@ def main(argv: list[str] | None = None) -> int:
         ]
         incident = state.incidents.get(int(repair["incident_id"]))
         event_id, kind, text = historical_message(
-            repair, incident, attempts[-1] if attempts else None
+            repair,
+            incident,
+            attempts[-1] if attempts else None,
+            recording_url=args.recording,
         )
         results.append(
             {
