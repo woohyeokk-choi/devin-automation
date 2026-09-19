@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from .transport import Response, Transport
 
@@ -101,7 +101,11 @@ class GitHub:
     """Issue create/reuse/read plus the one read the verifier needs: a head SHA."""
 
     transport: Transport
-    token: str
+    #: A fixed token, or something that answers with one. An installation
+    #: token outlives neither a long verification nor a two-hour repair, so a
+    #: worker is given the source and asks it per request rather than holding
+    #: a value that quietly expires mid-run.
+    token: str | Callable[[], str]
     repo: str
     api: str = GITHUB_API
 
@@ -109,9 +113,17 @@ class GitHub:
         if not self.token:
             raise NotConfigured("no GitHub token")
 
+    def _token(self) -> str:
+        token = self.token() if callable(self.token) else self.token
+        if not token:
+            # Refusing is the only safe answer: an unauthenticated call reads
+            # as "no such issue" and would open a second one.
+            raise NotConfigured("GitHub credential unavailable")
+        return token
+
     def _headers(self) -> dict[str, str]:
         return {
-            "Authorization": f"Bearer {self.token}",
+            "Authorization": f"Bearer {self._token()}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }

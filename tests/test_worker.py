@@ -6,7 +6,9 @@ deployment sees at start-up, never a quiet fall back to a simulated success.
 
 from __future__ import annotations
 
+import subprocess
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -17,7 +19,15 @@ from portal.controller import NEEDS_ATTENTION, Controller, RepairStore
 from portal.incidents import IncidentStore
 from portal.providers import Devin, GitHub, NotConfigured
 from portal.simulation import FakeDevin, FakeGitHub, FakeTransport
-from portal.worker import RepairPoller, RepairWorker, build_controller, live_providers
+from portal.transport import Response
+from portal.worker import (
+    RepairPoller,
+    RepairWorker,
+    build_controller,
+    gh_credential,
+    github_credential,
+    live_providers,
+)
 
 from test_incidents import REPO, event
 
@@ -72,6 +82,69 @@ def test_a_browser_slug_is_not_a_v3_key(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("DEVIN_ORG_ID", "org-simulated")
     with pytest.raises(NotConfigured):
         live_providers(REPO)
+
+
+@dataclass
+class RecordingWire:
+    """A wire that remembers what each request was authenticated with."""
+
+    seen: list[str] = field(default_factory=list)
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> Response:
+        self.seen.append(headers["Authorization"])
+        return Response(status=200, body={"head": {}, "base": {}})
+
+
+def test_each_request_asks_the_credential_source_again() -> None:
+    """A token issued at start-up expires before a two-hour repair ends."""
+    issued = iter(["first-token", "second-token"])
+    wire = RecordingWire()
+    github = GitHub(transport=wire, token=lambda: next(issued), repo=REPO)
+
+    github.pull_request_head(1)
+    github.pull_request_head(1)
+
+    assert wire.seen == ["Bearer first-token", "Bearer second-token"]
+
+
+def test_an_unavailable_credential_refuses_instead_of_calling_anonymously() -> None:
+    """An unauthenticated read answers 'no such issue' and opens a second one."""
+    wire = RecordingWire()
+    github = GitHub(transport=wire, token=lambda: "", repo=REPO)
+
+    with pytest.raises(NotConfigured):
+        github.pull_request_head(1)
+
+    assert wire.seen == []
+
+
+def test_an_explicit_token_is_preferred_over_the_hosts_gh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_deployment")
+    assert github_credential() == "ghp_deployment"
+
+    monkeypatch.delenv("GITHUB_TOKEN")
+    assert github_credential() is gh_credential
+
+
+def test_an_unauthenticated_gh_is_not_a_blank_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "portal.worker.subprocess.run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, "", "not logged in"),
+    )
+    with pytest.raises(NotConfigured):
+        gh_credential()
 
 
 def worker_controller(

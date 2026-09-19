@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .brief import BASE_BRANCH
 from .controller import Controller, Decision, RepairStore
@@ -22,6 +23,31 @@ from .transport import HttpTransport, Transport
 from .verification import VerificationStore, Verifier
 
 log = logging.getLogger("portal.worker")
+
+
+def gh_credential() -> str:
+    """The host's gh-managed token, read again for every request.
+
+    A GitHub App installation token expires about an hour after it is issued,
+    which is shorter than one repair's deadline, so the worker asks `gh` each
+    time instead of capturing one at startup. The value is returned to the
+    caller's header and nowhere else: not logged, not stored, not passed to a
+    candidate stack.
+    """
+    try:
+        done = subprocess.run(
+            ["gh", "auth", "token"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise NotConfigured(f"gh credential unavailable ({type(error).__name__})")
+    if done.returncode != 0:
+        raise NotConfigured("gh is not authenticated")
+    return done.stdout.strip()
+
+
+def github_credential() -> str | Callable[[], str]:
+    """`GITHUB_TOKEN` where a deployment sets one, the host's gh otherwise."""
+    return os.environ.get("GITHUB_TOKEN") or gh_credential
 
 
 def live_providers(
@@ -34,9 +60,7 @@ def live_providers(
     would turn "nothing was configured" into "the repair succeeded".
     """
     wire = transport or HttpTransport()
-    github = GitHub(
-        transport=wire, token=os.environ.get("GITHUB_TOKEN", ""), repo=target_repo
-    )
+    github = GitHub(transport=wire, token=github_credential(), repo=target_repo)
     devin = Devin(
         transport=wire,
         api_key=os.environ.get("DEVIN_API_KEY", ""),
