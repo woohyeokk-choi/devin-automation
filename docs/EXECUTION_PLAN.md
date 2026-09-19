@@ -756,8 +756,29 @@ missed the session it had just paid for and opened a second one. Both
 spellings are now accepted and nothing else is
 (`test_a_live_shaped_session_id_is_adopted_after_an_ambiguous_create`).
 
-Live launch stays blocked on confirmed GitHub issue-create/push permission for
-the coordinator's credential and the service user's `ManageOrgSessions`.
+Both permission questions were answered by the first authorised write rather
+than by a probe: the controller's own issue creation succeeded, and the
+Member service user created the session.
+
+### Phase 6 live S2 pilot
+
+Published automation revision `7b88b9e`, clean tree, fresh state directory
+`runtime/live-state` (0700, empty before the run), portal started under the
+`live` Compose project with `AUTO_REPAIR_ENABLED=false`.
+
+| Step | Result |
+| --- | --- |
+| Real portal action (demo gate, signed profile, CSRF, one tab) | saved an exploration, discarded it, saved another: the second exploration received the discarded key and the discarded link resolved again |
+| Incident | `discarded_form_data_key_is_reused`, fingerprint `f7ff733a667fe52ceddc3eb0cff204c1`, admission `eligible`, 2 occurrences |
+| Coordinator `check` on the host | `can_verify=true`, `dispatch_enabled=true` |
+| GitHub issue (first write, through the controller) | <https://github.com/woohyeokk-choi/superset/issues/1> |
+| Devin session (exactly one) | `4b7011c76c1e4ec8bf28cb373b614577`, `max_acu_limit=20` in the create body, deadline two hours after activation, tagged with the fingerprint and `attempt-1` |
+| Handoff | the prompt carries the recorded `portal.save_exploration` request with its status and body summary, the baseline SHA and the issue link |
+
+The GitHub credential is resolved per request from the host's `gh`, so a
+two-hour repair outlives a one-hour installation token; `GITHUB_TOKEN` still
+takes precedence where a deployment sets one. Neither credential reaches a
+candidate stack.
 
 ## 8. Blockers and required credentials
 

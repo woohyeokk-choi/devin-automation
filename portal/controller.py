@@ -628,7 +628,8 @@ class Controller:
                 attention=f"session {session.status} ({session.status_detail})",
             )
             return Decision("parked", f"session {session.status}", repair_id)
-        if session.waiting:
+        delivered = session.agent_finished or bool(session.structured_output)
+        if session.waiting and not delivered:
             self.store.update(
                 repair_id,
                 state=NEEDS_ATTENTION,
@@ -636,7 +637,12 @@ class Controller:
             )
             return Decision("waiting", str(session.status_detail), repair_id)
 
-        if session.agent_finished:
+        if delivered:
+            # A session that has reported its result and then asked the
+            # operator a question has still delivered a candidate. Parking it
+            # would leave a pull request unverified over a question nobody in
+            # this loop was going to answer; the candidate is verified on its
+            # own evidence, and feedback still goes to this same session.
             return self._candidate(repair_id, session)
 
         exceeded = self._exceeded(repair, session.acus_consumed)

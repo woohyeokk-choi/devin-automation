@@ -400,6 +400,16 @@ def test_waiting_and_suspended_sessions_are_surfaced_not_terminated(
     assert not wiring.devin_api.terminated
 
 
+def test_a_question_after_the_result_still_yields_a_candidate(
+    wiring: Wiring, incident: dict[str, Any]
+) -> None:
+    decision = wiring.dispatch(incident)
+    wiring.devin_api.finish(wiring.session_id(), GOOD_OUTPUT, PR_URL)
+    wiring.devin_api.set_state(wiring.session_id(), status_detail="waiting_for_user")
+
+    assert wiring.controller.poll(decision.repair_id or 0).action == "candidate"
+
+
 # --- budget ----------------------------------------------------------------
 
 
