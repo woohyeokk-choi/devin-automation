@@ -428,7 +428,12 @@ What each line is allowed to claim tracks what has actually been established:
 | Replay blocked / failed | *not completed*, plus what happens next. A follow-up reuses the same session and budget. |
 
 A recording link is included only when one is passed to `backfill
---recording`; the notifier never invents a video.
+--recording`, alongside `--recording-scope` (what the clip shows) and the head
+it was taken at; the notifier never invents a video, and withholds any link
+whose query string carries a signature or token, because a signed download URL
+is a credential. No recording of either repaired product exists — the existing
+clips are console walk-throughs on the unfixed baseline; see
+[docs/results.md](docs/results.md#video-evidence).
 
 ```bash
 export SLACK_WEBHOOK_URL='https://hooks.slack.com/services/...'   # host only

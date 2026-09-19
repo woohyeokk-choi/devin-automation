@@ -559,9 +559,40 @@ def _video(repair: dict[str, Any]) -> str:
     Nothing in the lifecycle records video, so this is empty unless an
     operator supplies a link (the backfill command does): an invented or
     unrelated recording would be worse than none.
+
+    A link is carried with what it shows and the head it was taken at, so a
+    console walk-through on the unfixed baseline cannot read as footage of a
+    repaired product. Signed download URLs are dropped rather than published:
+    their query string is a bearer credential.
     """
     url = str(repair.get("recording_url") or "")
-    return f" · recording {escape(url)}" if url else ""
+    if not url:
+        return ""
+    if not url.startswith("https://") or _is_signed(url):
+        return " · recording link withheld (not a shareable https link)"
+    scope = str(repair.get("recording_scope") or "").strip()
+    head = str(repair.get("pr_head_sha") or "")
+    return (
+        f" · recording {escape(url)} — shows "
+        f"{_short(scope or 'scope unstated', 120)}"
+        f"{f', taken at head `{escape(head[:12])}`' if head else ''}"
+    )
+
+
+#: Query parameters that make a URL a bearer credential rather than a link.
+SIGNED_MARKERS = (
+    "x-amz-signature",
+    "x-goog-signature",
+    "signature=",
+    "token=",
+    "sig=",
+    "expires=",
+)
+
+
+def _is_signed(url: str) -> bool:
+    query = url.partition("?")[2].lower()
+    return any(marker in query for marker in SIGNED_MARKERS)
 
 
 def _fingerprint(text: Any) -> str:
@@ -573,6 +604,7 @@ def historical_message(
     incident: dict[str, Any] | None,
     attempt: dict[str, Any] | None,
     recording_url: str = "",
+    recording_scope: str = "",
 ) -> tuple[str, str, str]:
     """A summary of a result that was reached before Slack existed here.
 
@@ -594,7 +626,7 @@ def historical_message(
         f"incident {repair.get('incident_id')}: verification {escape(verdict)} at "
         f"{escape(finished)} on head `{escape(head)}` (cases {escape(checks)}). "
         f"{tail} {_links(repair)}"
-        f"{_video({**repair, 'recording_url': recording_url})}"
+        f"{_video({**repair, 'recording_url': recording_url, 'recording_scope': recording_scope})}"
     )
     return f"backfill:{repair['id']}", "historical", text
 
@@ -662,6 +694,14 @@ def main(argv: list[str] | None = None) -> int:
             "omit it unless the recording shows this repair"
         ),
     )
+    parser.add_argument(
+        "--recording-scope",
+        default="",
+        help=(
+            "what the recording actually shows, sent with the link: a console "
+            "walk-through on the unfixed baseline is not footage of a repair"
+        ),
+    )
     args = parser.parse_args(argv)
 
     notifier = build_notifier(settings)
@@ -721,6 +761,7 @@ def main(argv: list[str] | None = None) -> int:
             incident,
             attempts[-1] if attempts else None,
             recording_url=args.recording,
+            recording_scope=args.recording_scope,
         )
         results.append(
             {

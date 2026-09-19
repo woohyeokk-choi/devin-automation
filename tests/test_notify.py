@@ -435,3 +435,25 @@ def test_the_final_message_points_at_the_replay_and_invents_no_video() -> None:
     )
     assert historical.startswith("Historical result — repair ran earlier.")
     assert "recording https://example.invalid/replay.mp4" in historical
+
+
+def test_a_recording_link_carries_its_scope_and_head_or_is_withheld() -> None:
+    """A link with no scope invites the wrong reading; a signed link is a secret."""
+    _, _, plain = historical_message(
+        REPAIR, ASSESSED, {"verdict": "passed"},
+        recording_url="https://app.devin.ai/sessions/x/recording",
+        recording_scope="operator console walk-through on the unfixed baseline",
+    )
+    assert "shows operator console walk-through on the unfixed baseline" in plain
+    assert "taken at head `ffffffffffff`" in plain
+
+    _, _, signed = historical_message(
+        REPAIR, ASSESSED, {"verdict": "passed"},
+        recording_url="https://cdn.example/clip.mp4?X-Amz-Signature=deadbeef",
+        recording_scope="anything",
+    )
+    assert "deadbeef" not in signed
+    assert "recording link withheld" in signed
+
+    _, _, none = historical_message(REPAIR, ASSESSED, {"verdict": "passed"})
+    assert "recording" not in none

@@ -102,6 +102,48 @@ Neither repair ever received product feedback, because no product check failed.
   rate, touch time and cost is the prerequisite for scaling this, not a result
   of it.
 
+## Video evidence
+
+**No recording of either repaired product exists.** Every clip taken with
+Devin's native recorder so far is a portal or operator-console walk-through on
+the **unfixed baseline** `394bca55c792b7b3547e23f6e175a7cb0f0757e8`, which is
+what the running stack serves because neither product PR is merged:
+
+| Recording | ~Length | What it actually shows |
+| --- | --- | --- |
+| `portal-browser-evidence`, `portal-phase2` | 74s, 65s | Portal traces and the redacted trace viewer (baseline). |
+| `portal-phase3`, `portal-phase3-demo` | 7s, 93s | Incident console: fingerprint, dedup, handoff bundle (baseline). |
+| `live-portal-lifecycle-qa` | 55s | Incident lifecycle and stored verification attempts in the console. |
+| `live-verification-ui-retest` | 42s | Per-check rendering (19 for S2, 13 for S1) after the console fix. |
+| `operator-notifications-wrap-qa` | 30s | Notifications ledger page; the run was interrupted, so it is partial. |
+
+None of these is before/after footage of a fix, and none may be presented as
+one. They are also local session recordings: the only links that exist are
+private signed download URLs, which are not published here and are refused by
+the notifier (`_video` withholds any `https` URL whose query string carries a
+signature or token).
+
+A result alert therefore carries a recording link only when a real accessible
+one is supplied, together with what it shows and the head it was taken at:
+
+```bash
+python3 -m portal.notify backfill --repair 1 \
+  --recording https://…  --recording-scope "S2 replay at d234055eaf85"
+```
+
+Missing video is an honest omission, not a failed repair.
+
+**What a real before/after clip would take** (not run; requires authorization):
+for one case, start the existing baseline stack, perform the user action on
+`/settings` (S1) or the exploration save (S2) and film the wrong read-back;
+then have `IsolatedStack.prepare()` build a candidate stack at the already
+accepted head — `fe266eac51a996760a75997ff94b3270c9ef73b1` for S1,
+`d234055eaf85a70d5e5ec5a7a7256ee43d02dde6` for S2 — and film the same action
+returning the correct state. About 10–15 minutes of stack build per case on
+this host, no Devin session, no product edit, no merge, no public exposure;
+the new clip gets its own timestamp and provenance and leaves the phase 6
+artifacts untouched.
+
 ## What this does not show
 
 - Nothing merged, nothing deployed, no production or public preview.
