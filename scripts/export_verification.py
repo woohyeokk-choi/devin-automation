@@ -13,7 +13,9 @@ value is copied from the stored report and the stored row.
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,16 +23,26 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from portal.redaction import scrub_text  # noqa: E402
+from portal.redaction import REDACTED, SENSITIVE_KEYS, scrub_text  # noqa: E402
 from portal.verification import grade  # noqa: E402
 
 PASSED = "passed"
 
 
 def sanitize(value: Any) -> Any:
-    """Redact credential-shaped text at every depth, preserving structure."""
+    """Redact credential-shaped text at every depth, preserving structure.
+
+    A credential is often unremarkable as text — it is the key it sits under
+    that names it — so a sensitive key is redacted wholesale, exactly as the
+    event redactor does, before its value is ever walked.
+    """
     if isinstance(value, dict):
-        return {str(key): sanitize(item) for key, item in value.items()}
+        return {
+            str(key): (
+                REDACTED if str(key).lower() in SENSITIVE_KEYS else sanitize(item)
+            )
+            for key, item in value.items()
+        }
     if isinstance(value, (list, tuple)):
         return [sanitize(item) for item in value]
     if isinstance(value, bool) or isinstance(value, (int, float)) or value is None:
@@ -40,19 +52,82 @@ def sanitize(value: Any) -> Any:
     return scrub_text(str(value))
 
 
+def repo_of(url: str) -> str:
+    """The `owner/name` a pull request URL belongs to, or an empty string."""
+    parts = url.split("/")
+    return f"{parts[3]}/{parts[4]}" if len(parts) > 4 else ""
+
+
+def upstream_checks(repo: str, sha: str) -> dict[str, Any]:
+    """What GitHub reports for this head SHA, or an honest "not collected".
+
+    Absent CI is not passing CI, and an unanswered query is not absent CI:
+    a reader has to be able to tell which of the two they are looking at.
+    """
+    uncollected = {
+        "collected": False,
+        "note": f"GitHub check metadata for {sha} could not be read at export time",
+    }
+    if not repo or shutil.which("gh") is None:
+        return uncollected
+    try:
+        runs = subprocess.run(
+            ["gh", "api", f"repos/{repo}/commits/{sha}/check-runs"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        statuses = subprocess.run(
+            ["gh", "api", f"repos/{repo}/commits/{sha}/status"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if runs.returncode or statuses.returncode:
+            return uncollected
+        check_runs = json.loads(runs.stdout)
+        status = json.loads(statuses.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return uncollected
+    total = int(check_runs.get("total_count", 0))
+    reported = len(status.get("statuses", []))
+    return {
+        "collected": True,
+        "github_check_runs": total,
+        "github_commit_statuses": reported,
+        "combined_state": status.get("state", ""),
+        "conclusions": sorted(
+            {str(run.get("conclusion")) for run in check_runs.get("check_runs", [])}
+        ),
+        "note": (
+            "read from GitHub at export time. A combined state of 'pending' with "
+            "zero check-runs and zero statuses is the absence of CI, not a "
+            "passing CI result."
+        ),
+    }
+
+
 def export(live: Path, out: Path, verification_id: int, repair_id: int) -> Path:
+    """Publish one verification, proving it belongs to the repair it claims."""
     verifications = sqlite3.connect(live / "verifications.sqlite")
     verifications.row_factory = sqlite3.Row
     repairs = sqlite3.connect(live / "repairs.sqlite")
     repairs.row_factory = sqlite3.Row
-    record = dict(
-        verifications.execute(
-            "SELECT * FROM verifications WHERE id = ?", (verification_id,)
-        ).fetchone()
-    )
-    repair = dict(
-        repairs.execute("SELECT * FROM repairs WHERE id = ?", (repair_id,)).fetchone()
-    )
+    found = verifications.execute(
+        "SELECT * FROM verifications WHERE id = ?", (verification_id,)
+    ).fetchone()
+    owner = repairs.execute(
+        "SELECT * FROM repairs WHERE id = ?", (repair_id,)
+    ).fetchone()
+    if found is None or owner is None:
+        raise SystemExit(f"no such verification {verification_id} / repair {repair_id}")
+    record = dict(found)
+    repair = dict(owner)
+    if record["repair_id"] != repair["id"]:
+        raise SystemExit(
+            f"verification {verification_id} belongs to repair "
+            f"{record['repair_id']}, not {repair_id}"
+        )
     report = json.loads(Path(record["artifact_path"]).read_text())
     cases = tuple(json.loads(record["cases"]))
 
@@ -112,27 +187,24 @@ def export(live: Path, out: Path, verification_id: int, repair_id: int) -> Path:
             "provenance": json.loads(record["provenance"]),
             "report": report,
         },
-        "upstream_checks": {
-            "github_check_runs": 0,
-            "github_commit_statuses": 0,
-            "combined_state": "pending",
-            "note": (
-                "no CI ran on the candidate: zero check-runs and zero statuses on "
-                "the head SHA, so the combined state is pending for want of any "
-                "report. This is the absence of CI, not a passing CI result."
-            ),
-        },
+        "upstream_checks": upstream_checks(
+            repo_of(record["pr_url"] or repair["agent_pr_url"] or ""),
+            record["candidate_sha"],
+        ),
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(sanitize(document), indent=2) + "\n")
     return out
 
 
-def attempts(live: Path, out: Path) -> Path:
+def attempts(live: Path, out: Path, repair_id: int) -> Path:
+    """Every attempt made for one repair, blocked ones included."""
     connection = sqlite3.connect(live / "verifications.sqlite")
     connection.row_factory = sqlite3.Row
     rows = []
-    for row in connection.execute("SELECT * FROM verifications ORDER BY id"):
+    for row in connection.execute(
+        "SELECT * FROM verifications WHERE repair_id = ? ORDER BY id", (repair_id,)
+    ):
         record = dict(row)
         rows.append(
             {
@@ -147,6 +219,7 @@ def attempts(live: Path, out: Path) -> Path:
             }
         )
     document = {
+        "repair_id": repair_id,
         "total": len(rows),
         "blocked": sum(1 for row in rows if row["verdict"] == "blocked"),
         "passed": sum(1 for row in rows if row["verdict"] == PASSED),
@@ -158,10 +231,17 @@ def attempts(live: Path, out: Path) -> Path:
 
 
 def main() -> None:
+    if len(sys.argv) != 5:
+        raise SystemExit(
+            "usage: export_verification.py <live-state> <out-dir> "
+            "<repair-id> <verification-id>"
+        )
     live = Path(sys.argv[1])
     out = Path(sys.argv[2])
-    export(live, out / "verification-passed.json", 8, 1)
-    attempts(live, out / "attempts.json")
+    repair_id = int(sys.argv[3])
+    verification_id = int(sys.argv[4])
+    export(live, out / "verification-passed.json", verification_id, repair_id)
+    attempts(live, out / "attempts.json", repair_id)
     # Read the published file back and grade *that*, so the evidence is what
     # was checked rather than what was in memory when it was written.
     published = json.loads((out / "verification-passed.json").read_text())
