@@ -98,7 +98,7 @@ class IsolatedStack:
         base_url = f"http://127.0.0.1:{self.web_port}"
         mcp_url = f"http://127.0.0.1:{self.mcp_port}/mcp"
         try:
-            self._checkout(head_sha, checkout, commands)
+            self._checkout(project, head_sha, checkout, commands)
             self._compose(
                 project, checkout, ["up", "-d", WEB_SERVICE, MCP_SERVICE], commands
             )
@@ -139,7 +139,7 @@ class IsolatedStack:
                 self._compose(project, checkout, ["down", "-v", "--remove-orphans"], [])
             except RunnerError:
                 pass
-            shutil.rmtree(checkout, ignore_errors=True)
+            self._remove_tree(project, checkout)
 
     def teardown(self, environment: Environment) -> None:
         checkout = Path(environment.checkout)
@@ -147,14 +147,45 @@ class IsolatedStack:
             self._compose(
                 environment.project, checkout, ["down", "-v", "--remove-orphans"], []
             )
-            shutil.rmtree(checkout, ignore_errors=True)
+            self._remove_tree(environment.project, checkout)
+
+    def _remove_tree(self, project: str, checkout: Path) -> None:
+        """Delete a checkout the containers also wrote to.
+
+        Python bytecode the container compiled belongs to root, so the host
+        user cannot unlink it and a half-deleted tree would be inherited by
+        the next attempt on the same commit. What the container created, a
+        container removes — with only this checkout's parent mounted.
+        """
+        shutil.rmtree(checkout, ignore_errors=True)
+        if not checkout.exists():
+            return
+        try:
+            self._run(
+                [
+                    "docker", "run", "--rm",
+                    "-v", f"{checkout.parent}:/workspace",
+                    f"{project}-superset-light",
+                    "rm", "-rf", f"/workspace/{checkout.name}",
+                ],
+                checkout.parent,
+                [],
+                env=safe_environment({}, {}),
+            )
+        except RunnerError:
+            # The image may not have been built yet; the residue is then the
+            # host's own and the retry below removes it.
+            pass
+        shutil.rmtree(checkout, ignore_errors=True)
 
     # --- pieces ------------------------------------------------------------
-    def _checkout(self, head_sha: str, checkout: Path, commands: list[str]) -> None:
+    def _checkout(
+        self, project: str, head_sha: str, checkout: Path, commands: list[str]
+    ) -> None:
         if len(head_sha) != 40 or any(c not in "0123456789abcdef" for c in head_sha.lower()):
             raise RunnerError("refusing to check out anything but a full commit id")
         checkout.parent.mkdir(parents=True, exist_ok=True)
-        shutil.rmtree(checkout, ignore_errors=True)
+        self._remove_tree(project, checkout)
         url = f"{self.git_host}/{self.target_repo}.git"
         self._run(["git", "init", "--quiet", str(checkout)], Path.cwd(), commands)
         self._run(["git", "remote", "add", "origin", url], checkout, commands)
