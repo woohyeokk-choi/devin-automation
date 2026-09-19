@@ -89,8 +89,13 @@ class State:
     verifications: VerificationStore
 
 
-def open_state(config: Settings = settings) -> State:
-    """Open the portal's state from the host side of the shared directory."""
+def open_state(config: Settings = settings, *, simulated: bool = False) -> State:
+    """Open the portal's state from the host side of the shared directory.
+
+    `simulated` marks every repair this process writes, so a scripted run is
+    identifiable from the record alone: later readers (a backfill, a restart)
+    arrive with live configuration and have only the row to go on.
+    """
     events = EventStore(config.db_path)
     incidents = IncidentStore(
         config.db_path.with_name("incidents.sqlite"),
@@ -106,7 +111,9 @@ def open_state(config: Settings = settings) -> State:
     return State(
         events=events,
         incidents=incidents,
-        repairs=RepairStore(config.db_path.with_name("repairs.sqlite")),
+        repairs=RepairStore(
+            config.db_path.with_name("repairs.sqlite"), simulated=simulated
+        ),
         verifications=VerificationStore(
             config.db_path.with_name("verifications.sqlite")
         ),
@@ -126,7 +133,8 @@ def build_worker(
     unset still reads credentials from the environment rather than faking
     any.
     """
-    opened = state or open_state(config)
+    simulated = _is_simulated(providers)
+    opened = state or open_state(config, simulated=simulated)
     automation_dir = Path(config.automation_dir or Path.cwd())
     controller = build_controller(
         opened.repairs,
@@ -149,7 +157,7 @@ def build_worker(
     # production incident feed just because this process could — the channel
     # cannot tell the difference, so the refusal is here rather than in the
     # caller's environment.
-    notifier = build_notifier(config, simulated=_is_simulated(providers))
+    notifier = build_notifier(config, simulated=simulated)
     return RepairWorker(controller, notifier=notifier), opened
 
 

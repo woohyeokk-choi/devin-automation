@@ -204,10 +204,14 @@ class RepairStore:
                     [fingerprint, now, now, int(self.simulated), *values.values()],
                 )
             else:
+                # A scripted process stamps every row it touches, including
+                # one the portal proposed: later readers open the database
+                # with live configuration and have only the row to go on.
+                changes = {**values, "simulated": 1} if self.simulated else values
                 self._conn.execute(
                     f"UPDATE repairs SET updated_at = ?, "
-                    f"{','.join(f'{k} = ?' for k in values)} WHERE id = ?",
-                    [now, *values.values(), int(existing["id"])],
+                    f"{','.join(f'{k} = ?' for k in changes)} WHERE id = ?",
+                    [now, *changes.values(), int(existing["id"])],
                 )
             found = self.by_fingerprint(fingerprint)
         assert found is not None
@@ -215,10 +219,11 @@ class RepairStore:
 
     def update(self, repair_id: int, **values: Any) -> None:
         with self._lock, self._conn:
+            changes = {**values, "simulated": 1} if self.simulated else values
             self._conn.execute(
                 f"UPDATE repairs SET updated_at = ?, "
-                f"{','.join(f'{k} = ?' for k in values)} WHERE id = ?",
-                [utcnow(), *values.values(), repair_id],
+                f"{','.join(f'{k} = ?' for k in changes)} WHERE id = ?",
+                [utcnow(), *changes.values(), repair_id],
             )
 
     def by_fingerprint(self, fingerprint: str) -> dict[str, Any] | None:

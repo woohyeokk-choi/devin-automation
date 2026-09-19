@@ -428,11 +428,12 @@ What each line is allowed to claim tracks what has actually been established:
 | Replay blocked / failed | *not completed*, plus what happens next. A follow-up reuses the same session and budget. |
 
 A recording link is included only when one is passed to `backfill
---recording`, alongside `--recording-scope` (what the clip shows) and the head
-it was taken at; the notifier never invents a video, and withholds any link
-whose query string carries a signature or token, because a signed download URL
-is a credential. No recording of either repaired product exists — the existing
-clips are console walk-throughs on the unfixed baseline; see
+--recording` or `result --recording`, alongside `--recording-scope` (what the
+clip shows) and the head it was taken at; the notifier never invents a video,
+and withholds any link whose query string carries a signature or token,
+because a signed download URL is a credential. No recording of either
+repaired product exists — the existing clips are console walk-throughs on the
+unfixed baseline; see
 [docs/results.md](docs/results.md#video-evidence).
 
 ```bash
@@ -440,7 +441,17 @@ export SLACK_WEBHOOK_URL='https://hooks.slack.com/services/...'   # host only
 python3 -m portal.notify status                 # ledger, no network
 python3 -m portal.notify test                   # one marked connectivity line
 python3 -m portal.notify backfill --repair 1 --repair 2
+python3 -m portal.notify result --repair 1 \
+    --recording <url> --recording-scope 'baseline vs candidate replay'
 ```
+
+`result` is the accepted-outcome follow-up, separate from `backfill` so a
+recording made after the historical summary was sent can still be published.
+It refuses unless a stored verification attempt passed on exactly the repair's
+recorded pull request head and the repair is `verified`, and its event id
+carries that head and a digest of the link, so the same link sends once and a
+later genuine recording sends once more. With no `--recording` the line says
+no recording is published for that head rather than implying footage exists.
 
 - **Optional.** With no `SLACK_WEBHOOK_URL`, messages are recorded `disabled`
   and no request is made. The URL must be `https`, host `hooks.slack.com`,
@@ -453,8 +464,9 @@ python3 -m portal.notify backfill --repair 1 --repair 2
   also scrubs by shape from any log, error or exported event.
 - **Durable ledger.** `notifications.sqlite` beside the other state, one row
   per message keyed by a stable event id (`<repair>:<transition>[:<sha>]`,
-  `backfill:<repair>`), so repeated worker passes and repeated backfills send
-  nothing new. Delivery is at most 4 attempts with 0/30/120/600s backoff;
+  `backfill:<repair>`, `<repair>:result:<sha>:<recording digest>`), so
+  repeated worker passes and repeated commands send nothing new. Delivery is
+  at most 4 attempts with 0/30/120/600s backoff;
   ambiguous transport outcomes stop at `unknown` rather than risk a duplicate.
 - **Never part of the repair.** The worker announces only after the controller
   has written its decision, and every notifier failure is swallowed into the
@@ -480,6 +492,13 @@ python3 -m portal.notify backfill --repair 1 --repair 2
   notifier drops the webhook before any code reads it, recording *simulated
   repair: real delivery refused*; a deliberately sandboxed destination is
   prefixed `[SIMULATED]`.
+- **The record carries the same refusal.** Constructor wiring only protects
+  the process that holds it: a `backfill`, a `result` or a restarted
+  coordinator opens the same database with live configuration. A scripted
+  process stamps `simulated` on every repair row it writes or updates — even
+  one the portal proposed — and every delivery entry point (`_announce`,
+  `reconcile`, `backfill`, `result`) refuses such a row against a real
+  webhook, recording it `disabled` rather than labelling and sending it.
 
 ### Incident: five posts, two of them unintended
 
@@ -494,7 +513,8 @@ a real transport and posted two simulated lifecycle lines naming
 The regression in `tests/test_deployment.py` sets a **fake canary** webhook,
 intercepts `socket.connect`/`connect_ex`/`create_connection`, runs the
 simulated dispatch and asserts zero outbound connections and no canary in the
-ledger; `tests/conftest.py` clears the ambient variable as a second layer.
+ledger, for both a live reconcile over the stored rows and the `backfill`
+command; `tests/conftest.py` clears the ambient variable as a second layer.
 The channel history is left exactly as it is.
 
 ## Artifacts

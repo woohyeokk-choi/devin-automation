@@ -16,7 +16,13 @@ from typing import Any
 
 import pytest
 
-from portal.controller import CANDIDATE, DISPATCHED, NEEDS_ATTENTION, VERIFIED
+from portal.controller import (
+    CANDIDATE,
+    DISPATCHED,
+    NEEDS_ATTENTION,
+    TERMINAL,
+    VERIFIED,
+)
 from portal.notify import (
     DISABLED,
     FAILED,
@@ -31,6 +37,8 @@ from portal.notify import (
     _fingerprint,
     message_for,
     reconcile,
+    result_message,
+    result_problem,
     webhook_problem,
 )
 from portal.redaction import REDACTED, scrub
@@ -549,3 +557,136 @@ def test_one_unreportable_repair_does_not_silence_the_others(
     assert reconcile([broken, REPAIR], notifier, lambda _id: INCIDENT) == [
         f"2:verified:{'f' * 40}"
     ]
+
+
+# --- simulated rows --------------------------------------------------------
+
+SIMULATED_ROW = REPAIR | {"id": 7, "simulated": 1, "state": DISPATCHED}
+
+
+def test_a_simulated_record_is_refused_by_a_live_notifier(
+    tmp_path: Path,
+) -> None:
+    """The row's own flag stops it, not the wiring that read it.
+
+    A real coordinator can be pointed at a database holding scripted
+    repairs; its providers look live, so only the record says otherwise.
+    """
+    wire = Recorder()
+    notifier = Notifier(log=_ledger(tmp_path), webhook=WEBHOOK, transport=wire)
+
+    state = notifier.publish(
+        "7:session:simulated-1", "investigation_started", "text",
+        7, simulated_record=True,
+    )
+
+    assert state == DISABLED and wire.calls == []
+    row = notifier.log.get("7:session:simulated-1")
+    assert row["detail"] == "simulated repair record: real delivery refused"
+    assert row["text"].startswith("[SIMULATED] ")
+
+
+def test_reconciliation_refuses_simulated_rows_over_a_real_webhook(
+    tmp_path: Path,
+) -> None:
+    wire = Recorder()
+    notifier = Notifier(log=_ledger(tmp_path), webhook=WEBHOOK, transport=wire)
+    notifier.log.watermark("2026-09-19T22:00:00.000+00:00")
+
+    reconcile([SIMULATED_ROW, REPAIR], notifier, lambda _id: INCIDENT)
+
+    states = {row["repair_id"]: row["state"] for row in notifier.log.list()}
+    assert states == {7: DISABLED, 2: SENT}
+    assert len(wire.calls) == 1
+    assert "[SIMULATED]" not in wire.calls[0]["json"]["text"]
+
+
+def test_a_backfill_of_a_simulated_row_posts_nothing(tmp_path: Path) -> None:
+    """The CLI's own delivery call refuses the row it just read."""
+    wire = Recorder()
+    notifier = Notifier(log=_ledger(tmp_path), webhook=WEBHOOK, transport=wire)
+    event_id, kind, text = historical_message(SIMULATED_ROW, INCIDENT, None)
+
+    state = notifier.publish(
+        event_id, kind, text, 7,
+        simulated_record=bool(SIMULATED_ROW.get("simulated")),
+    )
+
+    assert state == DISABLED and wire.calls == []
+
+
+# --- the result follow-up --------------------------------------------------
+
+PASSED_ATTEMPT = {
+    "id": 11,
+    "verdict": "passed",
+    "candidate_sha": "f" * 40,
+    "cases": "S1,N1",
+    "finished_at": "2026-09-19T22:24:51.208+00:00",
+}
+RECORDING = "https://example.invalid/replay-s1.mp4"
+
+
+def test_a_result_is_separately_identified_and_carries_its_recording(
+    tmp_path: Path,
+) -> None:
+    """Backfill has already been sent; a later video still has to arrive."""
+    wire = Recorder()
+    notifier = Notifier(log=_ledger(tmp_path), webhook=WEBHOOK, transport=wire)
+    backfill_id, kind, text = historical_message(REPAIR, INCIDENT, PASSED_ATTEMPT)
+    notifier.publish(backfill_id, kind, text, 2)
+
+    event_id, kind, text = result_message(
+        REPAIR, INCIDENT, PASSED_ATTEMPT,
+        recording_url=RECORDING,
+        recording_scope="S1 replay at the accepted head",
+    )
+    assert notifier.publish(event_id, kind, text, 2) == SENT
+
+    assert event_id == f"2:result:{'f' * 40}:{_fingerprint(RECORDING)}"
+    assert event_id != backfill_id
+    assert RECORDING in wire.calls[-1]["json"]["text"]
+    assert PREVIEW_ONLY in text and "S1,N1" in text
+    # The same link again is the same event.
+    assert notifier.publish(event_id, kind, text, 2) == SENT
+    assert len(wire.calls) == 2
+
+
+def test_a_result_without_a_recording_says_so() -> None:
+    _, _, text = result_message(REPAIR, INCIDENT, PASSED_ATTEMPT)
+    assert "recording: none published for this head" in text
+
+
+def test_a_result_is_refused_unless_the_attempt_measured_that_head() -> None:
+    assert result_problem(REPAIR, PASSED_ATTEMPT) == ""
+    # Another SHA's pass is another experiment.
+    assert result_problem(REPAIR, PASSED_ATTEMPT | {"candidate_sha": "a" * 40})
+    assert result_problem(REPAIR, PASSED_ATTEMPT | {"verdict": "blocked"})
+    assert result_problem(REPAIR, None)
+    assert result_problem(REPAIR | {"state": CANDIDATE}, PASSED_ATTEMPT)
+    with pytest.raises(ValueError):
+        result_message(REPAIR, INCIDENT, PASSED_ATTEMPT | {"candidate_sha": "a" * 40})
+
+
+# --- what a block promises -------------------------------------------------
+
+
+def test_a_block_reports_the_state_it_left_the_repair_in() -> None:
+    blocked = REPAIR | {"state": DISPATCHED, "attention": "stack init exited 1"}
+    _, _, retrying = message_for("blocked", blocked, INCIDENT)
+    _, _, parked = message_for(
+        "blocked",
+        blocked | {"state": NEEDS_ATTENTION, "attention": "no runner capacity"},
+        INCIDENT,
+    )
+    _, _, stopped = message_for(
+        "blocked",
+        blocked | {"state": TERMINAL, "terminal_reason": "deadline reached"},
+        INCIDENT,
+    )
+
+    assert "the coordinator replays the same SHA" in retrying
+    assert "parked for a human — no runner capacity" in parked
+    assert "the repair is stopped — deadline reached" in stopped
+    for text in (retrying, parked, stopped):
+        assert "not completed" in text

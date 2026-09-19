@@ -250,7 +250,13 @@ class RepairWorker:
                     self.controller.incident_of(int(repair["incident_id"])),
                 )
                 if message is not None:
-                    self.notifier.publish(*message, repair_id=decision.repair_id)
+                    self.notifier.publish(
+                        *message,
+                        repair_id=decision.repair_id,
+                        # A live-configured worker can be pointed at a
+                        # database holding scripted repairs; the row says so.
+                        simulated_record=bool(repair.get("simulated")),
+                    )
             except Exception:  # noqa: BLE001 - a status message may not break a repair
                 log.exception("status notification failed for %s", decision.action)
         try:

@@ -309,3 +309,70 @@ def test_the_network_guard_would_have_caught_a_real_send(
     )
     assert notifier.publish("e1", "verified", "would have been posted") != "sent"
     assert no_outbound, "the socket guard never saw the attempt"
+
+
+def test_a_live_notifier_refuses_the_simulated_rows_it_reads(
+    state_dir: Path, monkeypatch: pytest.MonkeyPatch, no_outbound: list[str]
+) -> None:
+    """Isolation follows the record, not only the providers that made it.
+
+    The backfill command and a restarted coordinator both open the stored
+    repairs with live configuration, so a scripted row reached that way has
+    a real credential in front of it and nothing else to stop it.
+    """
+    from portal.notify import NotificationLog, Notifier, reconcile
+
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", CANARY_WEBHOOK)
+    events, _incidents = portal_side(deployment(state_dir, dispatch=False))
+    events.emit(upstream_call("trace-simulated"))
+    events.emit(event(event_id="assert-1", trace_id="trace-simulated", step=2))
+    providers, _devin_api, _devin_wire = fake_providers()
+    simulated, _state = build_worker(
+        deployment(state_dir, dispatch=True), providers=providers
+    )
+    simulated.tick()
+    rows = simulated.controller.store.list()
+    assert rows and all(row["simulated"] for row in rows)
+
+    live = Notifier(
+        log=NotificationLog(state_dir / "live-notifications.sqlite"),
+        webhook=CANARY_WEBHOOK,
+    )
+    live.log.watermark("2000-01-01T00:00:00.000+00:00")
+    assert live.enabled
+
+    reconcile(rows, live, simulated.controller.incident_of)
+
+    assert no_outbound == []
+    ledger = live.log.list()
+    assert [row["state"] for row in ledger] == [DISABLED]
+    assert CANARY_WEBHOOK not in json.dumps([dict(row) for row in ledger])
+
+
+def test_the_backfill_command_refuses_a_simulated_row(
+    state_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_outbound: list[str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The operator's own command is a delivery entry point like any other."""
+    from portal import notify
+
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", CANARY_WEBHOOK)
+    events, _incidents = portal_side(deployment(state_dir, dispatch=False))
+    events.emit(upstream_call("trace-simulated"))
+    events.emit(event(event_id="assert-1", trace_id="trace-simulated", step=2))
+    providers, _devin_api, _devin_wire = fake_providers()
+    config = deployment(state_dir, dispatch=True)
+    simulated, _state = build_worker(config, providers=providers)
+    simulated.tick()
+    monkeypatch.setattr(notify, "settings", config)
+
+    assert notify.main(["backfill", "--repair", "1"]) == 0
+
+    # The event log prints a line per emitted event; the report is last.
+    printed = capsys.readouterr().out
+    report = printed[printed.rindex("\n{\n") + 1:]
+    reported = json.loads(report)
+    assert [row["state"] for row in reported["backfill"]] == [DISABLED]
+    assert no_outbound == []

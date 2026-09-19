@@ -67,6 +67,7 @@ WEBHOOK_PATH = "/services/"
 #: Why a simulated worker refuses to deliver, in the ledger where an operator
 #: sees it rather than in a comment.
 SIMULATED_REFUSAL = "simulated repair: real delivery refused"
+SIMULATED_RECORD_REFUSAL = "simulated repair record: real delivery refused"
 
 PENDING, SENT, FAILED, UNKNOWN, DISABLED = (
     "pending",
@@ -292,15 +293,32 @@ class Notifier:
         return bool(self.webhook) and not self.problem
 
     def publish(
-        self, event_id: str, kind: str, text: str, repair_id: int | None = None
+        self,
+        event_id: str,
+        kind: str,
+        text: str,
+        repair_id: int | None = None,
+        *,
+        simulated_record: bool = False,
     ) -> str:
-        """Record a message and try to deliver it. Returns its ledger state."""
-        if self.simulated:
+        """Record a message and try to deliver it. Returns its ledger state.
+
+        `simulated_record` is the stored row's own verdict on itself. A live
+        notifier reading a scripted repair out of the database is the same
+        danger as a scripted worker holding a real webhook, so it is recorded
+        and refused rather than labelled and sent.
+        """
+        if self.simulated or simulated_record:
             text = f"[SIMULATED] {text}"
         row = self.log.enqueue(event_id, kind, text, repair_id)
         if row is None:
             existing = self.log.get(event_id)
             return str(existing["state"]) if existing else SENT
+        if simulated_record and not self.simulated:
+            self.log.settle(
+                int(row["id"]), DISABLED, SIMULATED_RECORD_REFUSAL, tried=False
+            )
+            return DISABLED
         if not self.enabled:
             self.log.settle(
                 int(row["id"]),
@@ -471,6 +489,24 @@ def _short(text: str, limit: int = 220) -> str:
     return escape(text[:limit] + "…" if len(text) > limit else text)
 
 
+def _next_after_block(repair: dict[str, Any]) -> str:
+    """What follows a blocked attempt, read off the repair rather than hoped.
+
+    A block is an absent verdict, and the controller may answer it with
+    another replay or by parking the repair for a person. Promising a retry
+    the state does not support tells the channel a repair is still moving
+    when nobody is moving it.
+    """
+    state = str(repair.get("state") or "")
+    if state == NEEDS_ATTENTION:
+        return f"parked for a human — {_short(repair.get('attention'))}"
+    if state == TERMINAL:
+        return f"the repair is stopped — {_short(repair.get('terminal_reason'))}"
+    if state in (DISPATCHED, CANDIDATE):
+        return "the coordinator replays the same SHA"
+    return f"decided by the controller from state {escape(state)}"
+
+
 def message_for(
     action: str, repair: dict[str, Any], incident: dict[str, Any] | None = None
 ) -> tuple[str, str, str] | None:
@@ -530,9 +566,8 @@ def message_for(
             "blocked",
             f"Verification blocked, not completed (no verdict, environment "
             f"problem) — {stem}, head `{escape(head[:12])}`: "
-            f"{_short(repair.get('attention'))}. Next: the coordinator retries "
-            f"the same SHA; the repair stays unaccepted until a replay produces "
-            f"a verdict.",
+            f"{_short(repair.get('attention'))}. Next: {_next_after_block(repair)}; "
+            f"the repair stays unaccepted until a replay produces a verdict.",
         )
     if action == "followed_up":
         return (
@@ -610,7 +645,11 @@ def reconcile(
             )
             if message is None or notifier.log.get(message[0]) is not None:
                 continue
-            notifier.publish(*message, repair_id=int(repair["id"]))
+            notifier.publish(
+                *message,
+                repair_id=int(repair["id"]),
+                simulated_record=bool(repair.get("simulated")),
+            )
             announced.append(message[0])
         except Exception:  # noqa: BLE001 - a status message may not break a repair
             log.exception("could not reconcile notifications for a repair")
@@ -717,6 +756,73 @@ def historical_message(
     return f"backfill:{repair['id']}", "historical", text
 
 
+def result_problem(
+    repair: dict[str, Any], attempt: dict[str, Any] | None
+) -> str:
+    """Why this attempt cannot speak for this repair's head, if it cannot.
+
+    A result message names an accepted SHA, so the attempt it quotes has to
+    be a passing one measured on exactly that SHA. An attempt from another
+    head is a different experiment.
+    """
+    if attempt is None:
+        return "no passing verification attempt is stored for this repair"
+    if str(attempt.get("verdict") or "") != "passed":
+        return f"the attempt did not pass (verdict {attempt.get('verdict')})"
+    head = str(repair.get("pr_head_sha") or "")
+    candidate = str(attempt.get("candidate_sha") or "")
+    if not head:
+        return "the repair has no recorded pull request head"
+    if candidate != head:
+        return (
+            f"the attempt measured {candidate[:12]}, "
+            f"not the repair's head {head[:12]}"
+        )
+    if str(repair.get("state") or "") != VERIFIED:
+        return f"the repair is in state {repair.get('state')}, not {VERIFIED}"
+    return ""
+
+
+def result_message(
+    repair: dict[str, Any],
+    incident: dict[str, Any] | None,
+    attempt: dict[str, Any] | None,
+    *,
+    recording_url: str = "",
+    recording_scope: str = "",
+) -> tuple[str, str, str]:
+    """The final result for an accepted head, with its recording or without.
+
+    Separate from the lifecycle and backfill messages, and keyed by the head
+    and the recording itself, so attaching a replay that did not exist when
+    the result was first announced publishes once and only once, while
+    re-running the same command with the same link sends nothing. A result
+    with no recording says so rather than implying footage exists.
+    """
+    problem = result_problem(repair, attempt)
+    if problem:
+        raise ValueError(problem)
+    verified = dict(attempt or {})
+    head = str(repair["pr_head_sha"])
+    stem = (
+        f"repair {repair['id']} ({_case(repair, incident)}), "
+        f"incident {repair.get('incident_id')}"
+    )
+    video = _video({**repair, "recording_url": recording_url,
+                    "recording_scope": recording_scope})
+    if not video:
+        video = " · recording: none published for this head"
+    return (
+        f"{repair['id']}:result:{head}:{_fingerprint(recording_url)}",
+        "result",
+        f"Result — {stem}, tested head `{escape(head)}` "
+        f"(verification {escape(str(verified.get('id') or ''))}, "
+        f"cases {escape(str(verified.get('cases') or ''))}, "
+        f"finished {escape(str(verified.get('finished_at') or ''))}). "
+        f"{_reproduction(repair)}. {PREVIEW_ONLY}. {_links(repair)}{video}",
+    )
+
+
 def test_message(run_id: str) -> tuple[str, str, str]:
     stamp = utcnow()
     return (
@@ -764,7 +870,7 @@ def _state(config: Settings) -> Any:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Slack status notifications.")
-    parser.add_argument("command", choices=("test", "backfill", "status"))
+    parser.add_argument("command", choices=("test", "backfill", "result", "status"))
     parser.add_argument(
         "--repair",
         type=int,
@@ -828,7 +934,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if not args.repair:
-        raise SystemExit("backfill needs at least one --repair <id>")
+        raise SystemExit(f"{args.command} needs at least one --repair <id>")
     state = _state(settings)
     results = []
     for repair_id in args.repair:
@@ -842,6 +948,35 @@ def main(argv: list[str] | None = None) -> int:
             if attempt["verdict"] == "passed"
         ]
         incident = state.incidents.get(int(repair["incident_id"]))
+        if args.command == "result":
+            passed = attempts[-1] if attempts else None
+            problem = result_problem(repair, passed)
+            if problem:
+                results.append({"repair": repair_id, "state": "refused", "reason": problem})
+                continue
+            event_id, kind, text = result_message(
+                repair,
+                incident,
+                passed,
+                recording_url=args.recording,
+                recording_scope=args.recording_scope,
+            )
+            results.append(
+                {
+                    "repair": repair_id,
+                    "event_id": event_id,
+                    "tested_head": repair["pr_head_sha"],
+                    "recording": bool(args.recording),
+                    "state": notifier.publish(
+                        event_id,
+                        kind,
+                        text,
+                        repair_id,
+                        simulated_record=bool(repair.get("simulated")),
+                    ),
+                }
+            )
+            continue
         event_id, kind, text = historical_message(
             repair,
             incident,
@@ -853,10 +988,16 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "repair": repair_id,
                 "event_id": event_id,
-                "state": notifier.publish(event_id, kind, text, repair_id),
+                "state": notifier.publish(
+                    event_id,
+                    kind,
+                    text,
+                    repair_id,
+                    simulated_record=bool(repair.get("simulated")),
+                ),
             }
         )
-    print(json.dumps({"backfilled": results}, indent=2))
+    print(json.dumps({args.command: results}, indent=2))
     return 0
 
 

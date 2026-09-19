@@ -48,6 +48,16 @@ def repairs(tmp_path: Path) -> RepairStore:
     return RepairStore(tmp_path / "simulated-repairs.sqlite", simulated=True)
 
 
+@pytest.fixture()
+def live_repairs(tmp_path: Path) -> RepairStore:
+    """Rows that do not declare themselves scripted.
+
+    Delivery reads that flag off the record, so a test about what reaches
+    the channel has to own rows a real run would have written.
+    """
+    return RepairStore(tmp_path / "repairs.sqlite")
+
+
 def fakes() -> tuple[GitHub, Devin, FakeGitHub, FakeDevin]:
     github_api, devin_api = FakeGitHub(), FakeDevin()
     return (
@@ -328,7 +338,7 @@ def test_the_poller_stays_asleep_while_dispatch_is_disabled(
 
 
 def test_the_worker_announces_a_dispatch_and_says_nothing_about_polling(
-    repairs: RepairStore, incident: dict[str, Any], tmp_path: Path
+    live_repairs: RepairStore, incident: dict[str, Any], tmp_path: Path
 ) -> None:
     from portal.notify import NotificationLog, Notifier
 
@@ -340,7 +350,7 @@ def test_the_worker_announces_a_dispatch_and_says_nothing_about_polling(
         webhook=WEBHOOK,
         transport=wire,
     )
-    controller = worker_controller(repairs, {1: incident}, fakes()[:2])
+    controller = worker_controller(live_repairs, {1: incident}, fakes()[:2])
     worker = RepairWorker(controller, notifier=notifier)
 
     controller.consider(incident)
@@ -376,7 +386,7 @@ def test_a_broken_notifier_cannot_change_a_repair(
 
 
 def test_a_dispatch_whose_process_died_before_speaking_is_announced_on_restart(
-    repairs: RepairStore, incident: dict[str, Any], tmp_path: Path
+    live_repairs: RepairStore, incident: dict[str, Any], tmp_path: Path
 ) -> None:
     """The crash window between advance() and the message is real."""
     from portal.notify import NotificationLog, Notifier
@@ -387,13 +397,13 @@ def test_a_dispatch_whose_process_died_before_speaking_is_announced_on_restart(
     NotificationLog(ledger).watermark("2000-01-01T00:00:00.000+00:00")
 
     # First process: dispatch commits, then nothing gets said.
-    crashed = RepairWorker(worker_controller(repairs, {1: incident}, fakes()[:2]))
+    crashed = RepairWorker(worker_controller(live_repairs, {1: incident}, fakes()[:2]))
     crashed.controller.consider(incident)
     assert [d.action for d in crashed.tick()] == ["dispatched"]
 
     wire = Recorder()
     restarted = RepairWorker(
-        worker_controller(repairs, {1: incident}, fakes()[:2]),
+        worker_controller(live_repairs, {1: incident}, fakes()[:2]),
         notifier=Notifier(
             log=NotificationLog(ledger), webhook=WEBHOOK, transport=wire
         ),
