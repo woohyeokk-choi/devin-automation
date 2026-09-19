@@ -22,7 +22,7 @@ creation and no repair sessions yet. `AUTO_REPAIR_ENABLED=false`.
 | --- | --- | --- |
 | Superset light stack | `docker-compose-light.yml` + `stack/docker-compose.ports.yml` | Web on `127.0.0.1:8088`. The MCP sidecar is a development endpoint that authenticates as an admin user, so it is bound to `127.0.0.1:5008` and is never published. |
 | Portal + operator viewer | `stack/docker-compose.portal.yml` | FastAPI, server-rendered Jinja, no frontend framework. `127.0.0.1:8090`. |
-| Event store | Docker volume `stack_portal_data`, mounted at `/data` | SQLite at `/data/events.sqlite`; the identical safe JSON is also written to the container's stdout. |
+| Event store | Host directory `$PORTAL_DATA_DIR`, bind-mounted at `/data` | SQLite at `/data/events.sqlite`; the identical safe JSON is also written to the container's stdout. The host coordinator opens the same files, so this is a bind mount and not a named volume. |
 
 The native Superset frontend is **not** built: at this revision the light stack
 serves no compiled assets, and the REST/MCP paths the scenarios exercise do not
@@ -220,6 +220,35 @@ python3 -m portal.coordinator capability     # what this process can do
 python3 -m portal.coordinator baseline <superset-sha> --out result.json
 python3 -m portal.coordinator run            # drain proposals, poll, verify
 ```
+
+#### The shared state directory
+
+"The same durable SQLite state" is one host directory, and the two processes
+have to agree on it:
+
+```bash
+export PORTAL_DATA_DIR=$PWD/runtime/state     # /data inside the container
+export PORTAL_UID=$(id -u) PORTAL_GID=$(id -g)
+mkdir -p "$PORTAL_DATA_DIR" && chmod 0700 "$PORTAL_DATA_DIR"
+
+set -a; . stack/.env; set +a
+docker compose -f stack/docker-compose.portal.yml up -d --build   # observes
+GITHUB_TOKEN=... DEVIN_API_KEY=... AUTO_REPAIR_ENABLED=true \
+  PORTAL_DATA_DIR=$PORTAL_DATA_DIR python3 -m portal.coordinator run
+```
+
+Both processes *write* those files, so the container runs as the coordinator's
+uid rather than the image's own 10001: files created at the default 0644 by
+one uid are read-only to the other, and the coordinator's first write fails.
+The portal is fixed at `AUTO_REPAIR_ENABLED=false` in the Compose file — the
+credentials, the git and Docker access and the dispatching all belong to the
+coordinator, and the Docker socket is mounted nowhere.
+
+`python3 scripts/check_shared_state.py` proves the seam end to end without a
+network: the real portal image (`--network none`) records a failure and a
+proposal in the bind mount, and the coordinator's own wiring claims it and
+dispatches it to simulated providers with the request trace intact —
+`artifacts/phase5/wiring/`.
 
 `baseline` is the live verification path with the baseline commit in place of
 a candidate: it calls `IsolatedStack.prepare()`, checks provenance, replays

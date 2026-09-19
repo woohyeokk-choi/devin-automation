@@ -403,7 +403,7 @@ not exposed and authorization is not weakened to manufacture coverage.
 
 | Fact | Value |
 | --- | --- |
-| SQLite | `/data/events.sqlite` inside the portal container, on Docker volume `stack_portal_data` |
+| SQLite | `/data/events.sqlite` inside the portal container, on the `$PORTAL_DATA_DIR` host bind mount (a named volume until Phase 5's coordinator wiring; the Phase 2 rows below were recorded on `stack_portal_data`) |
 | stdout | identical sanitized JSON records (`docker logs stack-portal-1`) |
 | Export | `GET /ops/export.jsonl` (HTTP Basic) |
 | Examples | `artifacts/examples/{S2,S1,N1}/events.redacted.jsonl` + `verdict.json` |
@@ -666,10 +666,29 @@ stack that also carries the example datasets (provenance correctly blocked
 rather than validating an unmeasured fixture), and teardown could not delete a
 checkout whose bytecode the container had written as root. Both are fixed.
 
+### Deployment wiring: one directory, one queue, whole traces
+
+| Gap | Resolution |
+| --- | --- |
+| `coordinator.run` opened `IncidentStore` without its event log, so `IncidentStore.get` returned `trace_events={}` and a coordinator-built handoff carried failing assertions with no request sequence | `portal.coordinator.open_state` opens all four stores as one thing, attaches the shared `EventStore` and drains it (catch-up covers an observer that died mid-write); `build_worker` is what `run` itself uses, so the production path and the tests share the wiring. Its `providers` argument lets injected clients travel that same path. |
+| `stack/docker-compose.portal.yml` mounted the named volume `portal_data:/data` while the coordinator documented a shared host directory — the portal's queue and the coordinator's could silently be two queues | The mount is `${PORTAL_DATA_DIR:?...}:/data`, required rather than defaulted, and the named volume is gone. Both processes write those SQLite files, so the container runs as `${PORTAL_UID:-10001}:${PORTAL_GID:-10001}`: files created 0644 by one uid are read-only to the other. The portal's `AUTO_REPAIR_ENABLED` is fixed to `false` in the Compose file instead of passed through, so sourcing a shared `.env` cannot turn the container into a second dispatcher. Credentials stay in the coordinator's environment and no Docker socket is mounted. |
+
+`artifacts/phase5/wiring/` — the real portal image, `--network none`, running
+as the coordinator's uid, recorded an upstream call, a failed assertion and a
+`proposed` repair in the bind mount; the coordinator's own `build_worker`
+claimed it and dispatched it to simulated providers. `trace_events` came back
+`{"shared-trace": 2}` and the Devin prompt carried
+`superset.save_exploration` with its status and body summary and no
+missing-trace gap. `scripts/check_shared_state.py` reruns it and refuses a
+directory that already holds state, because the dispatch is simulated.
+
 ### Tests
 
-`python3 -m pytest -q` → **229 passed**; flake8 and compileall clean over
-`portal scenarios scripts tests`.
+`python3 -m pytest -q` → **233 passed**; flake8 and compileall clean over
+`portal scenarios scripts tests`. `tests/test_deployment.py` holds the
+in-process half: the portal's queue read through the coordinator's wiring, the
+detached `IncidentStore` that loses the trace, and a coordinator pointed at a
+different directory finding nothing.
 
 Beyond the Phase 4 set: a customer request that returns while the provider is
 still sleeping; the next queued incident starting without a browser action;

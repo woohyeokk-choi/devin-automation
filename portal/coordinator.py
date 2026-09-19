@@ -20,11 +20,17 @@ containers. So the deployment is two processes over one state directory:
 
 Both see one queue, because the queue is the `repairs` table and the
 single-flight claim is a row in it; whichever process holds the slot holds it
-against the other. Paths are the only thing that differ between the two, and
-they differ only by prefix: the container's `/data` and the host's
-`$PORTAL_DATA_DIR` are the same directory, and the coordinator's workspace,
-automation directory and artifacts are host paths because the commands it
-runs are host commands.
+against the other. That only works if the two really do share one directory,
+so the portal's `/data` is a bind mount of the host's `$PORTAL_DATA_DIR`
+(`stack/docker-compose.portal.yml`) rather than a named volume the host
+cannot open. The coordinator's workspace, automation directory and artifacts
+are host paths because the commands it runs are host commands.
+
+All four stores are opened together by `open_state`, including the event log
+the incident store reads whole traces from: an incident reconstructed without
+it still lists its failing assertions but carries no `trace_events`, and the
+handoff would then reach the repair session stripped of the requests and
+responses around the failure.
 
 Nothing here is given to a candidate: `IsolatedStack` builds the environment
 for `docker compose` from scratch, so the coordinator's credentials stay in
@@ -43,17 +49,90 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from .config import settings
+from .config import Settings, settings
 from .controller import RepairStore
-from .events import utcnow
+from .events import EventStore, utcnow
 from .incidents import IncidentStore
 from .isolation import IsolatedStack, replay_through_validator
+from .providers import Devin, GitHub
 from .verification import RunnerError, VerificationStore, provenance_problem
 from .worker import RepairWorker, build_controller
+
+
+@dataclass(frozen=True)
+class State:
+    """The four SQLite stores of one deployment, opened as one thing.
+
+    `incidents.event_log` is part of the wiring and not an optional extra:
+    `IncidentStore.get` returns `trace_events={}` without it, so a handoff
+    built by the coordinator would lose the request/response sequence the
+    portal recorded.
+    """
+
+    events: EventStore
+    incidents: IncidentStore
+    repairs: RepairStore
+    verifications: VerificationStore
+
+
+def open_state(config: Settings = settings) -> State:
+    """Open the portal's state from the host side of the shared directory."""
+    events = EventStore(config.db_path)
+    incidents = IncidentStore(
+        config.db_path.with_name("incidents.sqlite"),
+        target_repo=config.target_repo,
+        parent_fingerprint=config.parent_incident,
+        expected_baseline=config.baseline_sha,
+    )
+    incidents.event_log = events
+    # The portal folds events as it commits them; folding again here costs
+    # nothing (an already-folded event is a duplicate by event_id) and means
+    # the coordinator still sees an incident whose observer died mid-write.
+    incidents.drain(events)
+    return State(
+        events=events,
+        incidents=incidents,
+        repairs=RepairStore(config.db_path.with_name("repairs.sqlite")),
+        verifications=VerificationStore(
+            config.db_path.with_name("verifications.sqlite")
+        ),
+    )
+
+
+def build_worker(
+    config: Settings = settings,
+    *,
+    state: State | None = None,
+    providers: tuple[GitHub, Devin] | None = None,
+) -> tuple[RepairWorker, State]:
+    """The worker this module runs, assembled over the shared state.
+
+    `providers` exists so the wiring itself can be tested without a network:
+    injected clients travel the same path the live ones do, and leaving it
+    unset still reads credentials from the environment rather than faking
+    any.
+    """
+    opened = state or open_state(config)
+    automation_dir = Path(config.automation_dir or Path.cwd())
+    controller = build_controller(
+        opened.repairs,
+        target_repo=config.target_repo,
+        versions={"automation_sha": _automation_ref(automation_dir)[0]},
+        dispatch_enabled=config.auto_repair_enabled,
+        providers=providers,
+        verifications=opened.verifications,
+        automation_dir=automation_dir,
+        workspace=Path(config.verification_workspace or (automation_dir / "runtime")),
+        artifacts=Path(config.verification_artifacts or config.data_dir / "artifacts"),
+        web_port=config.verification_web_port,
+        mcp_port=config.verification_mcp_port,
+        incident_of=opened.incidents.get,
+    )
+    return RepairWorker(controller), opened
 
 
 def _tool(*argv: str) -> str:
@@ -182,28 +261,7 @@ def run() -> int:
     if not report["can_verify"]:
         print(json.dumps(report, indent=2), file=sys.stderr)
         raise SystemExit("this process cannot host the runner; see the report above")
-    incidents = IncidentStore(
-        settings.db_path.with_name("incidents.sqlite"),
-        target_repo=settings.target_repo,
-        parent_fingerprint=settings.parent_incident,
-        expected_baseline=settings.baseline_sha,
-    )
-    repairs = RepairStore(settings.db_path.with_name("repairs.sqlite"))
-    verifications = VerificationStore(settings.db_path.with_name("verifications.sqlite"))
-    controller = build_controller(
-        repairs,
-        target_repo=settings.target_repo,
-        versions={"automation_sha": _automation_ref(Path(settings.automation_dir))[0]},
-        dispatch_enabled=settings.auto_repair_enabled,
-        verifications=verifications,
-        automation_dir=Path(settings.automation_dir),
-        workspace=Path(settings.verification_workspace),
-        artifacts=Path(settings.verification_artifacts or settings.data_dir / "artifacts"),
-        web_port=settings.verification_web_port,
-        mcp_port=settings.verification_mcp_port,
-        incident_of=lambda incident_id: incidents.get(incident_id),
-    )
-    worker = RepairWorker(controller)
+    worker, _state = build_worker(settings)
     print(json.dumps({"coordinator": "running", **report}, indent=2), flush=True)
     try:
         while True:
