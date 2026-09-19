@@ -258,6 +258,10 @@ session, product edit, merge or public exposure was involved.
   baseline and at the accepted head, in `artifacts/phase8/portal-ui/`: saved row limit 137 → 1000 on
   `394bca55`, 137 → 137 on `fe266eac`, from a sort-only change. Still a later
   local replay of one case, still not Superset's frontend and not the phase 6
-  verification; nothing from it has been published to Slack.
+  verification. Only the candidate clip was published, once, into the existing
+  S1 thread — `portal.notify attach --repair 2`, file `F0C2NG71TKR`, `sent` at
+  one attempt, captured 2026-09-19T22:53:07+00:00 against `fe266eac51a9`. The
+  baseline clip stays in the repository only: it runs at `394bca55`, and a file
+  under the accepted head's result would read as footage of the fix.
 - Two defects, two repairs, one repository, on a fork with a synthetic
   fixture. Nothing here establishes a rate on real customer incidents.
