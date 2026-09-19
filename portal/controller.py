@@ -183,7 +183,7 @@ class RepairStore:
                     f"{','.join(f'{k} = ?' for k in values)} WHERE id = ?",
                     [now, *values.values(), int(existing["id"])],
                 )
-        found = self.by_fingerprint(fingerprint)
+            found = self.by_fingerprint(fingerprint)
         assert found is not None
         return found
 
@@ -196,28 +196,36 @@ class RepairStore:
             )
 
     def by_fingerprint(self, fingerprint: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT * FROM repairs WHERE fingerprint = ?", (fingerprint,)
-        ).fetchone()
+        # Reads hold the lock too. One connection is shared by every thread of
+        # a worker, and sqlite3 does not serialise statements on it: a read
+        # interleaved with another thread's write returns that thread's rows
+        # or none at all, which reads as a delivery that never landed.
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM repairs WHERE fingerprint = ?", (fingerprint,)
+            ).fetchone()
         return dict(row) if row else None
 
     def get(self, repair_id: int) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT * FROM repairs WHERE id = ?", (repair_id,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM repairs WHERE id = ?", (repair_id,)
+            ).fetchone()
         return dict(row) if row else None
 
     def list(self) -> list[dict[str, Any]]:
-        return [
-            dict(r)
-            for r in self._conn.execute("SELECT * FROM repairs ORDER BY id DESC").fetchall()
-        ]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM repairs ORDER BY id DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def active(self) -> dict[str, Any] | None:
         """The repair holding the single-flight claim, if any."""
-        row = self._conn.execute(
-            "SELECT r.* FROM repair_slot s JOIN repairs r ON r.id = s.repair_id"
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT r.* FROM repair_slot s JOIN repairs r ON r.id = s.repair_id"
+            ).fetchone()
         return dict(row) if row else None
 
     def queued(self) -> list[dict[str, Any]]:
@@ -227,12 +235,11 @@ class RepairStore:
         and picked up here by the worker, so nothing is lost if the process
         dies between the two.
         """
-        return [
-            dict(r)
-            for r in self._conn.execute(
+        with self._lock:
+            rows = self._conn.execute(
                 "SELECT * FROM repairs WHERE state = ? ORDER BY id", (PROPOSED,)
             ).fetchall()
-        ]
+        return [dict(r) for r in rows]
 
     # --- single-flight claim -----------------------------------------------
 
@@ -628,7 +635,17 @@ class Controller:
                 attention=f"session {session.status} ({session.status_detail})",
             )
             return Decision("parked", f"session {session.status}", repair_id)
-        delivered = session.agent_finished or bool(session.structured_output)
+        # A session that has reported a result and then asked the operator a
+        # question has still delivered a candidate: parking it would leave a
+        # pull request unverified over a question nobody in this loop was
+        # going to answer. That is the whole of the exception. Structured
+        # output alone is not completion — an agent emits valid progress
+        # while it is still working — and `waiting_for_approval` is a hold
+        # somebody placed deliberately, so neither may skip ahead.
+        handed_over = bool(session.structured_output) and bool(session.pull_requests)
+        delivered = session.agent_finished or (
+            session.status_detail == "waiting_for_user" and handed_over
+        )
         if session.waiting and not delivered:
             self.store.update(
                 repair_id,
@@ -638,11 +655,6 @@ class Controller:
             return Decision("waiting", str(session.status_detail), repair_id)
 
         if delivered:
-            # A session that has reported its result and then asked the
-            # operator a question has still delivered a candidate. Parking it
-            # would leave a pull request unverified over a question nobody in
-            # this loop was going to answer; the candidate is verified on its
-            # own evidence, and feedback still goes to this same session.
             return self._candidate(repair_id, session)
 
         exceeded = self._exceeded(repair, session.acus_consumed)

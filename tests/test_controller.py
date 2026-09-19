@@ -236,22 +236,33 @@ def test_concurrent_delivery_creates_one_repair(
     import threading
 
     actions: list[str] = []
+    # A thread that dies takes its exception with it, and the assertions below
+    # still pass on the survivors: a dropped delivery has to be raised here or
+    # it reads as a green run.
+    failures: list[BaseException] = []
     barrier = threading.Barrier(4)
 
     def deliver() -> None:
         barrier.wait()
-        actions.append(wiring.dispatch(incident).action)
+        try:
+            actions.append(wiring.dispatch(incident).action)
+        except BaseException as exc:  # noqa: B036 - re-raised in the main thread
+            failures.append(exc)
 
     threads = [threading.Thread(target=deliver) for _ in range(4)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join()
+    assert not failures, f"a delivery thread failed: {failures[0]!r}"
+    assert len(actions) == 4
     # One issue and one session however the four deliveries interleave: losers
     # either defer to the claim holder or reconcile onto the object it created.
     assert len(wiring.devin_api.sessions) == 1
     assert len(wiring.github_api.issues) == 1
-    assert set(actions) <= {"dispatched", "deferred", "in_flight"}
+    # `running` belongs here too: a loser's worker pass can poll the repair
+    # the winner just dispatched, which is the queue working, not a second job.
+    assert set(actions) <= {"dispatched", "deferred", "in_flight", "running"}
 
 
 def test_a_restart_reuses_the_issue_and_session_it_already_created(
@@ -408,6 +419,72 @@ def test_a_question_after_the_result_still_yields_a_candidate(
     wiring.devin_api.set_state(wiring.session_id(), status_detail="waiting_for_user")
 
     assert wiring.controller.poll(decision.repair_id or 0).action == "candidate"
+
+
+PROGRESS_OUTPUT = {
+    "reproduced": False,
+    "classification": "product_defect",
+    "summary": "Reproducing the failure",
+}
+
+
+def test_valid_progress_output_from_a_working_session_is_not_a_delivery(
+    wiring: Wiring, incident: dict[str, Any]
+) -> None:
+    """An agent emits well-formed output while it is still working."""
+    decision = wiring.dispatch(incident)
+    wiring.devin_api.set_state(
+        wiring.session_id(),
+        status="running",
+        status_detail="working",
+        structured_output=PROGRESS_OUTPUT,
+    )
+
+    assert wiring.controller.poll(decision.repair_id or 0).action == "running"
+
+
+def test_progress_output_does_not_outlive_the_deadline(
+    repairs: RepairStore, incident: dict[str, Any]
+) -> None:
+    """Mid-flight output must not buy a session time past its wall clock."""
+    wiring = Wiring(repairs, budget=Budget(acu_limit=20, wall_clock_minutes=120))
+    decision = wiring.dispatch(incident)
+    wiring.devin_api.set_state(
+        wiring.session_id(),
+        status="running",
+        status_detail="working",
+        structured_output=PROGRESS_OUTPUT,
+    )
+    wiring.clock += timedelta(minutes=121)
+
+    stopped = wiring.controller.poll(decision.repair_id or 0)
+    assert stopped.action == "stopped"
+    assert "deadline" in stopped.detail
+
+
+def test_an_approval_hold_is_preserved_even_with_a_result_and_a_pull_request(
+    wiring: Wiring, incident: dict[str, Any]
+) -> None:
+    """Somebody placed that hold deliberately; verification does not lift it."""
+    decision = wiring.dispatch(incident)
+    wiring.devin_api.finish(wiring.session_id(), GOOD_OUTPUT, PR_URL)
+    wiring.devin_api.set_state(wiring.session_id(), status_detail="waiting_for_approval")
+
+    assert wiring.controller.poll(decision.repair_id or 0).action == "waiting"
+
+
+def test_a_question_without_a_pull_request_is_not_a_delivery(
+    wiring: Wiring, incident: dict[str, Any]
+) -> None:
+    decision = wiring.dispatch(incident)
+    wiring.devin_api.set_state(
+        wiring.session_id(),
+        status="running",
+        status_detail="waiting_for_user",
+        structured_output=PROGRESS_OUTPUT,
+    )
+
+    assert wiring.controller.poll(decision.repair_id or 0).action == "waiting"
 
 
 # --- budget ----------------------------------------------------------------
