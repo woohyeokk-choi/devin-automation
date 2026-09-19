@@ -21,6 +21,7 @@ from .config import settings
 from .domain import DIMENSIONS, SORTS, Denied, ExplorationSpec, FixtureMissing, Portal
 from .events import EventStore
 from .handoff import FILES as BUNDLE_FILES, write_bundle
+from .controller import Controller, RepairStore
 from .incidents import IncidentStore
 from .provenance import summary as provenance_summary
 from .security import (
@@ -42,11 +43,63 @@ incidents = IncidentStore(
     settings.db_path.with_name("incidents.sqlite"),
     target_repo=settings.target_repo,
     parent_fingerprint=settings.parent_incident,
+    expected_baseline=settings.baseline_sha,
 )
 # Observation, not dispatch: the incident model is fed from the server's own
 # event stream regardless of AUTO_REPAIR_ENABLED.
-store.observer = incidents.observe
+incidents.event_log = store
+# The callback runs after the event is committed. A crash in that window would
+# lose the incident, so every start folds anything the callback never saw. The
+# replay is free: an already-folded event is a duplicate by event_id.
+incidents.drain(store)
 portal = Portal(settings, store)
+
+
+def handoff_versions() -> dict[str, Any]:
+    """What a bundle or a brief must pin, all of it measured here."""
+    return {
+        "portal_run_id": settings.run_id,
+        "environment_kind": settings.environment_kind,
+        "measured_at": portal.provenance.get("measured_at"),
+        "running_code_sha256": portal.provenance.get("source", {}).get(
+            "running_code_sha256"
+        ),
+        "container_image_id": portal.provenance.get("container", {}).get("image_id"),
+        "automation_sha": portal.provenance.get("automation", {}).get("checkout_sha"),
+        "automation_dirty": portal.provenance.get("automation", {}).get("checkout_dirty"),
+    }
+
+
+repairs = RepairStore(settings.db_path.with_name("repairs.sqlite"))
+# Dispatch is off, so no live provider is configured and none is faked: the
+# controller records the exact issue and session bodies instead of sending
+# them. Observation and proposal do not wait for anyone to open the console.
+controller = Controller(
+    repairs,
+    target_repo=settings.target_repo,
+    versions=handoff_versions(),
+    dispatch_enabled=settings.auto_repair_enabled,
+)
+
+
+def observe_and_consider(event: dict[str, Any]) -> dict[str, Any]:
+    """One failed user action: fold it, then let the controller decide."""
+    result = incidents.observe(event)
+    consider(str(result.get("fingerprint") or ""))
+    return result
+
+
+def consider(fingerprint: str) -> None:
+    incident = incidents.by_fingerprint(fingerprint) if fingerprint else None
+    if incident is not None:
+        controller.consider(incident)
+
+
+store.observer = observe_and_consider
+for pending in incidents.eligible():
+    # Catch-up covers the controller too: an incident folded by the drain has
+    # never been seen by a live observer.
+    controller.consider(pending)
 app = FastAPI(title="Synthetic Analytics portal", docs_url=None, redoc_url=None)
 
 # Every route below the demo gate. `/healthz` stays open so a container health
@@ -375,7 +428,17 @@ def ops_incident(
         incident=incident,
         bundle_files=BUNDLE_FILES,
         note=note,
+        # What the controller would send, or did: the disabled path is the
+        # same path, so the proposal is inspectable before anything is live.
+        repair=repairs.by_fingerprint(str(incident["fingerprint"])),
+        intents=intents_of(str(incident["fingerprint"])),
+        auto_repair_enabled=settings.auto_repair_enabled,
     )
+
+
+def intents_of(fingerprint: str) -> list[dict[str, Any]]:
+    repair = repairs.by_fingerprint(fingerprint)
+    return repairs.intents(int(repair["id"])) if repair else []
 
 
 def bundle_dir(incident: dict[str, Any]) -> Path:
@@ -390,19 +453,7 @@ def ops_export_incident(
     incident = incidents.get(incident_id)
     if incident is None:
         raise HTTPException(status_code=404, detail="unknown incident")
-    manifest = write_bundle(
-        incident,
-        bundle_dir(incident),
-        versions={
-            "portal_run_id": settings.run_id,
-            "environment_kind": settings.environment_kind,
-            "measured_at": portal.provenance.get("measured_at"),
-            "running_code_sha256": portal.provenance.get("source", {}).get(
-                "running_code_sha256"
-            ),
-            "container_image_id": portal.provenance.get("container", {}).get("image_id"),
-        },
-    )
+    manifest = write_bundle(incident, bundle_dir(incident), versions=handoff_versions())
     query = urlencode({"note": f"bundle written ({len(manifest['files']) + 1} files)"})
     return RedirectResponse(f"/ops/incidents/{incident_id}?{query}", status_code=303)
 

@@ -77,6 +77,57 @@
   </p>
 </div>
 
+<div class="card">
+  <h2>Repair</h2>
+  {% if not repair %}
+  <p class="muted">No repair has been proposed for this incident.</p>
+  {% else %}
+  <table>
+    <tbody>
+      <tr><th>State</th><td>{{ repair.state }}{% if repair.simulated %} <span class="muted">(SIMULATED run)</span>{% endif %}</td></tr>
+      <tr><th>Dispatch</th>
+        <td>
+          {% if auto_repair_enabled %}enabled{% else %}
+          <span class="muted">AUTO_REPAIR_ENABLED=false — nothing was sent; the exact bodies below are what would be.</span>
+          {% endif %}
+        </td></tr>
+      <tr><th>Attempt</th><td>{{ repair.attempt }} · {{ repair.follow_ups }} follow-up(s) of 2</td></tr>
+      <tr><th>Budget</th><td>{{ repair.acu_limit }} ACU · deadline {{ repair.deadline_utc }}</td></tr>
+      <tr><th>Issue</th><td>{{ repair.issue_url or 'not connected' }}</td></tr>
+      <tr><th>Session</th><td>{{ repair.session_url or 'not connected' }}</td></tr>
+      <tr><th>Reported by the session</th>
+        <td>
+          {% if repair.agent_status %}
+          {{ repair.agent_status }} / {{ repair.agent_detail }} · {{ repair.agent_acus }} ACU
+          <span class="muted">— what the agent reports, never a verification result</span>
+          {% else %}not connected{% endif %}
+        </td></tr>
+      <tr><th>Pull request</th><td>{{ repair.agent_pr_url or 'not connected' }}{% if repair.pr_head_sha %} @ {{ repair.pr_head_sha }} <span class="muted">(head read from GitHub)</span>{% endif %}</td></tr>
+      <tr><th>Independent verification</th><td>{{ repair.verification or 'not verified' }}</td></tr>
+      {% if repair.attention %}<tr><th>Needs attention</th><td>{{ repair.attention }}</td></tr>{% endif %}
+      {% if repair.terminal_reason %}<tr><th>Terminal reason</th><td>{{ repair.terminal_reason }}</td></tr>{% endif %}
+    </tbody>
+  </table>
+
+  <h3>Proposed issue: {{ repair.issue_title }}</h3>
+  <pre>{{ repair.issue_body }}</pre>
+  <h3>Proposed Devin request body</h3>
+  <pre>{{ repair.session_request }}</pre>
+
+  {% if intents %}
+  <h3>Creation intents</h3>
+  <table>
+    <thead><tr><th>Kind</th><th>Marker</th><th>State</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for item in intents %}
+      <tr><td>{{ item.kind }}</td><td>{{ item.marker }}</td><td>{{ item.state }}</td><td>{{ item.detail or '—' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% endif %}
+</div>
+
 {% if incident.processing_errors %}
 <div class="card">
   <h2>Processing errors</h2>

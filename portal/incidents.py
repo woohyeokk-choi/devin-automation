@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .events import utcnow
+from .events import EventStore, utcnow
 from .redaction import scrub
 
 SCHEMA = """
@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS incidents (
     baseline_sha      TEXT NOT NULL,
     revision_strength TEXT NOT NULL,
     fixture_revision  TEXT,
+    admission         TEXT NOT NULL DEFAULT 'eligible',
+    admission_reason  TEXT,
     state             TEXT NOT NULL DEFAULT 'detected',
     occurrence_count  INTEGER NOT NULL DEFAULT 0,
     first_seen_at     TEXT NOT NULL,
@@ -75,6 +77,15 @@ CREATE TABLE IF NOT EXISTS incident_processing_errors (
     event_id TEXT,
     reason   TEXT NOT NULL
 );
+
+-- Durable catch-up position in the event log. The observer callback is a
+-- latency optimisation, not the contract: a crash between the event commit
+-- and the callback is recovered by rescanning from here.
+CREATE TABLE IF NOT EXISTS ingest_cursor (
+    name        TEXT PRIMARY KEY,
+    last_row_id INTEGER NOT NULL,
+    updated_at  TEXT NOT NULL
+);
 """
 
 #: States an incident can hold. Nothing promotes itself: a user whose next
@@ -87,6 +98,15 @@ STATES = ("detected", "candidate_fix", "verified_in_preview")
 #: session's own reproduction from opening a second repair job.
 DERIVED_KINDS = frozenset({"preview", "reproduction", "verification"})
 
+#: Environments an ordinary product failure may be raised from. Admission is
+#: closed by default: an unrecognised environment kind is an operational
+#: error, not a product defect in an environment we happen not to know.
+BASELINE_KINDS = frozenset({"baseline", "baseline-light"})
+KNOWN_KINDS = BASELINE_KINDS | DERIVED_KINDS
+
+#: An incident that is recorded but must never be dispatched for repair.
+ELIGIBLE, BLOCKED = "eligible", "blocked"
+
 
 @dataclass(frozen=True)
 class Family:
@@ -96,7 +116,13 @@ class Family:
     scenario: str
     title: str
     statement: str
+    #: Assertions whose failure *is* this defect. Only these qualify an
+    #: incident for repair.
     assertions: tuple[str, ...]
+    #: Related assertions kept as evidence. They are controls: at this
+    #: baseline they hold, and if one ever fails it is an unreproduced new
+    #: behaviour, not a qualified repair case for this family.
+    controls: tuple[str, ...] = ()
 
 
 FAMILIES: tuple[Family, ...] = (
@@ -125,16 +151,20 @@ FAMILIES: tuple[Family, ...] = (
             "Updating only the sort of a table chart through MCP resets the "
             "omitted row limit to the default instead of leaving it alone."
         ),
-        assertions=(
-            "row_limit_survives_an_unrelated_change",
-            "color_scheme_survives_an_unrelated_change",
-        ),
+        # Narrow to what was actually reproduced: the omitted row limit is
+        # reset. `color_scheme` is preserved at this baseline, so it is a
+        # control and never qualifies a repair on its own.
+        assertions=("row_limit_survives_an_unrelated_change",),
+        controls=("color_scheme_survives_an_unrelated_change",),
     ),
 )
 
 _BY_ASSERTION: dict[str, Family] = {
     name: family for family in FAMILIES for name in family.assertions
 }
+_CONTROLS: frozenset[str] = frozenset(
+    name for family in FAMILIES for name in family.controls
+)
 
 
 def family_for(assertion_name: str) -> Family | None:
@@ -166,17 +196,50 @@ def fingerprint(target_repo: str, baseline_sha: str, family: str, actor: str) ->
 
 
 class IncidentStore:
-    def __init__(self, db_path: Path, target_repo: str, parent_fingerprint: str = "") -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        target_repo: str,
+        parent_fingerprint: str = "",
+        expected_baseline: str = "",
+    ) -> None:
         self.db_path = db_path
         self.target_repo = target_repo
         # Server-side configuration: which incident a preview/verification run
         # belongs to. A browser field can never supply this.
         self.parent_fingerprint = parent_fingerprint
-        self._lock = threading.Lock()
+        #: The SHA this deployment is supposed to be running. When set, an
+        #: event carrying a different one is provenance we cannot trust.
+        self.expected_baseline = expected_baseline
+        #: The event log to pull whole traces from when a bundle is written.
+        #: Evidence is the failing assertions; a repair session needs the
+        #: requests around them too.
+        self.event_log: EventStore | None = None
+        # Re-entrant on purpose: the failure paths inside a transaction record
+        # a processing error, which needs the same lock.
+        self._lock = threading.RLock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Admit-by-default was the old behaviour; existing rows keep it.
+
+        Re-deriving admission for incidents raised before the check existed
+        would be guessing at evidence, so they are marked for review instead.
+        """
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(incidents)")}
+        if "admission" in columns:
+            return
+        self._conn.execute(
+            "ALTER TABLE incidents ADD COLUMN admission TEXT NOT NULL DEFAULT 'blocked'"
+        )
+        self._conn.execute("ALTER TABLE incidents ADD COLUMN admission_reason TEXT")
+        self._conn.execute(
+            "UPDATE incidents SET admission_reason = 'recorded before admission checks existed'"
+        )
 
     # ---------------------------------------------------------- ingestion
     def observe(self, event: dict[str, Any]) -> dict[str, Any]:
@@ -194,6 +257,26 @@ class IncidentStore:
             self._record_error(event.get("event_id"), type(exc).__name__)
             return {"action": "processing_error"}
 
+    def _admission(
+        self, event: dict[str, Any], family: Family, baseline_sha: str
+    ) -> tuple[str, str | None]:
+        """Whether this incident may ever be handed to a repair session.
+
+        Fails closed. An incident we cannot pin to provable, consistent
+        evidence is still recorded — hiding it would be worse — but it is
+        recorded as `blocked`, which the controller refuses to dispatch.
+        """
+        if baseline_sha == "unverified":
+            return BLOCKED, "running code could not be matched to a checkout"
+        if self.expected_baseline and baseline_sha != self.expected_baseline:
+            return BLOCKED, "baseline does not match the deployment's configured SHA"
+        if not (event.get("revision") or {}).get("fixture_revision"):
+            return BLOCKED, "no fixture revision recorded"
+        scenario = event.get("scenario")
+        if scenario and scenario != family.scenario:
+            return BLOCKED, "event scenario disagrees with the failure family"
+        return ELIGIBLE, None
+
     def _observe(self, event: dict[str, Any]) -> dict[str, Any]:
         assertion = event.get("assertion") or {}
         name = assertion.get("name", "")
@@ -201,6 +284,11 @@ class IncidentStore:
             # `ok`, `expected_denial` (N1), `blocked` and `error` are never
             # product defects; a denied Gamma user is the control working.
             return {"action": "suppressed", "reason": f"outcome:{event.get('outcome')}"}
+        if name in _CONTROLS:
+            # A control that fails is new behaviour nobody has reproduced, not
+            # a qualified repair case for the family it sits next to.
+            self._record_error(event.get("event_id"), f"control assertion failed: {name}")
+            return {"action": "suppressed", "reason": "control_assertion"}
         family = family_for(name)
         if family is None:
             return {"action": "suppressed", "reason": "unregistered_failure"}
@@ -212,9 +300,18 @@ class IncidentStore:
             self._record_error(None, "event without an event_id")
             return {"action": "processing_error", "reason": "missing_event_id"}
 
-        derived = str(event.get("environment_kind")) in DERIVED_KINDS
+        kind = str(event.get("environment_kind") or "")
+        if kind not in KNOWN_KINDS:
+            self._record_error(event_id, f"unknown environment kind {kind!r}")
+            return {"action": "suppressed", "reason": "unknown_environment"}
+        actor = str(event.get("actor") or "")
+        if not actor:
+            self._record_error(event_id, "event without an actor")
+            return {"action": "suppressed", "reason": "missing_actor"}
+
+        derived = kind in DERIVED_KINDS
         baseline_sha, strength = baseline_of(event.get("revision") or {})
-        actor = str(event.get("actor"))
+        admission, admission_reason = self._admission(event, family, baseline_sha)
         print_key = (
             self.parent_fingerprint
             if derived
@@ -238,8 +335,9 @@ class IncidentStore:
                     cursor = self._conn.execute(
                         """INSERT INTO incidents (fingerprint, family, scenario, title,
                                actor, target_repo, baseline_sha, revision_strength,
-                               fixture_revision, first_seen_at, last_seen_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                               fixture_revision, admission, admission_reason,
+                               first_seen_at, last_seen_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             print_key,
                             family.key,
@@ -250,6 +348,8 @@ class IncidentStore:
                             baseline_sha,
                             strength,
                             (event.get("revision") or {}).get("fixture_revision"),
+                            admission,
+                            admission_reason,
                             event["ts_utc"],
                             event["ts_utc"],
                         ),
@@ -318,7 +418,41 @@ class IncidentStore:
             "family": family.key,
             "new_occurrence": new_occurrence,
             "derived": derived,
+            "admission": admission,
         }
+
+    # ------------------------------------------------------------ catch-up
+    def drain(self, events: EventStore, limit: int = 1000) -> dict[str, int]:
+        """Fold any persisted events the observer callback never saw.
+
+        The callback runs after the event is committed, so a crash in that
+        window would otherwise lose the incident permanently. Re-folding is
+        free: `incident_events.event_id` is the primary key, so a replayed
+        event is a duplicate, not a new occurrence.
+        """
+        scanned = ingested = 0
+        for row_id, event in events.since(self._cursor(), limit):
+            scanned += 1
+            if self.observe(event).get("action") in ("created", "updated"):
+                ingested += 1
+            self._set_cursor(row_id)
+        return {"scanned": scanned, "ingested": ingested}
+
+    def _cursor(self) -> int:
+        row = self._conn.execute(
+            "SELECT last_row_id FROM ingest_cursor WHERE name = 'events'"
+        ).fetchone()
+        return int(row["last_row_id"]) if row else 0
+
+    def _set_cursor(self, row_id: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO ingest_cursor (name, last_row_id, updated_at)
+                        VALUES ('events', ?, ?)
+                   ON CONFLICT (name) DO UPDATE SET last_row_id = MAX(last_row_id, ?),
+                                                    updated_at = excluded.updated_at""",
+                (row_id, utcnow(), row_id),
+            )
 
     def _record_error(self, event_id: str | None, reason: str) -> None:
         with self._lock:
@@ -353,8 +487,20 @@ class IncidentStore:
         incident = {**dict(row), **self._counts(incident_id)}
         incident["events"] = self.events(incident_id)
         incident["traces"] = self.traces(incident_id)
+        incident["trace_events"] = (
+            {t["trace_id"]: self.event_log.trace(t["trace_id"]) for t in incident["traces"]}
+            if self.event_log is not None
+            else {}
+        )
         incident["processing_errors"] = self.processing_errors()
         return incident
+
+    def eligible(self) -> list[dict[str, Any]]:
+        """Incidents a controller may act on. Blocked ones are visible, never dispatched."""
+        rows = self._conn.execute(
+            "SELECT id FROM incidents WHERE admission = ? ORDER BY id", (ELIGIBLE,)
+        ).fetchall()
+        return [i for i in (self.get(int(r["id"])) for r in rows) if i is not None]
 
     def by_fingerprint(self, value: str) -> dict[str, Any] | None:
         row = self._conn.execute(

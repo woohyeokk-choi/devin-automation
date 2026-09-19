@@ -9,8 +9,9 @@ from typing import Any
 
 import pytest
 
+from portal.events import EventStore
 from portal.handoff import FILES, sha256_of, write_bundle
-from portal.incidents import IncidentStore, fingerprint
+from portal.incidents import BLOCKED, ELIGIBLE, IncidentStore, family_for, fingerprint
 
 REPO = "woohyeokk-choi/superset"
 BASELINE = "394bca55c792b7b3547e23f6e175a7cb0f0757e8"
@@ -33,7 +34,10 @@ def event(
     step: int = 1,
     holds: bool = False,
     subject: str = "product_contract",
+    scenario: str | None = None,
+    revision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    family = family_for(assertion or "")
     return {
         "event_id": event_id,
         "ts_utc": "2026-09-19T12:00:00.000+00:00",
@@ -41,13 +45,13 @@ def event(
         "step_index": step,
         "kind": "assertion" if assertion else "user_action",
         "outcome": outcome,
-        "scenario": "S2",
+        "scenario": scenario or (family.scenario if family else "S2"),
         "operation": "portal.save_exploration",
         "actor": actor,
         "environment_kind": environment_kind,
         "run_id": "test",
         "http_status": 200,
-        "revision": REVISION,
+        "revision": REVISION if revision is None else revision,
         "input": {},
         "output": {},
         "assertion": (
@@ -165,6 +169,64 @@ def test_two_denial_events_from_one_attempt_are_not_two_incidents(
     assert store.totals()["incidents"] == 0
 
 
+def test_a_failing_control_does_not_qualify_its_family(store: IncidentStore) -> None:
+    # Colour preservation holds at this baseline; if it ever breaks that is new
+    # behaviour to reproduce, not an S1 repair case.
+    result = store.observe(
+        event(event_id="e1", assertion="color_scheme_survives_an_unrelated_change")
+    )
+    assert result["reason"] == "control_assertion"
+    assert store.totals()["incidents"] == 0
+
+
+@pytest.mark.parametrize(
+    "kwargs, reason",
+    [
+        ({"environment_kind": "unexpected-env"}, "unknown_environment"),
+        ({"environment_kind": ""}, "unknown_environment"),
+        ({"actor": ""}, "missing_actor"),
+    ],
+)
+def test_admission_fails_closed_on_untrusted_context(
+    store: IncidentStore, kwargs: dict[str, Any], reason: str
+) -> None:
+    result = store.observe(event(event_id="e1", **kwargs))
+    assert (result["action"], result["reason"]) == ("suppressed", reason)
+    assert store.totals()["incidents"] == 0
+    assert store.processing_errors()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"revision": {"strength": "unmeasured"}},  # provenance unprovable
+        {"revision": {**REVISION, "fixture_revision": None}},  # unknown fixture
+        {"scenario": "S1"},  # scenario disagrees with the family
+    ],
+)
+def test_unprovable_evidence_is_recorded_but_never_dispatchable(
+    store: IncidentStore, kwargs: dict[str, Any]
+) -> None:
+    result = store.observe(event(event_id="e1", **kwargs))
+    assert result["admission"] == BLOCKED
+    assert store.list()[0]["admission_reason"]
+    assert store.eligible() == []
+
+
+def test_a_matching_baseline_is_dispatchable_and_a_mismatch_is_not(tmp_path: Path) -> None:
+    store = IncidentStore(
+        tmp_path / "i.sqlite", target_repo=REPO, expected_baseline=BASELINE
+    )
+    assert store.observe(event(event_id="e1"))["admission"] == ELIGIBLE
+    assert len(store.eligible()) == 1
+
+    other = IncidentStore(
+        tmp_path / "j.sqlite", target_repo=REPO, expected_baseline="deadbeef" * 5
+    )
+    assert other.observe(event(event_id="e2"))["admission"] == BLOCKED
+    assert other.eligible() == []
+
+
 def test_a_preview_event_cannot_create_an_incident(tmp_path: Path) -> None:
     store = IncidentStore(tmp_path / "i.sqlite", target_repo=REPO)
     result = store.observe(event(event_id="e1", environment_kind="preview"))
@@ -189,6 +251,73 @@ def test_a_preview_event_attaches_to_its_configured_parent(tmp_path: Path) -> No
     # Evidence grew; the failed-action count did not, so a repair session's own
     # reproduction cannot look like the bug happening again in production.
     assert (totals["incidents"], totals["failed_actions"], totals["events"]) == (1, 1, 2)
+
+
+def test_a_preview_event_with_a_nonexistent_parent_is_suppressed(tmp_path: Path) -> None:
+    # Regression: this path records a processing error from inside the open
+    # transaction, which deadlocked against a non-reentrant lock.
+    store = IncidentStore(
+        tmp_path / "i.sqlite", target_repo=REPO, parent_fingerprint="nonexistent-parent"
+    )
+    done = threading.Event()
+    outcome: list[dict[str, Any]] = []
+
+    def run() -> None:
+        outcome.append(store.observe(event(event_id="e1", environment_kind="preview")))
+        done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    assert done.wait(timeout=5), "observe() blocked on its own lock"
+    assert outcome[0]["reason"] == "unknown_parent"
+    assert store.totals()["incidents"] == 0
+    assert store.processing_errors()[0]["reason"] == "parent incident does not exist"
+
+
+# ----------------------------------------------------------------- catch-up
+def test_the_drain_recovers_events_the_observer_never_saw(tmp_path: Path) -> None:
+    events = EventStore(tmp_path / "events.sqlite", stream=open(tmp_path / "out", "w"))
+    store = IncidentStore(tmp_path / "incidents.sqlite", target_repo=REPO)
+
+    # The crash window: committed to the event log, never handed to the engine.
+    events.emit(event(event_id="e1"))
+    events.emit(event(event_id="e2", trace_id="trace_2"))
+    assert store.totals()["incidents"] == 0
+
+    assert store.drain(events) == {"scanned": 2, "ingested": 2}
+    assert store.totals()["failed_actions"] == 2
+    # Idempotent: a second drain sees nothing new, and even a rescan from zero
+    # cannot double-count.
+    assert store.drain(events)["scanned"] == 0
+    store._set_cursor(0)
+    store.drain(events)
+    assert store.totals()["failed_actions"] == 2
+
+
+def test_the_drain_cursor_survives_a_restart(tmp_path: Path) -> None:
+    events = EventStore(tmp_path / "events.sqlite", stream=open(tmp_path / "out", "w"))
+    path = tmp_path / "incidents.sqlite"
+    first = IncidentStore(path, target_repo=REPO)
+    events.emit(event(event_id="e1"))
+    first.drain(events)
+
+    events.emit(event(event_id="e2", trace_id="trace_2"))
+    reopened = IncidentStore(path, target_repo=REPO)
+    assert reopened.drain(events) == {"scanned": 1, "ingested": 1}
+    assert reopened.totals()["failed_actions"] == 2
+
+
+def test_the_live_observer_and_the_drain_do_not_double_count(tmp_path: Path) -> None:
+    events = EventStore(tmp_path / "events.sqlite", stream=open(tmp_path / "out", "w"))
+    store = IncidentStore(tmp_path / "incidents.sqlite", target_repo=REPO)
+    events.observer = store.observe
+    events.emit(event(event_id="e1"))
+    store.drain(events)
+    assert store.totals() == {
+        "incidents": 1,
+        "failed_actions": 1,
+        "events": 1,
+        "processing_errors": 0,
+    }
 
 
 def test_an_unmeasured_baseline_is_not_merged_with_a_verified_one(
@@ -259,6 +388,53 @@ def test_the_bundle_is_parseable_and_checksummed(store: IncidentStore, tmp_path:
     assert BASELINE in reproduction and REPO in reproduction
     assert "same workspace for the whole scenario" in reproduction  # exact-session step
     assert "docker compose" in reproduction
+
+
+def test_the_bundle_carries_whole_traces_not_only_assertions(tmp_path: Path) -> None:
+    events = EventStore(tmp_path / "events.sqlite", stream=open(tmp_path / "out", "w"))
+    store = IncidentStore(tmp_path / "incidents.sqlite", target_repo=REPO)
+    store.event_log = events
+    events.observer = store.observe
+
+    # The request that set the failure up, then the failing assertion.
+    request = event(event_id="e0", assertion=None, outcome="ok")
+    request["operation"] = "superset.delete_form_data"
+    events.emit(request)
+    events.emit(event(event_id="e1", step=2))
+
+    incident = store.get(1)
+    assert incident is not None
+    out = tmp_path / "bundle"
+    manifest = write_bundle(
+        incident, out, versions={"automation_sha": "abc123", "automation_dirty": False}
+    )
+
+    exported = [
+        json.loads(line)
+        for line in (out / "events.redacted.jsonl").read_text().splitlines()
+    ]
+    assert [e["operation"] for e in exported] == [
+        "superset.delete_form_data",
+        "portal.save_exploration",
+    ]
+    assert manifest["automation_sha"] == "abc123"
+    assert manifest["evidence_gaps"] == []
+    reproduction = (out / "reproduction.md").read_text()
+    assert "git checkout abc123" in reproduction
+    assert "complete stored trace" in reproduction
+
+
+def test_the_bundle_states_the_gap_when_a_trace_is_gone(store: IncidentStore, tmp_path: Path) -> None:
+    # No event log attached: only the assertions survive, and the bundle has to
+    # say so rather than present them as the request sequence.
+    store.observe(event(event_id="e1"))
+    incident = store.get(1)
+    assert incident is not None
+    manifest = write_bundle(incident, tmp_path / "bundle", versions={})
+    assert manifest["evidence_gaps"]
+    reproduction = (tmp_path / "bundle" / "reproduction.md").read_text()
+    assert "no longer in the event log" in reproduction
+    assert "WARNING: the automation commit was not measured" in reproduction
 
 
 def test_the_bundle_carries_no_credentials(store: IncidentStore, tmp_path: Path) -> None:

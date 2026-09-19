@@ -17,6 +17,18 @@ from .events import utcnow
 from .incidents import FAMILIES
 
 FILES = ("incident.json", "events.redacted.jsonl", "reproduction.md", "manifest.json")
+AUTOMATION_REPO = "woohyeokk-choi/devin-automation"
+
+#: Context a reader of the evidence would otherwise have to guess at.
+ANTECEDENT = {
+    "S2": (
+        "\nThe failing action is the *second* save. The save, read, discard and\n"
+        "404 that set it up are separate user actions with their own traces, so\n"
+        "they appear in this bundle only when they are part of a trace that\n"
+        "failed. Replay the scenario steps above to produce the full antecedent\n"
+        "sequence against a fresh workspace."
+    ),
+}
 
 _STEPS = {
     "S2": """1. Sign in to the portal with the demo credentials and stay in the
@@ -44,32 +56,50 @@ _STEPS = {
 }
 
 SETUP = """```bash
+# 0. Host prerequisites: Docker with the compose plugin, git, Python 3.11+.
+python3 -m venv .venv && . .venv/bin/activate
+
 # 1. The product, at the SHA this incident was observed on. Use a separate
 #    checkout: the light stack bind-mounts this directory, so verifying another
 #    commit means pointing SUPERSET_DIR at that commit, not rebuilding over it.
 git clone https://github.com/{repo}.git superset
 git -C superset checkout {sha}
 
-# 2. The automation repo (portal, scenarios, fixtures)
-git clone https://github.com/woohyeokk-choi/devin-automation.git
+# 2. The automation repo, pinned to the commit that produced this bundle.
+#    {automation_note}
+git clone https://github.com/{automation_repo}.git devin-automation
 cd devin-automation
-cp stack/.env.example stack/.env        # set SUPERSET_DIR/AUTOMATION_DIR
-set -a; . stack/.env; set +a
+git checkout {automation_sha}
+pip install -r requirements.txt            # host scripts (seed, replay)
 
-# 3. Superset + MCP sidecar, loopback only
-(cd "$SUPERSET_DIR" && docker compose -f docker-compose-light.yml \\
+# 3. Configuration. Edit the copy, do not source the example: SUPERSET_DIR and
+#    AUTOMATION_DIR are absolute paths on *this* host. COMPOSE_PROJECT_NAME
+#    keeps a verification run from colliding with an existing baseline stack.
+cp stack/.env.example stack/.env
+$EDITOR stack/.env
+set -a; . stack/.env; set +a
+export COMPOSE_PROJECT_NAME=superset      # use e.g. `verify` for an isolated run
+
+# 4. Superset + MCP sidecar, published on loopback only
+(cd "$SUPERSET_DIR" && docker compose -p "$COMPOSE_PROJECT_NAME" \\
+   -f docker-compose-light.yml \\
    -f "$AUTOMATION_DIR/stack/docker-compose.ports.yml" \\
    up -d superset-light superset-mcp-light)
 
-# 4. Deterministic synthetic fixture (600 rows, revision {fixture})
-python3 scripts/seed_synthetic.py
+# 5. Deterministic synthetic fixture (600 rows, revision {fixture}).
+#    These scripts run on the HOST, so they use the loopback URLs from
+#    stack/.env; the container service names are only reachable inside the
+#    Compose network and are passed to the portal as SUPERSET_CONTAINER_*.
+python3 scripts/seed_synthetic.py --reset
 
-# 5. Measured provenance for the running containers, then the portal
+# 6. Measured provenance for the running containers, then the portal
 python3 scripts/capture_provenance.py
 docker compose -f stack/docker-compose.portal.yml up -d --build
-curl -s http://127.0.0.1:8090/healthz
+curl -fs http://127.0.0.1:8090/healthz
 
-# 6. Replay every scenario headlessly instead of clicking (same assertions)
+# 7. Replay every scenario headlessly instead of clicking (same assertions).
+#    Non-zero exit means the replay itself is unhealthy, not that the product
+#    behaved: known baseline defects are reported separately.
 python3 scripts/export_examples.py --out artifacts/<run-id>/examples
 ```"""
 
@@ -78,7 +108,41 @@ def sha256_of(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def reproduction_markdown(incident: dict[str, Any]) -> str:
+def bundle_events(incident: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+    """Full stored traces behind the incident, plus what could not be found.
+
+    The incident itself only holds the events that failed an assertion. A
+    repair session needs the requests around them — the save, the delete, the
+    404 — so the whole trace is pulled from the event log and the gap is
+    stated when a trace is no longer there.
+    """
+    evidence = {e["event_id"]: e for e in incident["events"] if e.get("event_id")}
+    full: dict[str, dict[str, Any]] = {}
+    gaps: list[str] = []
+    for trace in incident.get("traces", []):
+        steps = (incident.get("trace_events") or {}).get(trace["trace_id"]) or []
+        if not steps:
+            gaps.append(
+                f"trace `{trace['trace_id']}`: only the failing assertions are "
+                "retained; the full request sequence is no longer in the event log"
+            )
+            continue
+        for step in steps:
+            full[step["event_id"]] = step
+    merged = {**evidence, **full}
+    ordered = sorted(
+        merged.values(),
+        key=lambda e: (e.get("ts_utc", ""), e.get("trace_id", ""), e.get("step_index", 0)),
+    )
+    return ordered, gaps
+
+
+def reproduction_markdown(
+    incident: dict[str, Any],
+    events: list[dict[str, Any]],
+    gaps: list[str],
+    versions: dict[str, Any],
+) -> str:
     family = next((f for f in FAMILIES if f.key == incident["family"]), None)
     assertions = sorted(
         {
@@ -95,6 +159,7 @@ def reproduction_markdown(incident: dict[str, Any]) -> str:
         for e in incident["events"]
         if e.get("assertion") and not (e["assertion"]).get("holds")
     ]
+    automation = automation_pin(versions)
     return f"""# {incident['title']}
 
 Scenario **{incident['scenario']}** · family `{incident['family']}` ·
@@ -108,7 +173,9 @@ fingerprint `{incident['fingerprint']}`
 |---|---|
 | Target repository | `{incident['target_repo']}` |
 | Baseline SHA | `{incident['baseline_sha']}` (provenance: {incident['revision_strength']}) |
+| Automation source | `{AUTOMATION_REPO}` @ `{automation['sha']}` |
 | Fixture revision | `{incident['fixture_revision']}` |
+| Actor profile | `{incident['actor']}` (fixed server-side Superset identity) |
 | Failed user actions | {incident['occurrence_count']} |
 | Evidence events | {incident['event_count']} |
 | First seen | {incident['first_seen_at']} |
@@ -116,7 +183,14 @@ fingerprint `{incident['fingerprint']}`
 
 ## Rebuild the environment
 
-{SETUP.format(repo=incident['target_repo'], sha=incident['baseline_sha'], fixture=incident['fixture_revision'])}
+{SETUP.format(
+    repo=incident['target_repo'],
+    sha=incident['baseline_sha'],
+    fixture=incident['fixture_revision'],
+    automation_repo=AUTOMATION_REPO,
+    automation_sha=automation['sha'],
+    automation_note=automation['note'],
+)}
 
 ## Reproduce the user action
 
@@ -132,29 +206,70 @@ fingerprint `{incident['fingerprint']}`
 
 ## Evidence
 
-`events.redacted.jsonl` holds every event behind this incident, ordered by
-trace and request step, sanitized by the same allowlist that writes the log.
-No credentials, cookies, tokens or raw bodies are included.
+`events.redacted.jsonl` holds {len(events)} events: the complete stored trace of
+every failed user action behind this incident — each upstream REST/MCP request
+and its outcome, not only the assertions — ordered by trace and request step.
+Allowlisted fields only, scrubbed by the same code that writes the log: no
+credentials, cookies, tokens, raw headers or raw bodies.
+
+### Gaps
+
+{chr(10).join(f'- {gap}' for gap in gaps) or '- none: every trace behind this incident is included in full.'}
+{ANTECEDENT.get(incident['scenario'], '')}
 """
+
+
+def automation_pin(versions: dict[str, Any]) -> dict[str, str]:
+    """The automation commit to check out, and how trustworthy that pin is."""
+    sha = str(versions.get("automation_sha") or "")
+    dirty = bool(versions.get("automation_dirty"))
+    if not sha:
+        return {
+            "sha": "main",
+            "note": (
+                "WARNING: the automation commit was not measured. `main` may not "
+                "contain the code that produced this bundle."
+            ),
+        }
+    if dirty:
+        return {
+            "sha": sha,
+            "note": (
+                f"WARNING: the automation checkout had uncommitted changes when this "
+                f"bundle was written, so {sha} is the nearest commit, not an exact pin."
+            ),
+        }
+    return {"sha": sha, "note": "This is the exact commit that produced this bundle."}
 
 
 def write_bundle(incident: dict[str, Any], out_dir: Path, versions: dict[str, Any]) -> dict[str, Any]:
     """Write the four files and return the manifest."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    body = {k: v for k, v in incident.items() if k != "events"}
+    events, gaps = bundle_events(incident)
+    body = {k: v for k, v in incident.items() if k not in ("events", "trace_events")}
+    body["evidence"] = {
+        "events_in_bundle": len(events),
+        "failing_assertion_events": len(incident["events"]),
+        "gaps": gaps,
+    }
     (out_dir / "incident.json").write_text(json.dumps(body, indent=2, default=str) + "\n")
     (out_dir / "events.redacted.jsonl").write_text(
-        "".join(json.dumps(e, sort_keys=True) + "\n" for e in incident["events"])
+        "".join(json.dumps(e, sort_keys=True) + "\n" for e in events)
     )
-    (out_dir / "reproduction.md").write_text(reproduction_markdown(incident))
+    (out_dir / "reproduction.md").write_text(
+        reproduction_markdown(incident, events, gaps, versions)
+    )
 
     manifest = {
         "generated_at": utcnow(),
         "incident_fingerprint": incident["fingerprint"],
         "target_repo": incident["target_repo"],
         "baseline_sha": incident["baseline_sha"],
+        "automation_repo": AUTOMATION_REPO,
+        "automation_sha": automation_pin(versions)["sha"],
         "provenance_strength": incident["revision_strength"],
         "fixture_revision": incident["fixture_revision"],
+        "evidence_gaps": gaps,
         "versions": versions,
         "files": [
             {

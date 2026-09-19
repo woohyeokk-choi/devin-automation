@@ -167,6 +167,18 @@ class EventStore:
         event["revision"] = json.loads(event.pop("revision_json"))
         return event
 
+    def since(self, after_row_id: int, limit: int = 1000) -> list[tuple[int, dict[str, Any]]]:
+        """Persisted events after a row id, oldest first, for catch-up.
+
+        The autoincrement id is the only monotonic handle that survives a
+        crash, which is what makes the incident engine's cursor durable.
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM events WHERE id > ? ORDER BY id LIMIT ?",
+            (after_row_id, limit),
+        ).fetchall()
+        return [(int(row["id"]), self._row_to_event(row)) for row in rows]
+
     def recent(self, limit: int = 100, outcome: str | None = None) -> list[dict[str, Any]]:
         sql = "SELECT * FROM events"
         params: list[Any] = []

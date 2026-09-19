@@ -5,8 +5,13 @@
 # published for the portal to work. Events live on the `portal_data` volume,
 # so they survive `docker compose restart` and container replacement.
 #
+# The portal's upstream URLs come from the *_CONTAINER_* variables: the plain
+# SUPERSET_BASE_URL/SUPERSET_MCP_URL are the host's loopback view, used by the
+# seed and scenario scripts, and are not reachable from inside this container.
+#
 # Usage (from the automation checkout):
-#   set -a; . stack/.env.example; set +a
+#   cp stack/.env.example stack/.env && $EDITOR stack/.env
+#   set -a; . stack/.env; set +a
 #   docker compose -f stack/docker-compose.portal.yml up -d --build
 services:
   portal:
@@ -18,8 +23,8 @@ services:
     ports:
       - "${PORTAL_PORT_BIND:-127.0.0.1}:${PORTAL_PORT_HOST:-8090}:8090"
     environment:
-      SUPERSET_BASE_URL: ${SUPERSET_BASE_URL:-http://superset-light:8088}
-      SUPERSET_MCP_URL: ${SUPERSET_MCP_URL:-http://superset-mcp-light:5008/mcp}
+      SUPERSET_BASE_URL: ${SUPERSET_CONTAINER_BASE_URL:-http://superset-light:8088}
+      SUPERSET_MCP_URL: ${SUPERSET_CONTAINER_MCP_URL:-http://superset-mcp-light:5008/mcp}
       SUPERSET_USERNAME: ${SUPERSET_USERNAME:-admin}
       SUPERSET_PASSWORD: ${SUPERSET_PASSWORD:-admin}
       SUPERSET_RESTRICTED_USERNAME: ${SUPERSET_RESTRICTED_USERNAME:-restricted_analyst}
@@ -32,6 +37,8 @@ services:
       PORTAL_DEMO_PASSWORD: ${PORTAL_DEMO_PASSWORD:-demo-local}
       PORTAL_COOKIE_SECRET: ${PORTAL_COOKIE_SECRET:-portal-local-dev-secret}
       PORTAL_TARGET_REPO: ${PORTAL_TARGET_REPO:-woohyeokk-choi/superset}
+      # When set, an event whose measured baseline differs is not dispatchable.
+      PORTAL_BASELINE_SHA: ${PORTAL_BASELINE_SHA:-}
       # Only a preview/verification deployment sets this, and only here:
       # parent scope is never accepted from a browser field.
       PORTAL_PARENT_INCIDENT: ${PORTAL_PARENT_INCIDENT:-}

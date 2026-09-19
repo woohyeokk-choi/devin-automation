@@ -95,6 +95,10 @@ class Settings:
     parent_incident: str = field(
         default_factory=lambda: _env("PORTAL_PARENT_INCIDENT", "")
     )
+    #: The product SHA this deployment is supposed to be running. When set,
+    #: evidence measured against any other SHA is recorded but never becomes
+    #: dispatchable: we cannot ask for a repair of code we cannot pin.
+    baseline_sha: str = field(default_factory=lambda: _env("PORTAL_BASELINE_SHA", ""))
 
     @property
     def db_path(self) -> Path:

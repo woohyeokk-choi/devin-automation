@@ -41,6 +41,10 @@ from scripts.seed_synthetic import (  # noqa: E402
 )
 
 CONTAINER = os.environ.get("SUPERSET_CONTAINER", "superset-superset-light-1")
+AUTOMATION_DIR = Path(
+    os.environ.get("AUTOMATION_DIR") or Path(__file__).resolve().parents[1]
+)
+AUTOMATION_REPO = "woohyeokk-choi/devin-automation"
 CODE_DIR_IN_CONTAINER = os.environ.get("SUPERSET_CODE_DIR", "/app/superset")
 
 HASH_SNIPPET = """
@@ -103,6 +107,23 @@ def git(path: Path, *args: str) -> str | None:
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
+def automation_facts() -> dict[str, object]:
+    """Which automation commit produced a handoff, so it can be checked out.
+
+    A bundle that says "clone main" is not reproducible: main may not yet
+    contain the code that observed the incident. Uncommitted changes are
+    reported rather than hidden, because then no commit is an exact pin.
+    """
+    return {
+        "repo": AUTOMATION_REPO,
+        "path": str(AUTOMATION_DIR),
+        "checkout_sha": git(AUTOMATION_DIR, "rev-parse", "HEAD"),
+        "checkout_branch": git(AUTOMATION_DIR, "rev-parse", "--abbrev-ref", "HEAD"),
+        "checkout_dirty": bool(git(AUTOMATION_DIR, "status", "--porcelain")),
+        "tree_sha256": hash_on_host(AUTOMATION_DIR / "portal"),
+    }
+
+
 def fixture_facts() -> dict[str, object]:
     proc = run(
         ["docker", "exec", "-i", DB_CONTAINER, "psql", "-U", DB_USER, "-d", DB_NAME],
@@ -133,6 +154,7 @@ def main() -> int:
             "strength": "unmeasured",
             "measured_at": datetime.now(timezone.utc).isoformat(),
             "note": f"container {args.container!r} is not running",
+            "automation": automation_facts(),
         }
     else:
         running_hash = hash_in_container(args.container, CODE_DIR_IN_CONTAINER)
@@ -176,6 +198,7 @@ def main() -> int:
             "container": container,
             "source": source,
             "fixtures": fixture_facts(),
+            "automation": automation_facts(),
             "claim": (
                 "Measured: container identity and a hash of the Python tree inside it. "
                 "checkout_matches_running_code compares that hash with the host path the "
