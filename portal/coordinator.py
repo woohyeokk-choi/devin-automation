@@ -153,6 +153,10 @@ def build_worker(
         # namespace, so its issue and session are its own instead of the
         # originals this fingerprint already created. The state remembers it.
         run=config.run_namespace,
+        # A demo run integrates into a branch of its own and stops at a human
+        # merge; a deployment that configures neither behaves as before.
+        base_branch=config.base_branch,
+        merge_gate=config.merge_gate,
     )
     # Slack lives here and nowhere else: this process already holds the
     # credentials, and a webhook must never reach the portal container, a

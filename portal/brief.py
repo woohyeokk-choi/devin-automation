@@ -33,6 +33,11 @@ PROMPT_FIELDS = (
 )
 
 LABELS = ["runtime-repair"]
+
+#: The protected commit every repair starts from. A demo run may integrate
+#: into a branch of its own, but the default stays the branch the historical
+#: repairs targeted: a deployment that configures nothing keeps behaving as
+#: it did.
 BASE_BRANCH = "runtime-repair/baseline"
 
 #: Everything the repair session is not allowed to do. Listed in the prompt
@@ -179,6 +184,7 @@ def prompt(
     versions: dict[str, Any],
     issue_url: str,
     run: str = "",
+    base: str = BASE_BRANCH,
 ) -> str:
     events, gaps = bundle_events(incident)
     automation = automation_pin(versions)
@@ -216,9 +222,9 @@ code, and open a pull request.
 |---|---|---|
 {_contract(incident)}
 
-{TASK.format(repo=incident['target_repo'], base=BASE_BRANCH)}
+{TASK.format(repo=incident['target_repo'], base=base)}
 
-{GUARDRAILS.format(repo=incident['target_repo'], base=BASE_BRANCH)}
+{GUARDRAILS.format(repo=incident['target_repo'], base=base)}
 
 ## Rebuild the environment
 
@@ -258,10 +264,11 @@ def session_request(
     *,
     acu_limit: int,
     run: str = "",
+    base: str = BASE_BRANCH,
 ) -> dict[str, Any]:
     """The exact v3 create-session body, recorded whether or not it is sent."""
     return {
-        "prompt": prompt(incident, attempt, versions, issue_url, run),
+        "prompt": prompt(incident, attempt, versions, issue_url, run, base),
         "title": issue_title(incident, run),
         "repos": [incident["target_repo"]],
         "tags": [

@@ -121,6 +121,18 @@ class Settings:
     verification_mcp_port: int = field(
         default_factory=lambda: int(_env("PORTAL_VERIFICATION_MCP_PORT", "5208"))
     )
+    #: The branch a repair integrates into. Empty means the protected
+    #: baseline branch the historical repairs targeted; a demo run can point
+    #: at a branch of its own without changing what anything else does.
+    base_branch: str = field(default_factory=lambda: _env("PORTAL_BASE_BRANCH", ""))
+    #: Opt-in human merge gate. With it on, an independently verified preview
+    #: is provisional: the repair waits for a human to merge the pull
+    #: request, the session is kept for the post-merge work, and acceptance
+    #: means the merged commit itself was rebuilt and replayed. Off
+    #: everywhere else, where a preview pass ends the repair.
+    merge_gate: bool = field(
+        default_factory=lambda: _env("PORTAL_MERGE_GATE", "false").lower() == "true"
+    )
     #: The product SHA this deployment is supposed to be running. When set,
     #: evidence measured against any other SHA is recorded but never becomes
     #: dispatchable: we cannot ask for a repair of code we cannot pin.

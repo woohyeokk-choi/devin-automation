@@ -41,6 +41,11 @@ from .validator import BLOCKED, CASES_BY_FAMILY, FAILED, PASSED, REQUIRED_CHECKS
 GRADED_KINDS = ("target", "control")
 KNOWN_KINDS = GRADED_KINDS + ("setup",)
 
+#: Which question an attempt answered. `preview` grades the pull request's own
+#: head before anybody merges it; `post_merge` grades the commit a human
+#: actually merged, which is a different commit and a different claim.
+PREVIEW, POST_MERGE = "preview", "post_merge"
+
 #: Where a repair is allowed to change code, per failure family. A repair for
 #: one runtime defect touches the product code that defect lives in and the
 #: tests for it; ``superset/`` as a whole is far wider than one defect, and
@@ -429,6 +434,7 @@ CREATE TABLE IF NOT EXISTS verifications (
     provenance     TEXT,
     report         TEXT,
     artifact_path  TEXT,
+    stage          TEXT NOT NULL DEFAULT 'preview',
     started_at     TEXT NOT NULL,
     finished_at    TEXT NOT NULL
 );
@@ -445,6 +451,17 @@ class VerificationStore:
         self._lock = threading.Lock()
         with self._conn:
             self._conn.executescript(SCHEMA)
+            # A store written before the merge gate existed has every column
+            # but this one, and its attempts all graded a pull request head.
+            existing = {
+                str(row["name"])
+                for row in self._conn.execute("PRAGMA table_info(verifications)")
+            }
+            if "stage" not in existing:
+                self._conn.execute(
+                    "ALTER TABLE verifications ADD COLUMN stage TEXT NOT NULL "
+                    f"DEFAULT '{PREVIEW}'"
+                )
 
     #: The only columns an attempt may write. The insert builds its column
     #: list from the caller's keys, so the list is checked against this rather
@@ -454,7 +471,7 @@ class VerificationStore:
             "repair_id", "incident_id", "simulated", "candidate_sha", "pr_url",
             "validator_ref", "fixture_rev", "config_rev", "cases", "verdict",
             "reason", "failures", "commands", "provenance", "report",
-            "artifact_path", "started_at", "finished_at",
+            "artifact_path", "stage", "started_at", "finished_at",
         }
     )
 
@@ -513,6 +530,7 @@ class Outcome:
     failures: tuple[str, ...] = ()
     record_id: int = 0
     candidate_sha: str = ""
+    stage: str = PREVIEW
 
 
 class Verifier:
@@ -550,8 +568,23 @@ class Verifier:
         """One repair, one defect: the other known baseline defect is not required."""
         return CASES_BY_FAMILY.get(family, ())
 
-    def verify(self, repair: dict[str, Any], incident: dict[str, Any]) -> Outcome:
+    def verify(
+        self,
+        repair: dict[str, Any],
+        incident: dict[str, Any],
+        *,
+        merge_sha: str = "",
+    ) -> Outcome:
+        """Grade the pull request's own head, or the commit a human merged.
+
+        With `merge_sha` the question changes: not whether this candidate
+        would work, but whether the code that exists after the merge does.
+        The commit is taken from GitHub's merge record, the stack is built
+        from it, and the same registered cases decide. A preview pass is
+        never renamed into a post-merge one.
+        """
         started = utcnow()
+        stage = POST_MERGE if merge_sha else PREVIEW
         pr_url = str(repair.get("agent_pr_url") or "")
         cases = self.cases_for(str(incident.get("family") or ""))
         environment: Environment | None = None
@@ -559,7 +592,12 @@ class Verifier:
         commands: list[str] = []
         head_sha = ""
         try:
-            head_sha, files = self._read_candidate(pr_url)
+            if merge_sha:
+                head_sha, files = self._read_merged(
+                    pr_url, merge_sha, str(repair.get("pr_head_sha") or "")
+                )
+            else:
+                head_sha, files = self._read_candidate(pr_url)
             scope = check_scope(files, str(incident.get("family") or ""))
             if not scope.allowed:
                 # A diff outside the registered scope is a policy stop, not
@@ -570,11 +608,13 @@ class Verifier:
                     repair, incident, started, BLOCKED, head_sha, pr_url, cases,
                     reason="the candidate changes files a repair may not change",
                     failures=scope.reasons, report={"changed_files": files},
+                    stage=stage,
                 )
             if not cases:
                 return self._finish(
                     repair, incident, started, BLOCKED, head_sha, pr_url, cases,
                     reason="no registered case answers this failure family",
+                    stage=stage,
                 )
             environment = self.runner.prepare(head_sha)
             commands = list(environment.commands)
@@ -583,15 +623,21 @@ class Verifier:
                 return self._finish(
                     repair, incident, started, BLOCKED, head_sha, pr_url, cases,
                     reason=problem, commands=commands,
-                    provenance=environment.provenance,
+                    provenance=environment.provenance, stage=stage,
                 )
             report = self.replay(environment, cases)
-            moved = self._moved(pr_url, head_sha)
+            moved = (
+                self._merge_moved(
+                    pr_url, merge_sha, str(repair.get("pr_head_sha") or "")
+                )
+                if merge_sha
+                else self._moved(pr_url, head_sha)
+            )
             if moved:
                 return self._finish(
                     repair, incident, started, BLOCKED, head_sha, pr_url, cases,
                     reason=moved, commands=commands, report=report,
-                    provenance=environment.provenance,
+                    provenance=environment.provenance, stage=stage,
                 )
         except (RunnerError, RuntimeError, ValueError, OSError) as exc:
             return self._finish(
@@ -599,6 +645,7 @@ class Verifier:
                 reason=f"{type(exc).__name__}: {exc}", commands=commands,
                 report=report,
                 provenance=environment.provenance if environment else {},
+                stage=stage,
             )
         finally:
             if environment is not None:
@@ -622,6 +669,7 @@ class Verifier:
             reason="" if verdict == PASSED else "; ".join(failures[:3]),
             failures=failures, commands=commands, report=report,
             provenance=environment.provenance if environment else {},
+            stage=stage,
         )
 
     # --- pieces ------------------------------------------------------------
@@ -650,6 +698,59 @@ class Verifier:
             return f"the pull request is {head.get('state') or 'in an unreported state'}"
         return ""
 
+    def _read_merged(
+        self, pr_url: str, merge_sha: str, expected_head: str
+    ) -> tuple[str, list[str]]:
+        """The merged commit, as GitHub records it rather than as anyone claims it."""
+        number = _number_of(pr_url, self.target_repo)
+        head = self.github.pull_request_head(number)
+        problem = self._merged_problem(head, merge_sha, expected_head)
+        if problem:
+            raise RuntimeError(problem)
+        return merge_sha.strip().lower(), self.github.pull_request_files(number)
+
+    def _merged_problem(
+        self, head: dict[str, str], merge_sha: str, expected_head: str
+    ) -> str:
+        """Why this merge is not the merge being graded, if it is not.
+
+        A pull request that was closed rather than merged, merged somewhere
+        else, or merged from a head nobody previewed is a different event
+        from the one this run claims to measure.
+        """
+        if head.get("base_ref") != self.base_branch:
+            return (
+                f"the merge went into {head.get('base_ref') or 'an unknown branch'}, "
+                f"not {self.base_branch}"
+            )
+        if head.get("head_repo") != self.target_repo:
+            return (
+                f"the head branch lives in {head.get('head_repo') or 'an unknown repository'}, "
+                f"not {self.target_repo}"
+            )
+        if head.get("merged") != "true":
+            return "the pull request is not merged"
+        wanted = merge_sha.strip().lower()
+        if len(wanted) != 40 or any(c not in "0123456789abcdef" for c in wanted):
+            return "the merge commit is not a full commit id"
+        actual = str(head.get("merge_commit_sha") or "").lower()
+        if actual != wanted:
+            return (
+                f"the pull request reports merge commit {actual[:12] or 'none'}, "
+                f"not {wanted[:12]}"
+            )
+        if expected_head and str(head.get("head_sha") or "").lower() != expected_head.lower():
+            return (
+                f"the merged head is {str(head.get('head_sha') or '')[:12]}, not the "
+                f"candidate {expected_head[:12]} that was verified"
+            )
+        return ""
+
+    def _merge_moved(self, pr_url: str, merge_sha: str, expected_head: str) -> str:
+        """A post-merge pass belongs to the merge commit that was tested."""
+        head = self.github.pull_request_head(_number_of(pr_url, self.target_repo))
+        return self._merged_problem(head, merge_sha, expected_head)
+
     def _moved(self, pr_url: str, head_sha: str) -> str:
         """A pass belongs to the commit that was tested, and to no other."""
         head = self.github.pull_request_head(_number_of(pr_url, self.target_repo))
@@ -675,6 +776,7 @@ class Verifier:
         commands: list[str] | None = None,
         report: dict[str, Any] | None = None,
         provenance: dict[str, Any] | None = None,
+        stage: str = PREVIEW,
     ) -> Outcome:
         artifact = self._write_artifact(repair, head_sha, report or {})
         record_id = self.store.record(
@@ -695,11 +797,12 @@ class Verifier:
                 "provenance": json.dumps(provenance or {}),
                 "report": json.dumps(report or {}, default=str),
                 "artifact_path": artifact,
+                "stage": stage,
                 "started_at": started,
                 "finished_at": utcnow(),
             }
         )
-        return Outcome(verdict, reason, failures, record_id, head_sha)
+        return Outcome(verdict, reason, failures, record_id, head_sha, stage)
 
     def _write_artifact(
         self, repair: dict[str, Any], head_sha: str, report: dict[str, Any]
@@ -726,6 +829,8 @@ def _number_of(pr_url: str, repo: str) -> int:
 __all__ = [
     "SCOPE_BY_FAMILY",
     "BLOCKED",
+    "POST_MERGE",
+    "PREVIEW",
     "Environment",
     "FAILED",
     "FORBIDDEN_PREFIXES",

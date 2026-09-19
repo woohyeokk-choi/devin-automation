@@ -82,6 +82,7 @@ def live_verifier(
     automation_dirty: bool = False,
     web_port: int = 8288,
     mcp_port: int = 5208,
+    base_branch: str = BASE_BRANCH,
 ) -> Verifier:
     """The real verifier: an isolated candidate stack graded by the pinned validator.
 
@@ -104,7 +105,7 @@ def live_verifier(
         ),
         store=verifications,
         target_repo=target_repo,
-        base_branch=BASE_BRANCH,
+        base_branch=base_branch or BASE_BRANCH,
         validator_ref=automation_ref + (" (deployment tree dirty)" if automation_dirty else ""),
         replay=replay_through_validator,
         artifacts=artifacts,
@@ -125,6 +126,7 @@ def build_controller(
     artifacts: Path | None = None,
     web_port: int = 8288,
     mcp_port: int = 5208,
+    base_branch: str = BASE_BRANCH,
     **kwargs: Any,
 ) -> Controller:
     """A controller wired for the mode it is actually in.
@@ -133,12 +135,14 @@ def build_controller(
     controller records the exact bodies it would send. With dispatch on the
     live clients are constructed, and missing configuration raises.
     """
+    base = base_branch or BASE_BRANCH
     if not dispatch_enabled:
         return Controller(
             store,
             target_repo=target_repo,
             versions=versions,
             dispatch_enabled=False,
+            base_branch=base,
             **kwargs,
         )
     github, devin = providers or live_providers(target_repo)
@@ -155,6 +159,7 @@ def build_controller(
             artifacts=artifacts,
             web_port=web_port,
             mcp_port=mcp_port,
+            base_branch=base,
         )
     return Controller(
         store,
@@ -164,6 +169,7 @@ def build_controller(
         devin=devin,
         dispatch_enabled=True,
         verifier=verifier,
+        base_branch=base,
         **kwargs,
     )
 

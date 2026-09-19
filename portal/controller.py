@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS repairs (
     agent_pr_url     TEXT,
     pr_head_sha      TEXT,
     verification     TEXT,
+    merge_commit_sha TEXT,
+    merge_verification TEXT,
     created_at       TEXT NOT NULL,
     updated_at       TEXT NOT NULL
 );
@@ -110,6 +112,12 @@ PROPOSED = "proposed"
 DISPATCHED = "dispatched"
 CANDIDATE = "candidate"
 VERIFIED = "verified_in_preview"
+#: Merge-gated runs only: the preview passed and a human has to merge before
+#: anything further is claimed. It is not an accepted outcome, and the
+#: session is deliberately still alive.
+AWAITING_MERGE = "awaiting_merge"
+#: The merged commit itself was rebuilt, replayed and passed.
+MERGED = "verified_after_merge"
 NEEDS_ATTENTION = "needs_attention"
 TERMINAL = "terminal"
 
@@ -192,6 +200,15 @@ class RepairStore:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        # A database written before the merge gate existed has every column
+        # but these two; adding them changes nothing about the repairs
+        # already stored in it.
+        present = {
+            str(row[1]) for row in self._conn.execute("PRAGMA table_info(repairs)")
+        }
+        for column in ("merge_commit_sha", "merge_verification"):
+            if column not in present:
+                self._conn.execute(f"ALTER TABLE repairs ADD COLUMN {column} TEXT")
         self._conn.commit()
         self._lock = threading.RLock()
         self.simulated = simulated
@@ -423,6 +440,8 @@ class Controller:
         verifier: Any = None,
         stale_after_minutes: int = 15,
         run: str = "",
+        base_branch: str = brief.BASE_BRANCH,
+        merge_gate: bool = False,
     ) -> None:
         if dispatch_enabled and (github is None or devin is None):
             # Missing live configuration is a refusal to dispatch, never a
@@ -443,6 +462,16 @@ class Controller:
         self.verifier = verifier
         self.stale_after_minutes = stale_after_minutes
         self.run = store.adopt_run(run)
+        #: Where a repair integrates. The protected baseline by default, so a
+        #: deployment that configures nothing keeps the behaviour the
+        #: historical repairs had.
+        self.base_branch = base_branch or brief.BASE_BRANCH
+        #: Opt-in. With the gate on, a preview pass is provisional: the
+        #: session and the claim are both kept, and nothing is accepted until
+        #: a human merges the pull request and the merged commit itself
+        #: passes the same replay. With it off, a preview pass ends the
+        #: repair exactly as it did before.
+        self.merge_gate = merge_gate
 
     # --- proposal ----------------------------------------------------------
 
@@ -455,7 +484,7 @@ class Controller:
         """
         if incident.get("admission") != "eligible":
             return Decision("skipped", incident.get("admission_reason") or "not eligible")
-        if incident.get("state") == VERIFIED:
+        if incident.get("state") in (VERIFIED, MERGED):
             return Decision("skipped", "already verified")
 
         existing = self.store.by_fingerprint(incident["fingerprint"])
@@ -467,13 +496,13 @@ class Controller:
                 "body are recorded, nothing was sent",
                 int(repair["id"]),
             )
-        if repair["state"] in (TERMINAL, NEEDS_ATTENTION, VERIFIED):
+        if repair["state"] in (TERMINAL, NEEDS_ATTENTION, VERIFIED, MERGED):
             return Decision(
                 "skipped",
                 repair["terminal_reason"] or repair["attention"] or "",
                 int(repair["id"]),
             )
-        if repair["state"] in (DISPATCHED, CANDIDATE):
+        if repair["state"] in (DISPATCHED, CANDIDATE, AWAITING_MERGE):
             return Decision("in_flight", "", int(repair["id"]))
         return Decision("queued", "waiting for the worker to claim the slot", int(repair["id"]))
 
@@ -521,12 +550,14 @@ class Controller:
     def _walk(self, active: dict[str, Any]) -> Decision:
         repair_id = int(active["id"])
         state = str(active["state"])
-        if state in (NEEDS_ATTENTION, TERMINAL, VERIFIED):
+        if state in (NEEDS_ATTENTION, TERMINAL, VERIFIED, MERGED):
             # The slot is held on purpose: something may still be running
             # remotely, and nobody but an operator may decide otherwise.
             return Decision("parked", active["attention"] or active["terminal_reason"] or "", repair_id)
         if state == CANDIDATE:
             return self.verify(repair_id)
+        if state == AWAITING_MERGE:
+            return self.check_merge(repair_id)
         if state == PROPOSED:
             # The slot is claimed but nothing was created yet, which normally
             # means another worker is inside `dispatch` right now. Taking it
@@ -563,6 +594,7 @@ class Controller:
             issue_url="",
             acu_limit=self.budget.acu_limit,
             run=self.run,
+            base=self.base_branch,
         )
         # The clock starts when paid work does, not when a disabled proposal
         # is written: an empty deadline means "never activated".
@@ -668,6 +700,7 @@ class Controller:
             issue_url,
             acu_limit=int(repair["acu_limit"]),
             run=self.run,
+            base=self.base_branch,
         )
         self.store.update(int(repair["id"]), session_request=json.dumps(request, indent=2))
         try:
@@ -850,8 +883,8 @@ class Controller:
         one full commit that still exists on an open pull request. Phase 5
         adds the path and diff checks on top of this.
         """
-        if head["base_ref"] != brief.BASE_BRANCH:
-            return f"targets {head['base_ref'] or 'an unknown branch'}, not {brief.BASE_BRANCH}"
+        if head["base_ref"] != self.base_branch:
+            return f"targets {head['base_ref'] or 'an unknown branch'}, not {self.base_branch}"
         if head["head_repo"] != self.target_repo:
             return (
                 "the head branch lives in "
@@ -924,6 +957,22 @@ class Controller:
         self.store.update(repair_id, verification=json.dumps(record))
 
         if outcome.verdict == "passed":
+            if self.merge_gate:
+                # A preview pass answers "would this work", not "does the
+                # merged code work". The repair is not finished, the session
+                # is the one that would answer a post-merge question, and the
+                # claim stays where it is so no second repair starts while a
+                # human is deciding.
+                self.store.update(
+                    repair_id,
+                    state=AWAITING_MERGE,
+                    attention=(
+                        "verified in preview on "
+                        f"{outcome.candidate_sha[:12]}; waiting for a human to "
+                        f"merge the pull request into {self.base_branch}"
+                    ),
+                )
+                return Decision("awaiting_merge", outcome.candidate_sha, repair_id)
             self.store.update(
                 repair_id,
                 state=VERIFIED,
@@ -963,6 +1012,131 @@ class Controller:
                 )
                 return
         self.store.release_slot(repair_id)
+
+    def check_merge(self, repair_id: int) -> Decision:
+        """Wait for a human merge, then grade the commit that merge produced.
+
+        Merging is somebody else's decision and this never makes it: the
+        pull request is polled until GitHub itself reports it merged, and a
+        pull request closed without a merge is a stop, not a pass. What is
+        graded afterwards is the merge commit, rebuilt and replayed, because
+        a preview of the candidate says nothing about the code that exists
+        on the branch after integration.
+        """
+        repair = self.store.get(repair_id)
+        if repair is None:
+            return Decision("skipped", "no such repair", repair_id)
+        if self.github is None:
+            return Decision("skipped", "no live providers configured", repair_id)
+        try:
+            head = self.github.pull_request_head(
+                _pr_number(str(repair["agent_pr_url"] or ""), self.target_repo)
+            )
+        except (ValueError, RuntimeError, Ambiguous) as exc:
+            # Unreadable now is not unmerged: the gate waits rather than
+            # deciding anything from a failed read.
+            return Decision("deferred", f"merge state unreadable: {exc}", repair_id)
+
+        if head.get("merged") != "true":
+            if head.get("state") == "open":
+                return Decision(
+                    "awaiting_merge",
+                    "the pull request is open and unmerged",
+                    repair_id,
+                )
+            self.store.update(
+                repair_id,
+                state=NEEDS_ATTENTION,
+                attention=(
+                    f"the pull request is {head.get('state') or 'in an unreported state'} "
+                    "without having been merged; nothing was accepted"
+                ),
+            )
+            return Decision("parked", "closed without a merge", repair_id)
+
+        merge_sha = str(head.get("merge_commit_sha") or "").lower()
+        problem = self._merge_problem(head, repair, merge_sha)
+        if problem:
+            self.store.update(
+                repair_id, state=NEEDS_ATTENTION, attention=f"merge not usable: {problem}"
+            )
+            return Decision("parked", problem, repair_id)
+        self.store.update(repair_id, merge_commit_sha=merge_sha)
+
+        if self.verifier is None:
+            self.store.update(
+                repair_id,
+                state=NEEDS_ATTENTION,
+                attention="the pull request is merged but no verifier is configured",
+            )
+            return Decision("parked", "no verifier configured", repair_id)
+
+        incident = self.incident_of(int(repair["incident_id"])) or {}
+        outcome = self.verifier.verify(repair, incident, merge_sha=merge_sha)
+        record = {
+            "verdict": outcome.verdict,
+            "reason": outcome.reason,
+            "merge_sha": merge_sha,
+            "attempt_id": outcome.record_id,
+            "stage": outcome.stage,
+            "at": self._now().isoformat(),
+        }
+        self.store.update(repair_id, merge_verification=json.dumps(record))
+
+        if outcome.verdict == "passed":
+            self.store.update(
+                repair_id,
+                state=MERGED,
+                attention=None,
+                terminal_reason=(
+                    f"verified after merge on {merge_sha[:12]} "
+                    f"(preview {str(repair['pr_head_sha'] or '')[:12]})"
+                ),
+            )
+            # The claim is freed so a later incident can be repaired. The
+            # session is left as it is: this flow exists so a human can go
+            # back to it, and terminating it here is the behaviour the gate
+            # was added to avoid.
+            self.store.release_slot(repair_id)
+            return Decision("merge_verified", merge_sha, repair_id)
+        self.store.update(
+            repair_id,
+            state=NEEDS_ATTENTION,
+            attention=(
+                f"the merged commit {merge_sha[:12]} did not pass the same replay: "
+                f"{outcome.reason}"
+            ),
+        )
+        return Decision(
+            "blocked" if outcome.verdict == "blocked" else "merge_failed",
+            outcome.reason,
+            repair_id,
+        )
+
+    def _merge_problem(
+        self, head: dict[str, str], repair: dict[str, Any], merge_sha: str
+    ) -> str:
+        """Why this merge is not the merge that was waited for, if it is not."""
+        if head.get("base_ref") != self.base_branch:
+            return (
+                f"it went into {head.get('base_ref') or 'an unknown branch'}, "
+                f"not {self.base_branch}"
+            )
+        if head.get("head_repo") != self.target_repo:
+            return (
+                f"the head branch lives in {head.get('head_repo') or 'an unknown repository'}, "
+                f"not {self.target_repo}"
+            )
+        if len(merge_sha) != 40 or any(c not in "0123456789abcdef" for c in merge_sha):
+            return "the merge commit is not a full commit id"
+        verified = str(repair.get("pr_head_sha") or "").lower()
+        merged_head = str(head.get("head_sha") or "").lower()
+        if verified and merged_head and merged_head != verified:
+            return (
+                f"the merged head {merged_head[:12]} is not the verified candidate "
+                f"{verified[:12]}"
+            )
+        return ""
 
     def feedback(
         self, repair_id: int, failures: list[str], candidate_sha: str = ""

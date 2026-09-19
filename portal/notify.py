@@ -59,8 +59,10 @@ from urllib.parse import urlparse
 
 from .config import Settings, settings
 from .controller import (
+    AWAITING_MERGE,
     CANDIDATE,
     DISPATCHED,
+    MERGED,
     NEEDS_ATTENTION,
     TERMINAL,
     VERIFIED,
@@ -865,6 +867,13 @@ class Notifier:
 # ------------------------------------------------------------------ messages
 
 PREVIEW_ONLY = "verified in isolated preview; not merged/deployed"
+#: What an accepted post-merge run may claim, and no more: the merged commit
+#: was rebuilt and replayed in the isolated demo deployment. Nothing public
+#: runs it.
+POST_MERGE_ONLY = (
+    "verified after the human merge, on the isolated demo deployment rebuilt "
+    "from the merge commit; not a public or production deployment"
+)
 
 #: Controller decisions worth a message, and what each one is called. Every
 #: other action — `running`, `deferred`, `skipped`, `queued`, `in_flight`,
@@ -875,6 +884,9 @@ NOTIFIED_ACTIONS = frozenset(
         "dispatched",
         "candidate",
         "verified",
+        "awaiting_merge",
+        "merge_verified",
+        "merge_failed",
         "blocked",
         "followed_up",
         "parked",
@@ -1041,6 +1053,36 @@ def message_for(
             f"({_checks(repair)}). {_reproduction(repair)}. {PREVIEW_ONLY}. "
             f"{_links(repair)}",
         )
+    if action == "awaiting_merge" and state == AWAITING_MERGE:
+        return (
+            f"{repair_id}:awaiting-merge:{head}",
+            "awaiting_merge",
+            f"Verified in preview, awaiting a human merge — {stem}, tested head "
+            f"`{escape(head)}` ({_checks(repair)}). {PREVIEW_ONLY}. Nothing is "
+            f"merged or deployed by this automation: a person decides, and only "
+            f"then is the merge commit itself rebuilt and replayed. "
+            f"{_links(repair)}",
+        )
+    if action == "merge_verified":
+        merge = str(repair.get("merge_commit_sha") or "")
+        return (
+            f"{repair_id}:merge-verified:{merge}",
+            "merge_verified",
+            f"Verified after merge — {stem}, merge commit `{escape(merge)}` "
+            f"(merged candidate `{escape(head[:12])}`). The same registered "
+            f"cases were replayed against the deployment rebuilt from that "
+            f"commit. {POST_MERGE_ONLY}. {_links(repair)}",
+        )
+    if action == "merge_failed":
+        merge = str(repair.get("merge_commit_sha") or "")
+        return (
+            f"{repair_id}:merge-failed:{merge}",
+            "merge_failed",
+            f"The merged commit did not pass — {stem}, merge commit "
+            f"`{escape(merge[:12])}`: {_short(repair.get('attention'))}. The "
+            f"preview pass does not stand in for this; nothing is accepted. "
+            f"{_links(repair)}",
+        )
     if action == "blocked":
         return (
             f"{repair_id}:blocked:{head}:{repair.get('attempt')}",
@@ -1083,6 +1125,8 @@ STATE_ACTIONS = {
     DISPATCHED: "dispatched",
     CANDIDATE: "candidate",
     VERIFIED: "verified",
+    AWAITING_MERGE: "awaiting_merge",
+    MERGED: "merge_verified",
     NEEDS_ATTENTION: "parked",
     TERMINAL: "stopped",
 }
@@ -1185,6 +1229,19 @@ class Recording:
 IN_THREAD = "thread"
 
 
+def accepted_sha(repair: dict[str, Any]) -> str:
+    """The commit this repair's evidence may speak for.
+
+    For an ordinary repair that is the verified pull request head. Once a
+    human has merged and the merged commit has been replayed, it is the
+    merge commit: footage and results of a merged run belong to the code
+    that exists after the merge, not to the candidate it came from.
+    """
+    if str(repair.get("state") or "") == MERGED:
+        return str(repair.get("merge_commit_sha") or "").lower()
+    return str(repair.get("pr_head_sha") or "").lower()
+
+
 def recording_problem(recording: Recording, repair: dict[str, Any]) -> str:
     """Why this capture cannot be shown as footage of this head, if it cannot.
 
@@ -1209,7 +1266,7 @@ def recording_problem(recording: Recording, repair: dict[str, Any]) -> str:
     sha = recording.sha.strip().lower()
     if len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha):
         return "the capture's revision is not a full commit sha"
-    head = str(repair.get("pr_head_sha") or "").lower()
+    head = accepted_sha(repair)
     if not head:
         return "the repair has no recorded pull request head"
     if sha != head:
@@ -1351,8 +1408,8 @@ def result_problem(
         return "the repair or its verification is simulated"
     if str(attempt.get("verdict") or "") != "passed":
         return f"the attempt did not pass (verdict {attempt.get('verdict')})"
-    head = str(repair.get("pr_head_sha") or "")
-    candidate = str(attempt.get("candidate_sha") or "")
+    head = accepted_sha(repair)
+    candidate = str(attempt.get("candidate_sha") or "").lower()
     if not head:
         return "the repair has no recorded pull request head"
     if candidate != head:
@@ -1360,7 +1417,15 @@ def result_problem(
             f"the attempt measured {candidate[:12]}, "
             f"not the repair's head {head[:12]}"
         )
-    if str(repair.get("state") or "") != VERIFIED:
+    state = str(repair.get("state") or "")
+    if state == MERGED:
+        # A merged repair may only quote the attempt that graded the merge
+        # commit. The preview attempt measured a different commit and
+        # answered a different question.
+        if str(attempt.get("stage") or "preview") != "post_merge":
+            return "the attempt graded the preview, not the merged commit"
+        return ""
+    if state != VERIFIED:
         return f"the repair is in state {repair.get('state')}, not {VERIFIED}"
     return ""
 
@@ -1385,7 +1450,8 @@ def result_message(
     if problem:
         raise ValueError(problem)
     verified = dict(attempt or {})
-    head = str(repair["pr_head_sha"])
+    head = accepted_sha(repair)
+    merged = str(repair.get("state") or "") == MERGED
     stem = (
         f"repair {repair['id']} ({_case(repair, incident)}), "
         f"incident {repair.get('incident_id')}"
@@ -1393,15 +1459,22 @@ def result_message(
     video = _video(repair, recording, attachment)
     if not video:
         video = " · recording: none published for this head"
+    what = (
+        f"merge commit `{escape(head)}` (merged candidate "
+        f"`{escape(str(repair.get('pr_head_sha') or '')[:12])}`)"
+        if merged
+        else f"tested head `{escape(head)}`"
+    )
     return (
         f"{repair['id']}:result:{head}:"
         f"{_fingerprint(recording.url if recording else '')}",
         "result",
-        f"Result — {stem}, tested head `{escape(head)}` "
+        f"Result — {stem}, {what} "
         f"(verification {escape(str(verified.get('id') or ''))}, "
         f"cases {escape(str(verified.get('cases') or ''))}, "
         f"finished {escape(str(verified.get('finished_at') or ''))}). "
-        f"{_reproduction(repair)}. {PREVIEW_ONLY}. {_links(repair)}{video}",
+        f"{_reproduction(repair)}. "
+        f"{POST_MERGE_ONLY if merged else PREVIEW_ONLY}. {_links(repair)}{video}",
     )
 
 

@@ -206,6 +206,10 @@ class GitHub:
             "base_ref": str(base.get("ref") or ""),
             "state": str(response.body.get("state") or ""),
             "merged": str(bool(response.body.get("merged"))).lower(),
+            # Present only once GitHub has actually merged the pull request.
+            # It is the commit a post-merge check must run, and it is not the
+            # head the preview was graded on.
+            "merge_commit_sha": str(response.body.get("merge_commit_sha") or ""),
         }
 
     def pull_request_files(self, number: int, limit: int = 300) -> list[str]:
