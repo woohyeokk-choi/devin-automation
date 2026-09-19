@@ -780,6 +780,27 @@ two-hour repair outlives a one-hour installation token; `GITHUB_TOKEN` still
 takes precedence where a deployment sets one. Neither credential reaches a
 candidate stack.
 
+### Independent verification of the candidate
+
+| Step | Result |
+| --- | --- |
+| Candidate PR | <https://github.com/woohyeokk-choi/superset/pull/2>, base `runtime-repair/baseline`, head `d234055eaf85a70d5e5ec5a7a7256ee43d02dde6` read from GitHub |
+| Blocked attempts preserved | scope (test tree outside the S2 family), port `8288` held by an older stack, and a candidate checkout deleted mid-run by concurrent coordinator loops — recorded as `blocked`, never converted into product feedback |
+| Concurrency defect | four `portal.coordinator run` loops shared one state directory and each `IsolatedStack.prepare` removed the other's checkout and Compose project; `run` now holds an advisory lock on `$PORTAL_DATA_DIR/coordinator.lock` |
+| Verdict | `verified_in_preview` on attempt 8: S2's two target assertions plus the second-workspace and same-context controls, and N1's authenticated 403, all hold against the candidate stack; provenance clean with the in-container code hash and a 60-row fixture content digest |
+| Feedback sent | none — the candidate passed on first behavioural replay, so no follow-up was spent |
+
+Two observations about limits, recorded apart from each other because they
+measure different things. The API reports no per-session cap on reads, so
+`max_acu_limit=20` is what the create body asked for and the controller's own
+deadline and usage gates are what actually stop work. Separately, the session's
+native usage panel showed an on-demand limit *since last message* of `$20` with
+`$0` consumed at inspection (read-only, nothing saved) — a per-message UI
+setting, not a whole-session cap and not a conversion between ACUs and dollars.
+Native Slack sync for that session is unavailable to anyone but its owner, the
+`superset-runtime-repair` service user; it stays deferred rather than being
+obtained by changing ownership or duplicating the repair.
+
 ## 8. Blockers and required credentials
 
 Nothing is stored in this file; all values go into session/org secrets.
