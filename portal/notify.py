@@ -54,7 +54,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 from urllib.parse import urlparse
 
 from .config import Settings, settings
@@ -141,15 +141,33 @@ CREATE TABLE IF NOT EXISTS notification_uploads (
 );
 """
 
-#: The result messages the workspace owner verified in the approved channel,
-#: mapped to the repair each one speaks for. Later updates reply under these
-#: rather than restating history as new top-level posts. Threads are bound to
-#: a repair, so S1 and S2 never end up in each other's conversation; the
-#: mapping is supplied, never scraped from channel history.
-HISTORICAL_THREADS: dict[int, str] = {
-    1: "1789854458.454909",
-    2: "1789854458.664169",
-}
+
+@dataclass(frozen=True)
+class HistoricalThread:
+    """A result message an operator verified in the channel, and what it said.
+
+    Identified by the repair's own evidence rather than by a row number: a
+    repair id is local to one database, so a fresh deployment's repair 1 is
+    not this deployment's repair 1 and must not inherit its conversation.
+    """
+
+    case: str
+    sha: str
+    parent_ts: str
+
+
+#: The result messages the workspace owner verified in the approved channel.
+#: Later updates reply under these rather than restating history as new
+#: top-level posts. The mapping is supplied, never scraped from channel
+#: history, and is matched to a stored repair by case and accepted head.
+HISTORICAL_THREADS: tuple[HistoricalThread, ...] = (
+    HistoricalThread(
+        "S2", "d234055eaf85a70d5e5ec5a7a7256ee43d02dde6", "1789854458.454909"
+    ),
+    HistoricalThread(
+        "S1", "fe266eac51a996760a75997ff94b3270c9ef73b1", "1789854458.664169"
+    ),
+)
 
 #: When this ledger started speaking for the deployment. Records older than
 #: it were reached before Slack existed here and are the backfill command's
@@ -475,7 +493,6 @@ class Notifier:
             # channel people read, whatever credential this process holds.
             self.bot = None
             self.problem = SIMULATED_REFUSAL
-        self.log.bootstrap_threads(self.channel, HISTORICAL_THREADS)
         # Slack answers a webhook with `ok`, not JSON, and must never be
         # followed to another host: a redirect off hooks.slack.com would post
         # the message body somewhere nobody approved.
@@ -612,6 +629,7 @@ class Notifier:
         path: Path,
         recording: Recording,
         repair: dict[str, Any],
+        attempt: dict[str, Any] | None = None,
         *,
         simulated_record: bool = False,
     ) -> dict[str, str]:
@@ -621,13 +639,22 @@ class Notifier:
         that commit must be the accepted head, or nothing is offered to Slack:
         an unbound file next to a verified result reads as proof of it.
 
+        Matching the head is not enough on its own. A candidate that was never
+        accepted has a head too, so the repair must also satisfy the same
+        check a result message does — verified, non-simulated, with a stored
+        passing attempt measured on exactly that commit — or a clip of an
+        unverified build would arrive looking like accepted proof. `attempt`
+        defaults to nothing, which refuses.
+
         The reservation row is written before the upload is attempted and is
         never re-attempted from it, so a repeated run cannot post the same
         clip twice, and a failure part-way through Slack's multi-step upload
         is recorded as `unknown` rather than as a delivered file.
         """
         repair_id = repair.get("id")
-        problem = recording_problem(recording, repair)
+        problem = result_problem(repair, attempt) or recording_problem(
+            recording, repair
+        )
         if problem:
             return {"state": DISABLED, "detail": problem, "file_id": ""}
         if not path.is_file():
@@ -1119,6 +1146,37 @@ def historical_message(
     return f"backfill:{repair['id']}", "historical", text
 
 
+def historical_parents(
+    repairs: Sequence[tuple[dict[str, Any], dict[str, Any] | None]],
+) -> tuple[dict[int, str], list[str]]:
+    """Match each verified historical result to the repair it spoke for.
+
+    A parent `ts` is adopted only where exactly one stored repair carries the
+    same case and the same accepted head the operator confirmed in the
+    channel. Anything else — no match, or several — is reported rather than
+    guessed, because attaching a conversation to the wrong repair would reply
+    to S2's result under S1's.
+    """
+    parents: dict[int, str] = {}
+    problems: list[str] = []
+    for known in HISTORICAL_THREADS:
+        matched = [
+            repair
+            for repair, incident in repairs
+            if _case(repair, incident) == known.case
+            and str(repair.get("pr_head_sha") or "").lower() == known.sha
+            and not repair.get("simulated")
+        ]
+        if len(matched) != 1:
+            problems.append(
+                f"{known.case} at {known.sha[:12]} matches "
+                f"{len(matched)} stored repairs"
+            )
+            continue
+        parents[int(matched[0]["id"])] = known.parent_ts
+    return parents, problems
+
+
 def result_problem(
     repair: dict[str, Any], attempt: dict[str, Any] | None
 ) -> str:
@@ -1257,11 +1315,67 @@ def _state(config: Settings) -> Any:
     return open_state(config)
 
 
+#: The one data directory the historical channel messages belong to. They
+#: were posted about the repairs stored there, so bootstrapping them into any
+#: other ledger would thread a different deployment's repairs under them.
+LIVE_STATE_DIR = ("runtime", "live-state")
+
+
+def _bootstrap(notifier: Notifier, config: Settings) -> int:
+    """Adopt the operator-verified result messages as this ledger's parents.
+
+    Explicit and one-time: a fresh state's first incident posts and adopts
+    its own parent instead of replying under a result from another
+    deployment's database.
+    """
+    where = config.data_dir.resolve()
+    if (where.parent.name, where.name) != LIVE_STATE_DIR:
+        print(
+            json.dumps(
+                {
+                    "bootstrapped": {},
+                    "reason": (
+                        "the historical threads belong to "
+                        f"{'/'.join(LIVE_STATE_DIR)}; this ledger is "
+                        f"{where.parent.name}/{where.name}"
+                    ),
+                }
+            )
+        )
+        return 2
+    state = _state(config)
+    repairs = [
+        (repair, state.incidents.get(int(repair["incident_id"])))
+        for repair in state.repairs.list()
+    ]
+    parents, problems = historical_parents(repairs)
+    notifier.log.bootstrap_threads(notifier.channel, parents)
+    print(
+        json.dumps(
+            {
+                "bootstrapped": parents,
+                "unmatched": problems,
+                "threads": notifier.log.threads(),
+            },
+            indent=2,
+        )
+    )
+    return 0 if parents and not problems else 2
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Slack status notifications.")
     parser.add_argument(
         "command",
-        choices=("test", "backfill", "result", "attach", "correction", "status"),
+        choices=(
+            "test",
+            "bootstrap",
+            "backfill",
+            "result",
+            "attach",
+            "correction",
+            "status",
+        ),
     )
     parser.add_argument(
         "--clip",
@@ -1368,6 +1482,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.command == "bootstrap":
+        # Writes nothing to Slack, so it does not need a live transport.
+        return _bootstrap(notifier, settings)
+
     if not notifier.enabled:
         print(
             json.dumps(
@@ -1416,6 +1534,7 @@ def main(argv: list[str] | None = None) -> int:
                 clip,
                 recording,
                 repair,
+                attempts[-1] if attempts else None,
                 simulated_record=bool(repair.get("simulated")),
             )
             results.append({"repair": repair_id, **outcome})

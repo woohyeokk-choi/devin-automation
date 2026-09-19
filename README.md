@@ -452,12 +452,16 @@ What the bot adds, and nothing more:
   caller, an event or a model is refused by both the client and the notifier
   rather than followed.
 - **One thread per repair.** `chat_postMessage` replies under that repair's
-  parent `ts`, persisted in `notification_threads`. The two accepted repairs
-  are bootstrapped from the historical results an operator verified in the
-  channel (repair 1 / S2 `1789854458.454909`, repair 2 / S1
-  `1789854458.664169`); Slack history is never scraped and those messages are
-  never recreated. A repair with no parent adopts its own first delivered
-  message, and S1 and S2 never share a thread.
+  parent `ts`, persisted in `notification_threads`. A repair with no parent
+  adopts its own first delivered message, and S1 and S2 never share a thread.
+  A new ledger starts empty: the two historical results an operator verified
+  in the channel (S2 `1789854458.454909`, S1 `1789854458.664169`) are adopted
+  only by running `portal.notify bootstrap` against `runtime/live-state`,
+  which matches each of them to the one stored non-simulated repair carrying
+  that case *and* that accepted head. A repair id is local to one database,
+  so another deployment's repair 1 never inherits this conversation, and an
+  ambiguous or absent match is reported rather than guessed. Slack history is
+  never scraped and those messages are never recreated.
 - **A source label.** Every message ends `_Superset demo automation_`, because
   this custom app posts into the same channel an official integration could.
 - **No retries behind the ledger.** The client is built with
@@ -474,6 +478,7 @@ candidate stack or a message body.
 export SLACK_BOT_TOKEN='xoxb-…'                  # preferred; host process only
 export SLACK_WEBHOOK_URL='https://hooks.slack.com/services/...'   # fallback
 python3 -m portal.notify status                 # ledger, no network
+python3 -m portal.notify bootstrap              # adopt the verified parents, local only
 python3 -m portal.notify test                   # one marked connectivity line
 python3 -m portal.notify backfill --repair 1 --repair 2
 python3 -m portal.notify result --repair 1 \
@@ -495,6 +500,12 @@ python3 -m portal.notify correction --text 'Integration correction: …'
 uploaded or published; only a path this operator names is. The same capture
 metadata as `result` is required and the capture's revision must equal the
 accepted head, so a clip of another commit is refused before any call.
+Matching the head is not acceptance, so `Notifier.attach` — the method, not
+only the CLI — also applies the `result` gate: a non-simulated repair in
+`verified_in_preview` with a stored attempt that actually passed on exactly
+that head. A candidate, a blocked verification or an attempt that measured
+another commit is refused before the reservation row is written, so no video
+can be presented as accepted proof on metadata alone.
 
 Slack's upload is three requests (`files.getUploadURLExternal`, a PUT to
 `files.slack.com`, `files.completeUploadExternal`), so partial failure is

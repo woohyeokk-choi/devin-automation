@@ -165,7 +165,13 @@ An existing local clip can be attached to its repair's thread with
 `portal.notify attach --repair <id> --clip <path> …`, which requires the same
 capture metadata, refuses a clip whose revision is not the accepted head, and
 reserves a durable upload row before the first request so a repeated run or a
-restart cannot publish the same file twice. A signed download URL is a
+restart cannot publish the same file twice. Matching the head only says what
+was recorded, so the upload also has to clear the acceptance gate a result
+message clears — a non-simulated repair in `verified_in_preview` with a
+stored attempt that passed on exactly that head — enforced in
+`Notifier.attach` rather than in the CLI, so a candidate, a blocked
+verification or an attempt that measured another commit never becomes a video
+presented as accepted proof. A signed download URL is a
 credential and is never uploaded or written down; only a local path an
 operator names is.
 
@@ -208,7 +214,10 @@ session, product edit, merge or public exposure was involved.
   id would not de-duplicate against the other ledger: it must not be sent
   again, and real delivery uses `runtime/live-state` from here on. Neither
   ledger is deleted or rewritten; the historical results are reused as thread
-  parents (repair 1 `1789854458.454909`, repair 2 `1789854458.664169`)
-  instead of being posted a second time.
+  parents (S2 `1789854458.454909`, S1 `1789854458.664169`) instead of being
+  posted a second time — adopted by the explicit `portal.notify bootstrap`
+  against `runtime/live-state`, which matches each result to the one stored
+  non-simulated repair with that case and accepted head. A fresh state
+  inherits no parent and opens its own thread.
 - Two defects, two repairs, one repository, on a fork with a synthetic
   fixture. Nothing here establishes a rate on real customer incidents.

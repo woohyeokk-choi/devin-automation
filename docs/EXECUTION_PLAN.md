@@ -1028,13 +1028,19 @@ every line twice. `Notifier.transport_name` reports which one is live —
 
 The approved channel `C0C3X4BJ97S` is a constant checked in the client *and*
 in the notifier, so a destination proposed by a caller, an event or a model
-cannot redirect delivery. Per-repair threads live in `notification_threads`:
-the two accepted repairs are bootstrapped from the results an operator
-verified in the channel (repair 1 / S2 `1789854458.454909`, repair 2 / S1
-`1789854458.664169`), history is never scraped, those messages are never
-recreated, and a repair without a parent adopts its own first delivered
-message. Every custom message ends `_Superset demo automation_`, since this
-app shares a channel with the official Devin integration and is not it.
+cannot redirect delivery. Per-repair threads live in `notification_threads`
+and a new ledger holds none: a repair without a parent adopts its own first
+delivered message. The two results an operator verified in the channel (S2
+`1789854458.454909`, S1 `1789854458.664169`) are adopted only by the explicit
+`portal.notify bootstrap`, which runs against `runtime/live-state` and gives
+a parent to the one stored non-simulated repair whose case *and* accepted
+head match that result — a repair id belongs to one database, so numbering
+alone would hand another deployment's repair 1 this conversation. An
+ambiguous or missing match is reported and adopted by nobody. History is
+never scraped and those messages are never recreated.
+
+Every custom message ends `_Superset demo automation_`, since this app shares
+a channel with the official Devin integration and is not it.
 
 Uploads use `files_upload_v2` on an existing local file only. Slack's upload
 is three requests, so `notification_uploads` reserves a row — keyed by
@@ -1044,7 +1050,11 @@ a restart uploads nothing further. The returned file id is persisted, failure
 is `failed`, and an unresolved outcome is `unknown`, which is never reported
 as delivered. Recording metadata is validated exactly as for a link, so a
 clip whose revision is not the accepted head is refused before any call, and
-signed download URLs are neither uploaded nor written down.
+signed download URLs are neither uploaded nor written down. `Notifier.attach`
+itself — not only the CLI — additionally applies the `result` acceptance gate
+(verified repair, a stored attempt that passed on exactly that head), because
+metadata matching a head says what was recorded, not that the commit was
+accepted.
 
 Both simulation guards cover the new path: a simulated notifier drops the bot
 as well as the webhook, and a persisted `simulated` row is refused at every
