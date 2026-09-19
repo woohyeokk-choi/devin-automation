@@ -284,6 +284,26 @@ def session_request(
     }
 
 
+def post_merge_message(
+    merge_sha: str, base: str, pr_url: str, head_sha: str
+) -> str:
+    """Ask the session that wrote the fix to record the merged code."""
+    return f"""A human merged your pull request and independent host verification
+has already replayed the scenario against the merged commit and accepted it.
+
+Pull request: {pr_url} (previewed head `{head_sha}`)
+Merge commit: `{merge_sha}` on `{base}`
+
+One last piece of work, inside your existing budget: build that exact merge
+commit, exercise the same user action through the portal UI, and record it as
+a single video attachment named `post-merge-{merge_sha[:12]}.mp4`. Reply with
+the case (S1), the full commit id you built, the capture time in UTC and the
+environment the recording shows — it is your own machine, not the verifier's.
+Do not change product code, open another pull request, merge or deploy
+anything. The recording is evidence of the merged code, not a new verdict:
+the host checks remain the source of truth."""
+
+
 def follow_up_message(failures: list[str], pr_url: str, head_sha: str) -> str:
     """Verification feedback, delivered to the same session that produced the PR."""
     bullets = "\n".join(f"- {failure}" for failure in failures)

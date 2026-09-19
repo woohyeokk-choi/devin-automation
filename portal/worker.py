@@ -83,6 +83,7 @@ def live_verifier(
     web_port: int = 8288,
     mcp_port: int = 5208,
     base_branch: str = BASE_BRANCH,
+    retain_merged: bool = False,
 ) -> Verifier:
     """The real verifier: an isolated candidate stack graded by the pinned validator.
 
@@ -110,6 +111,7 @@ def live_verifier(
         replay=replay_through_validator,
         artifacts=artifacts,
         simulated=False,
+        retain_merged=retain_merged,
     )
 
 
@@ -160,6 +162,7 @@ def build_controller(
             web_port=web_port,
             mcp_port=mcp_port,
             base_branch=base,
+            retain_merged=bool(kwargs.get("merge_gate")),
         )
     return Controller(
         store,

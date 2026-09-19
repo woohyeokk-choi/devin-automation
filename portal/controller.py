@@ -1028,6 +1028,21 @@ class Controller:
             return Decision("skipped", "no such repair", repair_id)
         if self.github is None:
             return Decision("skipped", "no live providers configured", repair_id)
+        # Waiting for a human does not extend the budget the repair was
+        # given: an expired gate stops before it polls, before it builds
+        # anything from a late merge, and before it asks the session for
+        # more work.
+        exceeded = self._exceeded(repair, float(repair["agent_acus"] or 0.0))
+        if exceeded:
+            self.store.update(
+                repair_id,
+                state=NEEDS_ATTENTION,
+                attention=(
+                    "the merge gate stopped waiting before the pull request was "
+                    f"merged: {exceeded}"
+                ),
+            )
+            return Decision("stopped", exceeded, repair_id)
         try:
             head = self.github.pull_request_head(
                 _pr_number(str(repair["agent_pr_url"] or ""), self.target_repo)
@@ -1098,6 +1113,7 @@ class Controller:
             # back to it, and terminating it here is the behaviour the gate
             # was added to avoid.
             self.store.release_slot(repair_id)
+            self._ask_for_post_merge_media(repair_id, merge_sha)
             return Decision("merge_verified", merge_sha, repair_id)
         self.store.update(
             repair_id,
@@ -1131,11 +1147,51 @@ class Controller:
             return "the merge commit is not a full commit id"
         verified = str(repair.get("pr_head_sha") or "").lower()
         merged_head = str(head.get("head_sha") or "").lower()
-        if verified and merged_head and merged_head != verified:
+        # Both sides have to exist: a missing candidate or a missing merged
+        # head is an unanswered identity question, not a match.
+        if len(verified) != 40 or len(merged_head) != 40:
+            return (
+                "the verified candidate or the merged head is not a full commit id "
+                f"(verified {verified[:12] or 'none'}, merged {merged_head[:12] or 'none'})"
+            )
+        if merged_head != verified:
             return (
                 f"the merged head {merged_head[:12]} is not the verified candidate "
                 f"{verified[:12]}"
             )
+        return ""
+
+    def _ask_for_post_merge_media(self, repair_id: int, merge_sha: str) -> str:
+        """Ask the same session, once, to record the merged code.
+
+        Independent host verification has already decided the outcome; this
+        only asks the session that wrote the fix for a capture of the merged
+        commit. It is keyed by that commit, so polling again says nothing
+        twice, and it buys no work the budget no longer covers.
+        """
+        repair = self.store.get(repair_id)
+        if repair is None or self.devin is None:
+            return "nothing to talk to"
+        exceeded = self._exceeded(repair, float(repair["agent_acus"] or 0.0))
+        if exceeded:
+            return exceeded
+        scope = f"{self.run}:" if self.run else ""
+        mark = f"{scope}{repair['fingerprint']}:{merge_sha}:post-merge-media"
+        intent, claimed = self.store.intend(repair_id, "message", mark)
+        if intent["state"] != INTENDED or not claimed:
+            return "this post-merge request was already delivered"
+        message = brief.post_merge_message(
+            merge_sha,
+            self.base_branch,
+            str(repair["agent_pr_url"] or ""),
+            str(repair["pr_head_sha"] or ""),
+        )
+        try:
+            self.devin.send_message(str(repair["session_id"]), message)
+        except (RuntimeError, Ambiguous, Refused) as exc:
+            self.store.settle(int(intent["id"]), AMBIGUOUS, str(exc))
+            return f"post-merge request not delivered ({exc})"
+        self.store.settle(int(intent["id"]), CONFIRMED, mark)
         return ""
 
     def feedback(

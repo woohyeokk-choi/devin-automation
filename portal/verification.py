@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .events import utcnow
-from .providers import GitHub
+from .providers import Commit, GitHub
 from .validator import BLOCKED, CASES_BY_FAMILY, FAILED, PASSED, REQUIRED_CHECKS
 
 GRADED_KINDS = ("target", "control")
@@ -548,6 +548,7 @@ class Verifier:
         replay: Any,
         artifacts: Path | None = None,
         simulated: bool = False,
+        retain_merged: bool = False,
     ) -> None:
         self.github = github
         self.runner = runner
@@ -563,6 +564,10 @@ class Verifier:
         self.replay = replay
         self.artifacts = artifacts
         self.simulated = simulated
+        #: Whether a passing post-merge stack stays up on loopback. The demo
+        #: has to show the merged code running somewhere; a preview stack is
+        #: torn down the moment it has answered.
+        self.retain_merged = retain_merged
 
     def cases_for(self, family: str) -> tuple[str, ...]:
         """One repair, one defect: the other known baseline defect is not required."""
@@ -591,6 +596,9 @@ class Verifier:
         report: dict[str, Any] = {}
         commands: list[str] = []
         head_sha = ""
+        keep = False
+        verdict: str = BLOCKED
+        failures: tuple[str, ...] = ()
         try:
             if merge_sha:
                 head_sha, files = self._read_merged(
@@ -639,6 +647,23 @@ class Verifier:
                     reason=moved, commands=commands, report=report,
                     provenance=environment.provenance, stage=stage,
                 )
+            verdict, failures = grade(report, cases)
+            claimed = str(report.get("verdict") or "")
+            if verdict != BLOCKED and claimed != verdict:
+                # Whichever of the two is wrong, this run cannot promote a
+                # candidate or bill a session for a fix.
+                failures = (
+                    f"the replay reported {claimed or 'no verdict'} while its "
+                    f"assertions show {verdict}",
+                )
+                verdict = BLOCKED
+            if self.retain_merged and stage == POST_MERGE and verdict == PASSED:
+                keep = True
+                report["retained_environment"] = {
+                    "project": environment.project,
+                    "base_url": environment.base_url,
+                    "source_sha": environment.head_sha,
+                }
         except (RunnerError, RuntimeError, ValueError, OSError) as exc:
             return self._finish(
                 repair, incident, started, BLOCKED, head_sha, pr_url, cases,
@@ -648,22 +673,12 @@ class Verifier:
                 stage=stage,
             )
         finally:
-            if environment is not None:
+            if environment is not None and not keep:
                 try:
                     self.runner.teardown(environment)
                 except (RunnerError, OSError):
                     pass
 
-        verdict, failures = grade(report, cases)
-        claimed = str(report.get("verdict") or "")
-        if verdict != BLOCKED and claimed != verdict:
-            # Whichever of the two is wrong, this run cannot promote a
-            # candidate or bill a session for a fix.
-            failures = (
-                f"the replay reported {claimed or 'no verdict'} while its "
-                f"assertions show {verdict}",
-            )
-            verdict = BLOCKED
         return self._finish(
             repair, incident, started, verdict, head_sha, pr_url, cases,
             reason="" if verdict == PASSED else "; ".join(failures[:3]),
@@ -707,7 +722,34 @@ class Verifier:
         problem = self._merged_problem(head, merge_sha, expected_head)
         if problem:
             raise RuntimeError(problem)
-        return merge_sha.strip().lower(), self.github.pull_request_files(number)
+        sha = merge_sha.strip().lower()
+        merged, previewed = self.github.commit(sha), self.github.commit(expected_head)
+        content = self._content_problem(merged, previewed)
+        if content:
+            raise RuntimeError(content)
+        # What landed is measured against the commit it landed on, not
+        # against the pull request's own branch: a change the merge itself
+        # introduced appears in no list the pull request keeps.
+        return sha, self.github.compare_files(merged.parents[0], sha)
+
+    def _content_problem(self, merged: Commit, previewed: Commit) -> str:
+        """Why the merged content is not the previewed content, if it is not.
+
+        Tree ids answer this independently of how the merge was performed:
+        a merge commit, a squash and a rebase that carry the reviewed content
+        all name the same tree, and anything else — an edit during the merge,
+        a base that moved under it — names a different one.
+        """
+        if not previewed.tree_sha or not merged.tree_sha:
+            return "the merged or previewed tree could not be read from Git"
+        if not merged.parents:
+            return f"the merge commit {merged.sha[:12]} has no parent to compare against"
+        if merged.tree_sha != previewed.tree_sha:
+            return (
+                f"the merged tree {merged.tree_sha[:12]} is not the previewed tree "
+                f"{previewed.tree_sha[:12]}"
+            )
+        return ""
 
     def _merged_problem(
         self, head: dict[str, str], merge_sha: str, expected_head: str
@@ -739,10 +781,17 @@ class Verifier:
                 f"the pull request reports merge commit {actual[:12] or 'none'}, "
                 f"not {wanted[:12]}"
             )
-        if expected_head and str(head.get("head_sha") or "").lower() != expected_head.lower():
+        merged_head = str(head.get("head_sha") or "").lower()
+        wanted_head = expected_head.strip().lower()
+        if len(wanted_head) != 40 or len(merged_head) != 40:
             return (
-                f"the merged head is {str(head.get('head_sha') or '')[:12]}, not the "
-                f"candidate {expected_head[:12]} that was verified"
+                "the previewed candidate or the merged head is not a full commit id "
+                f"(previewed {wanted_head[:12] or 'none'}, merged {merged_head[:12] or 'none'})"
+            )
+        if merged_head != wanted_head:
+            return (
+                f"the merged head is {merged_head[:12]}, not the "
+                f"candidate {wanted_head[:12]} that was verified"
             )
         return ""
 

@@ -97,6 +97,15 @@ def _session(body: dict[str, Any]) -> Session:
 
 
 @dataclass
+class Commit:
+    """A commit's identity, content id and ancestry."""
+
+    sha: str
+    tree_sha: str
+    parents: tuple[str, ...]
+
+
+@dataclass
 class GitHub:
     """Issue create/reuse/read plus the one read the verifier needs: a head SHA."""
 
@@ -212,6 +221,48 @@ class GitHub:
             "merge_commit_sha": str(response.body.get("merge_commit_sha") or ""),
         }
 
+    def commit(self, sha: str) -> Commit:
+        """One commit's tree and parents, as Git recorded them.
+
+        The tree identifies content independently of how a merge was
+        performed, so a squash, a rebase and a merge commit carrying the
+        reviewed content are all recognisable as that content.
+        """
+        response = self._call("GET", f"/repos/{self.repo}/commits/{sha}")
+        if not response.ok:
+            raise RuntimeError(f"commit not read ({response.error()})")
+        commit = response.body.get("commit") or {}
+        parents = response.body.get("parents") or []
+        return Commit(
+            sha=str(response.body.get("sha") or "").lower(),
+            tree_sha=str((commit.get("tree") or {}).get("sha") or "").lower(),
+            parents=tuple(str(parent.get("sha") or "").lower() for parent in parents),
+        )
+
+    def compare_files(self, base: str, head: str, limit: int = 300) -> list[str]:
+        """Every path `head` changes relative to `base`.
+
+        A pull request's own file list describes the branch, not the commit
+        that landed: anything the merge itself brought in only shows up in a
+        comparison against the commit it was merged onto.
+        """
+        paths: list[str] = []
+        page = 1
+        while page <= 10:
+            response = self._call(
+                "GET",
+                f"/repos/{self.repo}/compare/{base}...{head}",
+                params={"per_page": 100, "page": page},
+            )
+            if not response.ok:
+                raise RuntimeError(f"commits not compared ({response.error()})")
+            files = response.body.get("files") or []
+            paths.extend(str(item.get("filename") or "") for item in files)
+            if len(files) < 100 or len(paths) > limit:
+                break
+            page += 1
+        return paths
+
     def pull_request_files(self, number: int, limit: int = 300) -> list[str]:
         """Every path the PR touches, so scope can be judged before it runs.
 
@@ -235,6 +286,17 @@ class GitHub:
                 break
             page += 1
         return paths
+
+
+@dataclass(frozen=True)
+class Attachment:
+    """One file a session produced or received."""
+
+    attachment_id: str
+    name: str
+    source: str
+    content_type: str
+    url: str
 
 
 @dataclass
@@ -300,6 +362,28 @@ class Devin:
         )
         if not response.ok:
             raise RuntimeError(f"session not terminated ({response.error()})")
+
+    def session_attachments(self, session_id: str) -> list[Attachment]:
+        """The files this session holds, newest listing as the API returns it.
+
+        The signed `url` stays inside the returned value: it is a credential
+        of its own and is never logged, printed or persisted.
+        """
+        response = self._call("GET", f"/sessions/{session_id}/attachments")
+        if not response.ok:
+            raise RuntimeError(f"attachments not listed ({response.error()})")
+        items = response.body.get("items")
+        listed = items if isinstance(items, list) else response.body.get("attachments") or []
+        return [
+            Attachment(
+                attachment_id=str(item.get("attachment_id") or ""),
+                name=str(item.get("name") or ""),
+                source=str(item.get("source") or ""),
+                content_type=str(item.get("content_type") or ""),
+                url=str(item.get("url") or ""),
+            )
+            for item in listed
+        ]
 
     def sessions_tagged(self, tag: str, first: int = 100) -> Iterator[Session]:
         """Documented cursor pagination: `first`/`after`, `items`/`end_cursor`."""

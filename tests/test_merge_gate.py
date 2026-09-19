@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,9 @@ from test_verification import CANDIDATE_SHA, FakeRunner, environment, report
 
 DEMO_BRANCH = "runtime-repair/fresh-demo-20260919-2310"
 MERGE_SHA = "ab" * 20
+BASE_TIP = "ba" * 20
+REVIEWED_TREE = "7e" * 20
+IN_SCOPE = ["superset/explore/form_data/commands/delete.py"]
 
 
 def env_at(sha: str) -> Environment:
@@ -81,14 +85,20 @@ def previewed(
     wiring: Wiring, incident: dict[str, Any], store: VerificationStore, **kwargs: Any
 ) -> int:
     """A gated repair that has passed its preview and is waiting for a human."""
-    wiring.github_api.pull_files[7] = ["superset/explore/form_data/commands/delete.py"]
+    wiring.github_api.pull_files[7] = list(IN_SCOPE)
     repair_id = _candidate(wiring, incident)
     wiring.controller.verifier = verifier_for(wiring, store, **kwargs)
     wiring.controller.verify(repair_id)
     return repair_id
 
 
-def merge(wiring: Wiring, **overrides: Any) -> None:
+def merge(
+    wiring: Wiring,
+    *,
+    tree: str = REVIEWED_TREE,
+    landed: list[str] | None = None,
+    **overrides: Any,
+) -> None:
     """Report the pull request the way GitHub reports a merged one."""
     wiring.pulls[7].update(
         {
@@ -97,6 +107,13 @@ def merge(wiring: Wiring, **overrides: Any) -> None:
             "merge_commit_sha": MERGE_SHA,
             **overrides,
         }
+    )
+    wiring.github_api.commits[CANDIDATE_SHA] = {
+        "tree": REVIEWED_TREE, "parents": [BASE_TIP]
+    }
+    wiring.github_api.commits[MERGE_SHA] = {"tree": tree, "parents": [BASE_TIP]}
+    wiring.github_api.comparisons[f"{BASE_TIP}...{MERGE_SHA}"] = (
+        IN_SCOPE if landed is None else landed
     )
 
 
@@ -107,7 +124,7 @@ def test_without_the_gate_a_preview_pass_still_ends_the_repair(
     wiring: Wiring, incident: dict[str, Any], store: VerificationStore,
     repairs: RepairStore,
 ) -> None:
-    wiring.github_api.pull_files[7] = ["superset/explore/form_data/commands/delete.py"]
+    wiring.github_api.pull_files[7] = list(IN_SCOPE)
     repair_id = _candidate(wiring, incident)
     wiring.controller.verifier = Verifier(
         github=GitHub(wiring.github_wire, token="simulated-token", repo=REPO),
@@ -289,6 +306,173 @@ def test_a_merge_state_that_cannot_be_read_waits_rather_than_deciding(
     assert decision.action == "deferred"
     repair = repairs.get(repair_id)
     assert repair is not None and repair["state"] == AWAITING_MERGE
+
+
+def test_merged_content_that_is_not_the_reviewed_content_is_refused(
+    repairs: RepairStore, incident: dict[str, Any], store: VerificationStore
+) -> None:
+    """A tree nobody previewed is a different change, however it was merged."""
+    wiring = gated(repairs)
+    runner = FakeRunner(build=lambda: env_at(MERGE_SHA))
+    repair_id = previewed(wiring, incident, store)
+    wiring.controller.verifier = verifier_for(wiring, store, runner=runner)
+    merge(wiring, tree="11" * 20)
+
+    decision = wiring.controller.check_merge(repair_id)
+
+    assert decision.action == "blocked"
+    assert "is not the previewed tree" in decision.detail
+    assert runner.prepared == []  # nothing was built from it
+    repair = repairs.get(repair_id)
+    assert repair is not None and repair["state"] == NEEDS_ATTENTION
+
+
+def test_a_change_the_merge_itself_brought_in_is_judged_against_the_scope(
+    repairs: RepairStore, incident: dict[str, Any], store: VerificationStore
+) -> None:
+    """The merged delta is read from Git, not from the pull request's list."""
+    wiring = gated(repairs)
+    runner = FakeRunner(build=lambda: env_at(MERGE_SHA))
+    repair_id = previewed(wiring, incident, store)
+    wiring.controller.verifier = verifier_for(wiring, store, runner=runner)
+    merge(wiring, landed=[*IN_SCOPE, "portal/validator.py"])
+
+    decision = wiring.controller.check_merge(repair_id)
+
+    assert decision.action == "blocked"
+    assert runner.prepared == []
+    attempt = store.for_repair(repair_id)[-1]
+    assert attempt["stage"] == POST_MERGE
+    assert "portal/validator.py" in attempt["failures"]
+
+
+@pytest.mark.parametrize(
+    "head", [{"sha": "", "repo": {"full_name": REPO}}, {"sha": "abc123", "repo": {"full_name": REPO}}]
+)
+def test_a_merge_without_a_full_head_commit_is_not_treated_as_a_match(
+    repairs: RepairStore,
+    incident: dict[str, Any],
+    store: VerificationStore,
+    head: dict[str, Any],
+) -> None:
+    wiring = gated(repairs)
+    repair_id = previewed(wiring, incident, store)
+    merge(wiring, head=head)
+
+    decision = wiring.controller.check_merge(repair_id)
+    assert decision.action == "parked" and "full commit id" in decision.detail
+
+
+# --- the budget still bounds the gate --------------------------------------
+
+
+def test_an_expired_gate_stops_waiting_instead_of_running_the_merged_commit(
+    repairs: RepairStore, incident: dict[str, Any], store: VerificationStore
+) -> None:
+    """A late merge does not buy work the deadline no longer covers."""
+    wiring = gated(repairs)
+    runner = FakeRunner(build=lambda: env_at(MERGE_SHA))
+    repair_id = previewed(wiring, incident, store)
+    wiring.controller.verifier = verifier_for(wiring, store, runner=runner)
+    merge(wiring)
+    before = repairs.get(repair_id)
+    assert before is not None
+    deadline = str(before["deadline_utc"])
+    wiring.clock += timedelta(hours=6)
+
+    decision = wiring.controller.check_merge(repair_id)
+
+    assert decision.action == "stopped" and "deadline" in decision.detail
+    assert runner.prepared == []
+    assert not wiring.devin_api.messages
+    repair = repairs.get(repair_id)
+    assert repair is not None and repair["state"] == NEEDS_ATTENTION
+    assert "stopped waiting" in repair["attention"]
+    # The deadline itself is left exactly where dispatch set it.
+    assert str(repair["deadline_utc"]) == deadline
+
+
+# --- the session is asked for the merged-code recording --------------------
+
+
+def test_the_same_session_is_asked_once_to_record_the_merged_commit(
+    repairs: RepairStore, incident: dict[str, Any], store: VerificationStore
+) -> None:
+    wiring = gated(repairs)
+    repair_id = previewed(wiring, incident, store)
+    wiring.controller.verifier = verifier_for(
+        wiring, store, runner=FakeRunner(build=lambda: env_at(MERGE_SHA))
+    )
+    merge(wiring)
+
+    assert wiring.controller.check_merge(repair_id).action == "merge_verified"
+
+    assert len(wiring.devin_api.messages) == 1
+    session, text = wiring.devin_api.messages[0]
+    assert session == wiring.session_id()
+    assert MERGE_SHA in text and f"post-merge-{MERGE_SHA[:12]}.mp4" in text
+    assert not wiring.devin_api.terminated
+
+    # Polling the same merge again neither re-asks nor re-runs anything.
+    assert wiring.controller.check_merge(repair_id).action in ("skipped", "merge_verified")
+    assert len(wiring.devin_api.messages) == 1
+
+
+def test_a_spent_budget_does_not_buy_the_recording_request(
+    repairs: RepairStore, incident: dict[str, Any], store: VerificationStore
+) -> None:
+    wiring = gated(repairs)
+    repair_id = previewed(wiring, incident, store)
+    wiring.controller.verifier = verifier_for(
+        wiring, store, runner=FakeRunner(build=lambda: env_at(MERGE_SHA))
+    )
+    merge(wiring)
+    repairs.update(repair_id, agent_acus=99.0)
+
+    assert wiring.controller.check_merge(repair_id).action == "stopped"
+    assert not wiring.devin_api.messages
+
+
+def test_a_passing_post_merge_stack_is_left_running_for_the_demo(
+    repairs: RepairStore, incident: dict[str, Any], store: VerificationStore
+) -> None:
+    """The merged code has to be visible on loopback, not torn down at once."""
+    wiring = gated(repairs)
+    runner = FakeRunner(build=lambda: env_at(MERGE_SHA))
+    repair_id = previewed(wiring, incident, store)
+    verifier = verifier_for(wiring, store, runner=runner)
+    verifier.retain_merged = True
+    wiring.controller.verifier = verifier
+    merge(wiring)
+
+    assert wiring.controller.check_merge(repair_id).action == "merge_verified"
+    assert runner.torn_down == []
+    retained = json.loads(store.for_repair(repair_id)[-1]["report"])
+    assert retained["retained_environment"]["source_sha"] == MERGE_SHA
+
+
+def test_a_failing_post_merge_stack_is_not_left_running(
+    repairs: RepairStore, incident: dict[str, Any], store: VerificationStore
+) -> None:
+    from portal.validator import FAILED
+
+    wiring = gated(repairs)
+    runner = FakeRunner(build=lambda: env_at(MERGE_SHA))
+    repair_id = previewed(wiring, incident, store)
+    verifier = verifier_for(
+        wiring,
+        store,
+        runner=runner,
+        replay=lambda env, cases: report(
+            FAILED, broken={"discarded_link_stays_dead_after_a_new_exploration": 200}
+        ),
+    )
+    verifier.retain_merged = True
+    wiring.controller.verifier = verifier
+    merge(wiring)
+
+    assert wiring.controller.check_merge(repair_id).action == "merge_failed"
+    assert runner.torn_down
 
 
 # --- what the channel is told ----------------------------------------------

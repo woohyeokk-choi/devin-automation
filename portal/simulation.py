@@ -67,6 +67,10 @@ class FakeGitHub:
     pulls: dict[int, dict[str, Any]] = field(default_factory=dict)
     #: Paths each simulated pull request touches, for change-scope checks.
     pull_files: dict[int, list[str]] = field(default_factory=dict)
+    #: Commit id -> tree id and parents, for merged-content identity.
+    commits: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: "base...head" -> the paths that comparison reports as changed.
+    comparisons: dict[str, list[str]] = field(default_factory=dict)
     #: Set to raise on the next write, simulating a timeout after the server
     #: may already have acted.
     fail_create_with: Exception | None = None
@@ -102,6 +106,25 @@ class FakeGitHub:
             start = (page - 1) * 100
             window = names[start:start + 100]
             return Response(200, {"items": [{"filename": name} for name in window]})
+        if call.method == "GET" and "/compare/" in call.url:
+            span = call.url.rsplit("/compare/", 1)[1]
+            page = int((call.params or {}).get("page", 1))
+            names = self.comparisons.get(span, [])
+            window = names[(page - 1) * 100:(page - 1) * 100 + 100]
+            return Response(200, {"files": [{"filename": name} for name in window]})
+        if call.method == "GET" and "/commits/" in call.url:
+            sha = call.url.rsplit("/", 1)[1]
+            commit = self.commits.get(sha)
+            if commit is None:
+                return Response(404, {"message": f"no commit {sha}"})
+            return Response(
+                200,
+                {
+                    "sha": sha,
+                    "commit": {"tree": {"sha": commit["tree"]}},
+                    "parents": [{"sha": parent} for parent in commit["parents"]],
+                },
+            )
         if call.method == "GET" and "/pulls/" in call.url:
             number = int(call.url.rsplit("/", 1)[1])
             pull = self.pulls.get(number)
