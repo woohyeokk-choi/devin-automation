@@ -1285,7 +1285,9 @@ class Card:
 
     @property
     def fallback(self) -> str:
-        return _trim(f"{self.headline} — {self.what}" if self.what else self.headline, 180)
+        """One line for a notification and for a screen reader: no markup."""
+        plain = self.what.replace("*", "")
+        return _trim(f"{self.headline} — {plain}" if plain else self.headline, 180)
 
     def blocks(self) -> list[dict[str, Any]]:
         blocks: list[dict[str, Any]] = [
@@ -1420,7 +1422,7 @@ def card_for(  # noqa: C901 - one branch per lifecycle state, each of them flat
     """
     case = _case(repair, incident)
     head = str(repair.get("pr_head_sha") or "")[:8]
-    trace = _trace(incident)[:8]
+    trace = f"Trace {_trace(incident)[-8:]}" if _trace(incident) else ""
     baseline = str((incident or {}).get("baseline_sha") or "")[:8]
 
     if action == "dispatched":
@@ -1995,14 +1997,23 @@ KIND_ACTIONS = {
 }
 
 
-def _owned_by(author: dict[str, str], bot_id: str, app_id: str) -> str:
+def _owned_by(
+    author: dict[str, str], bot_id: str, app_id: str, unreadable: str = "refuse"
+) -> str:
     """Empty when Slack says this app posted the message, else the reason.
 
     An edit is destructive to whatever was there before, so a message whose
     author cannot be read is left alone rather than assumed to be ours.
+    Reading a message needs history scopes this app may not hold; where an
+    operator accepts the ledger's own record of sending that timestamp as
+    the evidence instead, `unreadable="ledger"` says so explicitly, and
+    Slack still refuses `chat.update` on a message this app did not post.
     """
     if not author.get("readable"):
-        return f"author unreadable ({author.get('detail') or 'no detail'})"
+        detail = author.get("detail") or "no detail"
+        if unreadable == "ledger" and detail == "missing_scope":
+            return ""
+        return f"author unreadable ({detail})"
     if bot_id and author.get("bot_id") != bot_id:
         return f"posted by bot {author.get('bot_id') or 'unknown'}"
     if app_id and author.get("app_id") != app_id:
@@ -2017,6 +2028,7 @@ def _restyle(
     archive: Path,
     bot_id: str,
     app_id: str,
+    unreadable: str = "refuse",
 ) -> int:
     """Re-render messages this ledger already sent as cards, in place.
 
@@ -2047,12 +2059,14 @@ def _restyle(
         if notifier.bot is None:
             results.append({"ts": ts, "state": "refused", "reason": "no bot transport"})
             continue
-        mismatch = _owned_by(notifier.bot.author_of(ts), bot_id, app_id)
+        author = notifier.bot.author_of(ts)
+        mismatch = _owned_by(author, bot_id, app_id, unreadable)
         if mismatch:
             results.append({"ts": ts, "state": "refused", "reason": mismatch})
             continue
         before = {
             "ts": ts,
+            "author": author,
             "kind": row["kind"],
             "text": row["text"],
             "blocks": _payload(row) or [],
@@ -2123,6 +2137,15 @@ def main(argv: list[str] | None = None) -> int:
         "--archive",
         default="",
         help="directory for the before/after payloads of a restyle",
+    )
+    parser.add_argument(
+        "--unreadable-owner",
+        choices=("refuse", "ledger"),
+        default="refuse",
+        help=(
+            "what to do when history scopes cannot read the message: refuse "
+            "the edit, or accept this ledger's record that it sent that ts"
+        ),
     )
     parser.add_argument(
         "--owner-bot",
@@ -2257,6 +2280,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.archive),
             args.owner_bot,
             args.owner_app,
+            args.unreadable_owner,
         )
 
     if args.command == "test":

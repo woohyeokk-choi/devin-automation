@@ -398,3 +398,19 @@ def test_an_unreadable_author_is_not_treated_as_our_own() -> None:
     assert not notify._owned_by(
         {"readable": "yes", "bot_id": "B0", "app_id": "A0"}, "B0", "A0"
     )
+
+
+def test_a_ledger_owned_message_may_be_restyled_where_history_is_unreadable() -> None:
+    unreadable = {"readable": "", "detail": "missing_scope"}
+    # Without that allowance nothing is edited on unreadable evidence.
+    assert notify._owned_by(unreadable, "B0", "A0").startswith("author unreadable")
+    assert not notify._owned_by(unreadable, "B0", "A0", "ledger")
+    # Any other refusal stays a refusal, allowance or not.
+    assert notify._owned_by(
+        {"readable": "", "detail": "channel_not_found"}, "B0", "A0", "ledger"
+    )
+
+
+def test_a_fallback_line_carries_no_markup() -> None:
+    card = card_for("dispatched", REPAIR, INCIDENT)
+    assert card is not None and "*" not in card.fallback
