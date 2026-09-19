@@ -308,6 +308,30 @@ def test_a_failed_preparation_removes_only_its_own_stack(tmp_path: Path) -> None
     assert not (tmp_path / "work" / f"candidate{CANDIDATE_SHA[:12]}").exists()
 
 
+def test_a_damaged_checkout_still_gets_its_containers_removed(tmp_path: Path) -> None:
+    """Compose cannot read its file from a half-deleted tree; labels remain."""
+    stack = RecordingStack(tmp_path, fail_at="compose")
+    project = f"candidate{CANDIDATE_SHA[:12]}"
+    checkout = tmp_path / "work" / project
+    checkout.mkdir(parents=True)
+    stack.teardown(
+        Environment(
+            project=project,
+            base_url="http://127.0.0.1:8288",
+            mcp_url="http://127.0.0.1:5208/mcp",
+            checkout=str(checkout),
+            head_sha=CANDIDATE_SHA,
+            provenance={},
+            commands=[],
+        )
+    )
+    filters = [argv for argv, _ in stack.calls if "--filter" in argv]
+    assert filters, "nothing was removed by label"
+    assert all(
+        f"label=com.docker.compose.project={project}" in argv for argv in filters
+    )
+
+
 def test_a_process_without_git_or_docker_reports_that_it_cannot_verify(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

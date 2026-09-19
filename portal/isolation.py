@@ -143,11 +143,39 @@ class IsolatedStack:
 
     def teardown(self, environment: Environment) -> None:
         checkout = Path(environment.checkout)
+        project = environment.project
         if checkout.exists():
-            self._compose(
-                environment.project, checkout, ["down", "-v", "--remove-orphans"], []
-            )
-            self._remove_tree(environment.project, checkout)
+            try:
+                self._compose(project, checkout, ["down", "-v", "--remove-orphans"], [])
+            except RunnerError:
+                # A damaged checkout no longer holds the Compose file, and the
+                # containers would outlive it. They carry the project label.
+                self._remove_by_label(project)
+            self._remove_tree(project, checkout)
+        else:
+            self._remove_by_label(project)
+
+    def _remove_by_label(self, project: str) -> None:
+        """Remove what the project labelled as its own.
+
+        Compose needs its file to take a stack down, and a candidate whose
+        checkout was damaged no longer has one; the label outlives it.
+        """
+        label = f"label=com.docker.compose.project={project}"
+        env = safe_environment({}, {})
+        for kind in ("container", "volume"):
+            try:
+                listed = self._run(
+                    ["docker", kind, "ls", "-q", "--filter", label],
+                    Path.cwd(), [], env=env,
+                )
+                names = [n for n in listed.split() if n]
+                if names:
+                    self._run(
+                        ["docker", kind, "rm", "-f", *names], Path.cwd(), [], env=env
+                    )
+            except RunnerError:
+                continue
 
     def _remove_tree(self, project: str, checkout: Path) -> None:
         """Delete a checkout the containers also wrote to.
@@ -164,9 +192,11 @@ class IsolatedStack:
             self._run(
                 [
                     "docker", "run", "--rm",
+                    "--user", "0:0",
+                    "--entrypoint", "rm",
                     "-v", f"{checkout.parent}:/workspace",
                     f"{project}-superset-light",
-                    "rm", "-rf", f"/workspace/{checkout.name}",
+                    "-rf", f"/workspace/{checkout.name}",
                 ],
                 checkout.parent,
                 [],
