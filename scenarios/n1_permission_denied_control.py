@@ -30,11 +30,14 @@ RESTRICTED_USER = "restricted_analyst"
 # light stack; override with RESTRICTED_PASSWORD for any shared environment.
 RESTRICTED_PASSWORD = os.environ.get("RESTRICTED_PASSWORD", "restricted-analyst-local")
 TAB_ID = "552266"
+# Which web container holds the metadata database: an isolated Compose
+# project names it after that project, so it cannot be assumed.
+WEB_CONTAINER = os.environ.get("SUPERSET_WEB_CONTAINER", "superset-superset-light-1")
 
 
 def _fab(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["docker", "exec", "-i", "superset-superset-light-1", "superset", "fab", *args],
+        ["docker", "exec", "-i", WEB_CONTAINER, "superset", "fab", *args],
         capture_output=True,
         text=True,
     )

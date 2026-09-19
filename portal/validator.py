@@ -505,6 +505,9 @@ def case_s1(target: Target) -> CaseResult:
     return recorder.result()
 
 
+N1_TAB = "552266"
+
+
 def case_n1(target: Target) -> CaseResult:
     """N1 — the restricted role is denied, and the denial is authenticated.
 
@@ -514,19 +517,28 @@ def case_n1(target: Target) -> CaseResult:
     """
     recorder = Recorder("N1")
     try:
+        # The dataset the restricted user is refused has to exist, or the
+        # refusal would be about a missing object rather than a permission.
+        dataset_id = _dataset_id(_login(target, target.username, target.password))
         client = _login(target, target.restricted_username, target.restricted_password)
         listing = client.get("/api/v1/chart/")
         if listing.status_code == 401:
             raise Blocked("the restricted session is not authenticated (HTTP 401 on list)")
         recorder.check("control_the_restricted_role_can_list_charts", CONTROL, 200, listing.status_code)
 
+        # The same write the portal's restricted profile attempts: saving
+        # exploration state on a dataset the Gamma role cannot reach.
         write = client.post(
-            "/api/v1/chart/",
-            json={"slice_name": "denied", "viz_type": "table", "datasource_id": 1,
-                  "datasource_type": "table"},
+            f"/api/v1/explore/form_data?tab_id={N1_TAB}",
+            json=_payload(dataset_id, _form_data(dataset_id, "region", 100)),
         )
         if write.status_code == 401:
             raise Blocked("the restricted session lost authentication before the write (HTTP 401)")
+        if write.status_code >= 500:
+            raise Blocked(
+                f"the restricted write returned HTTP {write.status_code}: a server "
+                "error is not an authorization answer"
+            )
         recorder.check(
             "the_restricted_role_is_denied_a_write", TARGET, 403, write.status_code,
             "an authenticated permission denial, not an authentication failure",
@@ -534,7 +546,8 @@ def case_n1(target: Target) -> CaseResult:
 
         data = client.post(
             "/api/v1/chart/data",
-            json={"datasource": {"id": 1, "type": "table"}, "queries": [{"row_limit": 1}],
+            json={"datasource": {"id": dataset_id, "type": "table"},
+                  "queries": [{"row_limit": 1}],
                   "result_format": "json", "result_type": "full"},
         )
         if data.status_code == 401:
