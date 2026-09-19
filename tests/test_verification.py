@@ -63,6 +63,17 @@ def test_a_product_fix_with_its_test_is_in_scope() -> None:
     assert verdict.allowed and not verdict.reasons
 
 
+def test_the_test_tree_mirroring_the_command_package_is_in_scope() -> None:
+    verdict = check_scope(
+        [
+            "superset/commands/explore/form_data/create.py",
+            "tests/unit_tests/commands/explore/form_data/test_create.py",
+        ],
+        S2_FAMILY,
+    )
+    assert verdict.allowed and not verdict.reasons
+
+
 @pytest.mark.parametrize(
     "path",
     [

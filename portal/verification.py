@@ -53,7 +53,9 @@ SCOPE_BY_FAMILY: dict[str, tuple[str, ...]] = {
         "superset/key_value/",
         "superset/commands/key_value/",
         "tests/unit_tests/explore/",
+        "tests/unit_tests/commands/explore/",
         "tests/unit_tests/key_value/",
+        "tests/unit_tests/commands/key_value/",
         "tests/integration_tests/explore/",
     ),
     "omitted_row_limit_is_reset": (
