@@ -232,6 +232,32 @@ session, product edit, merge or public exposure was involved.
   describe a clip published as a file rather than as a URL, so its own clip
   arrived in the thread a minute later without the line naming it. The S1
   line, sent after the fix, reads `recording uploaded to this thread`.
-  Nothing in the channel was edited or deleted to hide the difference.
+  Nothing in the channel was deleted, and nothing else was edited.
+- That S2 line was corrected in place afterwards, once and only there, by
+  `portal.notify amend --repair 1 --ts 1789858187.458229` — `chat_update`,
+  `sent`, one attempt. The clause "recording pending — not a shareable
+  https link" became "recording uploaded to this thread as file
+  F0C2XKS6FD1 — S2 captured 2026-09-19T22:15:48+00:00 against
+  d234055eaf85, shows later CLI/API replay: baseline failure vs
+  accepted-head pass; not phase 6 verification, not portal UI, N1 not
+  re-run". Everything else in the message — PR, tested head, verification
+  8, `verified in isolated preview; not merged/deployed`, the source label
+  — is unchanged, no new message was posted, and the historical parent, the
+  correction and the rest of the channel were not touched. It is a status
+  correction made after the file was confirmed, not concealment: Slack keeps
+  no record of superseded wording, so the previous text, the replacement and
+  the reason are stored in the ledger's `notification_amendments` table, and
+  the original wording stays quoted above.
+- A message can only say a clip was uploaded when the upload ledger holds a
+  `sent` row with a file id for that repair and head; supplying
+  `--recording thread` on its own now reads `recording prepared for
+  attachment in this thread`, because a result is written before its file is
+  offered. `amend` refuses a `ts` this ledger never recorded sending, so the
+  parent messages and the correction cannot be rewritten through it.
+- The S1 case was also captured through the operator portal's own UI, at the
+  baseline and at the accepted head, in `artifacts/phase8/portal-ui/`: saved row limit 137 → 1000 on
+  `394bca55`, 137 → 137 on `fe266eac`, from a sort-only change. Still a later
+  local replay of one case, still not Superset's frontend and not the phase 6
+  verification; nothing from it has been published to Slack.
 - Two defects, two repairs, one repository, on a fork with a synthetic
   fixture. Nothing here establishes a rate on real customer incidents.
