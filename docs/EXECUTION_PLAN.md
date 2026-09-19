@@ -1012,3 +1012,54 @@ frontend, so the chart editor could not be filmed and the footage is scenario
 output plus the persisted REST read-back; N1 was not re-run; phase 6 records
 are unchanged; no repair session, product edit, merge, deployment or Slack
 send was involved.
+
+### Phase 8b — Slack Web API transport (bot preferred, webhook fallback)
+
+`portal/slack_bot.py` adds the smallest possible Web API client: the official
+`slack_sdk` `WebClient` behind a two-method protocol (`post`, `upload`), built
+with `retry_handlers=[]` and a bounded timeout so the SDK cannot multiply the
+ledger's retry schedule. No Bolt, no Socket Mode, no second service, no
+listener: nothing reads the channel.
+
+`build_notifier` prefers the bot whenever `SLACK_BOT_TOKEN` is configured and
+drops the webhook when it does, because two configured transports would post
+every line twice. `Notifier.transport_name` reports which one is live —
+`bot`, `webhook` or `none` — and never the credential.
+
+The approved channel `C0C3X4BJ97S` is a constant checked in the client *and*
+in the notifier, so a destination proposed by a caller, an event or a model
+cannot redirect delivery. Per-repair threads live in `notification_threads`:
+the two accepted repairs are bootstrapped from the results an operator
+verified in the channel (repair 1 / S2 `1789854458.454909`, repair 2 / S1
+`1789854458.664169`), history is never scraped, those messages are never
+recreated, and a repair without a parent adopts its own first delivered
+message. Every custom message ends `_Superset demo automation_`, since this
+app shares a channel with the official Devin integration and is not it.
+
+Uploads use `files_upload_v2` on an existing local file only. Slack's upload
+is three requests, so `notification_uploads` reserves a row — keyed by
+repair, the capture's revision and a digest of the file's bytes — before the
+first of them and never retries from it: a repeated run, a second operator or
+a restart uploads nothing further. The returned file id is persisted, failure
+is `failed`, and an unresolved outcome is `unknown`, which is never reported
+as delivered. Recording metadata is validated exactly as for a link, so a
+clip whose revision is not the accepted head is refused before any call, and
+signed download URLs are neither uploaded nor written down.
+
+Both simulation guards cover the new path: a simulated notifier drops the bot
+as well as the webhook, and a persisted `simulated` row is refused at every
+entry point including `attach`. `tests/test_deployment.py` adds a canary bot
+token to the intercepted-socket regression; `tests/test_slack_bot.py` covers
+transport preference, channel enforcement and caller override, threading and
+thread separation, deduplication across a restart, the source label, wrong
+and missing capture metadata, duplicate uploads, failed and ambiguous
+uploads, and persisted file ids — all against fake clients and temporary
+files, with no ambient credential. `portal.redaction` also scrubs bare
+`xox…` tokens by shape.
+
+Ledger note: the one authorized correction was sent through the default
+`runtime/notifications.sqlite`, while the three approved messages are in
+`runtime/live-state`. Neither ledger is edited; the correction is not resent,
+and real delivery uses `runtime/live-state` from here on.
+
+Live sends and uploads remain paused pending review.

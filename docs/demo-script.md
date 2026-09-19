@@ -1,6 +1,8 @@
 # Loom script — one continuous take, target 4:45, hard stop 5:00
 
 One unedited Loom recording, no stitched or pre-recorded clips, no `.mp4`.
+The native replay clips and any clip uploaded to `#superset-alerts` are
+separate evidence, never part of this take.
 Nothing in it costs money: every session, issue and pull request below already
 exists, and no repair is dispatched while recording (`AUTO_REPAIR_ENABLED=false`).
 
@@ -113,7 +115,13 @@ Hard stop by 5:00.
   result — repair ran earlier*.
 - That Slack Q&A works, or that either repair alerted the channel while it
   ran — the notifier is outbound status only, and the two messages in
-  `#superset-alerts` are backfills marked "Historical result".
+  `#superset-alerts` are backfills marked "Historical result". The alert app
+  is a custom one labelled *Superset demo automation*, not the official Devin
+  integration.
+- That the replay clips show the product's UI. They are scenario output plus
+  the persisted REST read-back; the pinned light image serves no compiled
+  Superset frontend, and no clip of the custom portal's own screens at an
+  accepted head exists yet.
 - That CI passed. Both candidate heads had 0 check-runs and 0 statuses.
 - Any dollar figure derived from `acus_consumed`, or any ROI multiplier.
 - That a preview environment is still running.

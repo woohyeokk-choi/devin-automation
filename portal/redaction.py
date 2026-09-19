@@ -85,6 +85,9 @@ _SCRUBBERS: tuple[tuple[re.Pattern[str], str], ...] = (
     # holding it can post to the channel, and it carries no `key=value` shape
     # for the rules above to catch.
     (re.compile(r"(?i)https://hooks\.slack\.com/\S*"), REDACTED),
+    # A Slack bot/user token is the same kind of bare bearer credential: it
+    # carries no `key=value` shape and grants everything its scopes allow.
+    (re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{8,}"), REDACTED),
     # JWTs and Flask session cookies, which appear bare in logs and tracebacks
     (re.compile(r"\beyJ[A-Za-z0-9._\-]{10,}"), REDACTED),
     (re.compile(r"\bsession=[^\s;,\"']+"), f"session={REDACTED}"),

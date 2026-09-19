@@ -213,6 +213,15 @@ def test_a_webhook_url_is_scrubbed_at_any_depth() -> None:
     assert REDACTED in json.dumps(scrub(canary))
 
 
+def test_a_bot_token_is_scrubbed_at_any_depth() -> None:
+    # The Web API credential is bare in SDK errors and tracebacks, and is
+    # worth as much as the webhook to anyone who reads it.
+    token = "xoxb-000000000000-canary-not-a-real-token"
+    canary = {"deep": {"error": [f"not_authed while using {token}"]}}
+    assert token not in json.dumps(scrub(canary))
+    assert REDACTED in json.dumps(scrub(canary))
+
+
 # --- what is worth saying --------------------------------------------------
 
 

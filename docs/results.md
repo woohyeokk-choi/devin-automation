@@ -161,6 +161,14 @@ python3 -m portal.notify result --repair 1 \
 
 Missing video is an honest omission, not a failed repair.
 
+An existing local clip can be attached to its repair's thread with
+`portal.notify attach --repair <id> --clip <path> …`, which requires the same
+capture metadata, refuses a clip whose revision is not the accepted head, and
+reserves a durable upload row before the first request so a repeated run or a
+restart cannot publish the same file twice. A signed download URL is a
+credential and is never uploaded or written down; only a local path an
+operator names is.
+
 The before/after clips described above were produced this way:
 `IsolatedStack.prepare()` built one stack at the baseline and one at each
 accepted head, the same scenario ran against both, and the clip shows
@@ -170,11 +178,17 @@ session, product edit, merge or public exposure was involved.
 ## What this does not show
 
 - Nothing merged, nothing deployed, no production or public preview.
-- Slack is outbound status only. `portal/notify.py` posts lifecycle lines to
-  one incoming webhook and de-duplicates by event id, but delivery is not
-  exactly-once (ambiguous outcomes are recorded `unknown`), and there is no
-  Q&A: native conversational sync is available only to a session's owner —
-  here the `superset-runtime-repair` service user — and is not used.
+- Slack is outbound status only. `portal/notify.py` posts lifecycle lines
+  through one transport — the Web API client when `SLACK_BOT_TOKEN` is
+  configured, the incoming webhook otherwise, never both — into the single
+  approved channel `C0C3X4BJ97S`, and de-duplicates by event id. Delivery is
+  not exactly-once (ambiguous outcomes are recorded `unknown`, and an
+  ambiguous clip upload is neither retried nor counted as delivered). The
+  scopes are `chat:write` and `files:write`; nothing reads the channel. There
+  is no Q&A: native conversational sync is available only to a session's
+  owner — here the `superset-runtime-repair` service user — and is not used,
+  and this custom app is not that integration, which is why every message it
+  sends is labelled *Superset demo automation*.
 - The two results above were announced to Slack by `portal.notify backfill`
   after the fact, marked *Historical result — repair ran earlier*; no Slack
   message was part of either live run.
@@ -188,6 +202,13 @@ session, product edit, merge or public exposure was involved.
   preserved unedited; the tests were not entirely offline. One factual
   correction was later posted to the channel
   (`portal.notify correction --text …`, keyed by the correction's own wording
-  so it cannot repeat); nothing was edited or deleted.
+  so it cannot repeat); nothing was edited or deleted. That correction went
+  out through the *default* ledger (`runtime/notifications.sqlite`) while the
+  three approved messages are recorded in `runtime/live-state`, so its event
+  id would not de-duplicate against the other ledger: it must not be sent
+  again, and real delivery uses `runtime/live-state` from here on. Neither
+  ledger is deleted or rewritten; the historical results are reused as thread
+  parents (repair 1 `1789854458.454909`, repair 2 `1789854458.664169`)
+  instead of being posted a second time.
 - Two defects, two repairs, one repository, on a fork with a synthetic
   fixture. Nothing here establishes a rate on real customer incidents.

@@ -236,6 +236,7 @@ def test_the_lock_is_free_once_the_coordinator_leaves(state_dir: Path) -> None:
 #: Shaped exactly like the real thing and worth nothing. The real webhook is
 #: never read by a test; this is what the tests prove cannot be used.
 CANARY_WEBHOOK = "https://hooks.slack.com/services/T00CANARY/B00CANARY/canary0000"
+CANARY_TOKEN = "xoxb-000000000000-canary-not-a-real-token"
 
 
 @pytest.fixture()
@@ -284,6 +285,45 @@ def test_a_simulated_repair_refuses_the_ambient_webhook(
     assert rows[0]["detail"] == SIMULATED_REFUSAL
     assert rows[0]["text"].startswith("[SIMULATED] ")
     assert CANARY_WEBHOOK not in json.dumps([dict(row) for row in rows])
+
+
+def test_a_simulated_repair_refuses_the_ambient_bot_token(
+    state_dir: Path, monkeypatch: pytest.MonkeyPatch, no_outbound: list[str]
+) -> None:
+    """The same rule for the Web API credential as for the webhook."""
+    monkeypatch.setenv("SLACK_BOT_TOKEN", CANARY_TOKEN)
+    events, _incidents = portal_side(deployment(state_dir, dispatch=False))
+    events.emit(upstream_call("trace-simulated"))
+    events.emit(event(event_id="assert-1", trace_id="trace-simulated", step=2))
+
+    providers, _devin_api, _devin_wire = fake_providers()
+    worker, _state = build_worker(
+        deployment(state_dir, dispatch=True), providers=providers
+    )
+
+    assert [d.action for d in worker.tick() if d.action != "deferred"] == ["dispatched"]
+    assert no_outbound == []
+
+    notifier = worker.notifier
+    assert notifier is not None
+    assert notifier.bot is None, "the token must not survive on the notifier"
+    assert notifier.transport_name == "none"
+    rows = notifier.log.list()
+    assert [row["state"] for row in rows] == [DISABLED]
+    assert CANARY_TOKEN not in json.dumps([dict(row) for row in rows])
+
+
+def test_the_bot_is_preferred_over_a_configured_webhook(
+    state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both credentials present means one live transport, not two."""
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", CANARY_WEBHOOK)
+    monkeypatch.setenv("SLACK_BOT_TOKEN", CANARY_TOKEN)
+    worker, _state = build_worker(deployment(state_dir, dispatch=False))
+
+    assert worker.notifier is not None
+    assert worker.notifier.transport_name == "bot"
+    assert worker.notifier.webhook == ""
 
 
 def test_the_live_wiring_still_takes_the_configured_webhook(

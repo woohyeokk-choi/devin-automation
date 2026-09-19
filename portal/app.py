@@ -438,6 +438,8 @@ def ops_notifications(request: Request, _: str = Depends(ops_guard)) -> HTMLResp
         request,
         notifications=list(reversed(notifications.list())),
         totals=notifications.totals(),
+        threads=notifications.threads(),
+        uploads=list(reversed(notifications.uploads())),
     )
 
 

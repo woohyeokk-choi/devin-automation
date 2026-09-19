@@ -107,7 +107,7 @@ another machine, forward the port over SSH rather than changing the bind.
 | Incidents, repairs, verifications | `$PORTAL_DATA_DIR/{incidents,repairs,verifications}.sqlite` |
 | Verification reports | `$PORTAL_DATA_DIR/artifacts/repair-<id>/<sha>-<timestamp>.json` |
 | Coordinator lock | `$PORTAL_DATA_DIR/coordinator.lock` |
-| Slack delivery ledger | `$PORTAL_DATA_DIR/notifications.sqlite` |
+| Slack delivery ledger | `$PORTAL_DATA_DIR/notifications.sqlite` (messages, per-repair threads, clip uploads) |
 | Handoff bundles | `$PORTAL_DATA_DIR/handoff/<fingerprint>/`, downloadable from the console |
 | Operator UI | `/ops` (events), `/ops/incidents` (incidents, repairs, verification attempts), `/ops/notifications` (Slack delivery ledger), `/ops/export.jsonl` (redacted export) |
 | Candidate checkouts | `$PORTAL_VERIFICATION_WORKSPACE` (default `runtime/candidates`), removed after each attempt |
@@ -411,8 +411,8 @@ portal failures: an on-call reader watching whether a real user action broke
 and what happened about it. It is not a chat channel, and nothing listens
 there.
 
-`portal/notify.py` posts one short English line to a Slack incoming webhook
-when the lifecycle actually moves: session started, pull request available,
+`portal/notify.py` posts one short English line to Slack when the lifecycle
+actually moves: session started, pull request available,
 independent verification passed / blocked / failed, a same-session follow-up,
 needs-attention, and terminal stop. Polling, queueing and progress are silent,
 and an expected authenticated 403 never becomes an incident, so it can never
@@ -436,8 +436,43 @@ repaired product exists — the existing clips are console walk-throughs on the
 unfixed baseline; see
 [docs/results.md](docs/results.md#video-evidence).
 
+### Two transports, one of them live
+
+The Web API client (`portal/slack_bot.py`, the official `slack_sdk`
+`WebClient`) is preferred whenever `SLACK_BOT_TOKEN` is configured; the
+incoming webhook is the explicit fallback used when it is not. They are never
+both live — `build_notifier` drops the webhook as soon as a bot exists, since
+two configured transports would post every line twice. `portal.notify status`
+reports which one is live as `transport`, never the credential.
+
+What the bot adds, and nothing more:
+
+- **One channel.** `C0C3X4BJ97S` (`#superset-alerts`) is a constant, not a
+  parameter: a token can post wherever its scopes reach, so a channel from a
+  caller, an event or a model is refused by both the client and the notifier
+  rather than followed.
+- **One thread per repair.** `chat_postMessage` replies under that repair's
+  parent `ts`, persisted in `notification_threads`. The two accepted repairs
+  are bootstrapped from the historical results an operator verified in the
+  channel (repair 1 / S2 `1789854458.454909`, repair 2 / S1
+  `1789854458.664169`); Slack history is never scraped and those messages are
+  never recreated. A repair with no parent adopts its own first delivered
+  message, and S1 and S2 never share a thread.
+- **A source label.** Every message ends `_Superset demo automation_`, because
+  this custom app posts into the same channel an official integration could.
+- **No retries behind the ledger.** The client is built with
+  `retry_handlers=[]` and a bounded timeout, so the ledger's schedule stays
+  the only one.
+- **Clip uploads.** `files_upload_v2` for an existing local file (below).
+
+Scopes stay at `chat:write` and `files:write`. Nothing reads the channel, so
+no history, read or admin scope is requested, and the credential lives in the
+coordinator process alone — never a prompt, an issue body, an event, a
+candidate stack or a message body.
+
 ```bash
-export SLACK_WEBHOOK_URL='https://hooks.slack.com/services/...'   # host only
+export SLACK_BOT_TOKEN='xoxb-…'                  # preferred; host process only
+export SLACK_WEBHOOK_URL='https://hooks.slack.com/services/...'   # fallback
 python3 -m portal.notify status                 # ledger, no network
 python3 -m portal.notify test                   # one marked connectivity line
 python3 -m portal.notify backfill --repair 1 --repair 2
@@ -446,8 +481,30 @@ python3 -m portal.notify result --repair 1 \
     --recording-sha <full sha the capture ran against> \
     --recording-at 2026-09-19T22:15:30+00:00 \
     --recording-scope 'baseline vs candidate replay'
+python3 -m portal.notify attach --repair 2 \
+    --clip artifacts/phase8/replay/S1-exact-sha-replay.mp4 \
+    --recording file --recording-case S1 \
+    --recording-sha <full sha the capture ran against> \
+    --recording-at 2026-09-19T22:15:30+00:00 \
+    --recording-scope 'baseline failure then candidate pass'
 python3 -m portal.notify correction --text 'Integration correction: …'
 ```
+
+`attach` uploads one **existing local file** into that repair's thread with
+`files_upload_v2`. A signed download URL is a credential and is never
+uploaded or published; only a path this operator names is. The same capture
+metadata as `result` is required and the capture's revision must equal the
+accepted head, so a clip of another commit is refused before any call.
+
+Slack's upload is three requests (`files.getUploadURLExternal`, a PUT to
+`files.slack.com`, `files.completeUploadExternal`), so partial failure is
+ordinary. A reservation row in `notification_uploads` — keyed by repair, the
+capture's revision and a digest of the file's bytes — is written *before* the
+first request and is never retried from, so a repeated run, a second operator
+or a restart adds nothing. The returned file id and state are persisted; a
+failure is `failed`, and anything the network left unresolved is `unknown`,
+which means *may or may not have been uploaded* and is never reported as
+delivered. As with messages, this is de-duplicated, not exactly-once.
 
 `correction` publishes one factual correction of something the channel was
 already told, keyed by the correction's own wording so running it again sends
@@ -468,11 +525,12 @@ attached to, so a capture of another revision, an incomplete one, an
 abbreviated sha or a signed download URL reads as `recording pending` with
 the reason instead of being presented as verified footage.
 
-- **Optional.** With no `SLACK_WEBHOOK_URL`, messages are recorded `disabled`
-  and no request is made. The URL must be `https`, host `hooks.slack.com`,
-  path under `/services/`; redirects are refused, because a redirect would
-  hand the body to whatever host the response names.
-- **Host-only.** The webhook is read by the coordinator process
+- **Optional.** With neither `SLACK_BOT_TOKEN` nor `SLACK_WEBHOOK_URL`,
+  messages are recorded `disabled` and no request is made. A webhook URL must
+  be `https`, host `hooks.slack.com`, path under `/services/`; redirects are
+  refused, because a redirect would hand the body to whatever host the
+  response names.
+- **Host-only.** Both credentials are read by the coordinator process
   (`portal/coordinator.py`) and nothing else: not the portal container, not a
   child prompt, not a candidate stack. The console at `/ops/notifications` is
   read-only over the ledger and never shows the URL, which `portal.redaction`
@@ -504,8 +562,8 @@ the reason instead of being presented as verified footage.
   `simulated` marker and `portal.transport.is_simulated` fails closed, so a
   transport that does not declare itself is treated as scripted.
   `build_worker()` passes that state to `build_notifier`, and a simulated
-  notifier drops the webhook before any code reads it, recording *simulated
-  repair: real delivery refused*; a deliberately sandboxed destination is
+  notifier drops the webhook *and the bot* before any code reads them,
+  recording *simulated repair: real delivery refused*; a deliberately sandboxed destination is
   prefixed `[SIMULATED]`.
 - **The record carries the same refusal.** Constructor wiring only protects
   the process that holds it: a `backfill`, a `result` or a restarted
@@ -513,7 +571,8 @@ the reason instead of being presented as verified footage.
   process stamps `simulated` on every repair row it writes or updates — even
   one the portal proposed — and every delivery entry point (`_announce`,
   `reconcile`, `backfill`, `result`) refuses such a row against a real
-  webhook, recording it `disabled` rather than labelling and sending it.
+  webhook or bot, recording it `disabled` rather than labelling and sending
+  it. An upload refuses the same rows at the same point.
 
 ### Incident: five posts, two of them unintended
 

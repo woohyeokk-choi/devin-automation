@@ -18,16 +18,25 @@ Three properties this module is built around:
   the body was written may have been delivered, and re-sending it would
   duplicate, so an ambiguous attempt is recorded as `unknown` and never
   retried.
-* **The webhook is a secret with no other home.** It is read from the
-  environment of this process, validated against Slack's host and path,
-  redirects are refused, and it is scrubbed out of anything written down. It
-  is never placed in a prompt, an issue body, an event, or a candidate
-  container.
+* **The credential is a secret with no other home.** The bot token and the
+  webhook are read from the environment of this process only, the webhook is
+  validated against Slack's host and path, redirects are refused, and both
+  are scrubbed out of anything written down. Neither is ever placed in a
+  prompt, an issue body, an event, or a candidate container.
+
+There are two wires and only one of them is ever live. A configured
+`SLACK_BOT_TOKEN` selects the Web API client, which posts each repair's
+updates in that repair's thread and can attach a local clip;
+`SLACK_WEBHOOK_URL` is the fallback used when no token is configured. Two
+live transports would mean two copies of every message, so the webhook is
+dropped whenever the bot exists.
 
 The CLI is the only way to send anything by hand:
 
     python3 -m portal.notify test                # one marked connectivity test
     python3 -m portal.notify backfill --repair 1 # one historical summary
+    python3 -m portal.notify result --repair 1 … # one verified result
+    python3 -m portal.notify attach --repair 1 … # one clip, into its thread
     python3 -m portal.notify correction --text … # one correction, keyed by text
     python3 -m portal.notify status              # the ledger, no network
 """
@@ -58,6 +67,15 @@ from .controller import (
 )
 from .events import utcnow
 from .redaction import scrub_text
+from .slack_bot import (
+    APPROVED_CHANNEL,
+    SOURCE_LABEL,
+    SlackBot,
+    SlackRejected,
+    WebClientBot,
+    bot_is_simulated,
+    channel_problem,
+)
 from .transport import Ambiguous, HttpTransport, Refused, Transport, is_simulated
 
 log = logging.getLogger("portal.notify")
@@ -102,7 +120,36 @@ CREATE TABLE IF NOT EXISTS notification_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS notification_threads (
+    repair_id  INTEGER PRIMARY KEY,
+    channel    TEXT NOT NULL,
+    parent_ts  TEXT NOT NULL,
+    source     TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS notification_uploads (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    upload_id  TEXT NOT NULL UNIQUE,
+    repair_id  INTEGER,
+    path       TEXT NOT NULL,
+    sha        TEXT NOT NULL,
+    file_id    TEXT NOT NULL DEFAULT '',
+    state      TEXT NOT NULL,
+    detail     TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
+
+#: The result messages the workspace owner verified in the approved channel,
+#: mapped to the repair each one speaks for. Later updates reply under these
+#: rather than restating history as new top-level posts. Threads are bound to
+#: a repair, so S1 and S2 never end up in each other's conversation; the
+#: mapping is supplied, never scraped from channel history.
+HISTORICAL_THREADS: dict[int, str] = {
+    1: "1789854458.454909",
+    2: "1789854458.664169",
+}
 
 #: When this ledger started speaking for the deployment. Records older than
 #: it were reached before Slack existed here and are the backfill command's
@@ -140,6 +187,24 @@ def escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def clip_upload_id(repair_id: int, recording: Recording, path: Path) -> str:
+    """A stable id for one clip of one repair, from its bytes and its commit.
+
+    Derived rather than generated, so a repeated run, a restart or a second
+    operator lands on the reservation that already exists instead of
+    uploading the same file again.
+    """
+    digest = sha256(path.read_bytes()).hexdigest()[:12]
+    return f"clip:{repair_id}:{recording.sha.strip().lower()[:12]}:{digest}"
+
+
+def _labelled(text: str) -> str:
+    """Name the sender, so this app is never read as the official integration."""
+    if text.rstrip().endswith(f"_{SOURCE_LABEL}_"):
+        return text
+    return f"{text}\n_{SOURCE_LABEL}_"
+
+
 class NotificationLog:
     """The durable ledger: one row per message, whatever happened to it."""
 
@@ -148,8 +213,118 @@ class NotificationLog:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        columns = {
+            str(row["name"])
+            for row in self._conn.execute("PRAGMA table_info(notifications)")
+        }
+        if "ts" not in columns:
+            self._conn.execute(
+                "ALTER TABLE notifications ADD COLUMN ts TEXT NOT NULL DEFAULT ''"
+            )
         self._conn.commit()
         self._lock = threading.RLock()
+
+    # --- threads -----------------------------------------------------------
+
+    def bootstrap_threads(self, channel: str, parents: dict[int, str]) -> None:
+        """Record known parent messages, never overwriting one already held."""
+        now = utcnow()
+        with self._lock, self._conn:
+            for repair_id, parent_ts in parents.items():
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO notification_threads "
+                    "(repair_id, channel, parent_ts, source, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (repair_id, channel, parent_ts, "bootstrap", now),
+                )
+
+    def thread_of(self, repair_id: int, channel: str) -> str:
+        """The parent `ts` this repair's updates belong under, if one is known."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT parent_ts FROM notification_threads "
+                "WHERE repair_id = ? AND channel = ?",
+                (repair_id, channel),
+            ).fetchone()
+        return str(row["parent_ts"]) if row else ""
+
+    def remember_thread(self, repair_id: int, channel: str, parent_ts: str) -> None:
+        """Adopt a posted message as a repair's parent if it has none yet."""
+        if not parent_ts:
+            return
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO notification_threads "
+                "(repair_id, channel, parent_ts, source, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (repair_id, channel, parent_ts, "posted", utcnow()),
+            )
+
+    def threads(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM notification_threads ORDER BY repair_id"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_ts(self, notification_id: int, ts: str) -> None:
+        if not ts:
+            return
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE notifications SET ts = ? WHERE id = ?", (ts, notification_id)
+            )
+
+    # --- uploads -----------------------------------------------------------
+
+    def claim_upload(
+        self, upload_id: str, repair_id: int | None, path: str, sha: str
+    ) -> dict[str, Any] | None:
+        """Reserve one upload, or return None if this file is already known.
+
+        The reservation is what keeps a repeated worker pass or a restart from
+        sending the same clip twice: a row exists before the first byte is
+        offered to Slack, and its state is the only record consulted later.
+        """
+        now = utcnow()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "INSERT OR IGNORE INTO notification_uploads "
+                "(upload_id, repair_id, path, sha, state, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (upload_id, repair_id, path, sha, PENDING, now, now),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM notification_uploads WHERE upload_id = ?", (upload_id,)
+            ).fetchone()
+        return dict(row)
+
+    def settle_upload(
+        self, upload_id: str, state: str, detail: str = "", file_id: str = ""
+    ) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE notification_uploads SET state = ?, detail = ?, "
+                "file_id = COALESCE(NULLIF(?, ''), file_id), updated_at = ? "
+                "WHERE upload_id = ?",
+                (state, detail, file_id, utcnow(), upload_id),
+            )
+
+    def upload(self, upload_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM notification_uploads WHERE upload_id = ?", (upload_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def uploads(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM notification_uploads ORDER BY id"
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def close(self) -> None:
         self._conn.close()
@@ -261,6 +436,11 @@ class Notifier:
 
     log: NotificationLog
     webhook: str = ""
+    #: The Web API client, when the app is configured with a bot token. It is
+    #: preferred over the webhook and never used alongside it: two live
+    #: transports would post every line twice.
+    bot: SlackBot | None = None
+    channel: str = APPROVED_CHANNEL
     transport: Transport | None = None
     max_attempts: int = MAX_ATTEMPTS
     now: Callable[[], datetime] | None = None
@@ -276,6 +456,12 @@ class Notifier:
             lambda: datetime.now(timezone.utc)
         )
         self.problem = webhook_problem(self.webhook) if self.webhook else ""
+        if self.bot is not None:
+            # A bot token can address any channel its scopes reach, so the
+            # destination is checked here as well as in the client.
+            self.problem = channel_problem(self.channel) or channel_problem(
+                self.bot.channel
+            )
         if self.simulated and not (
             self.transport is not None and is_simulated(self.transport)
         ):
@@ -284,6 +470,12 @@ class Notifier:
             # simulated worker by any later code path.
             self.webhook = ""
             self.problem = SIMULATED_REFUSAL
+        if self.simulated and self.bot is not None and not bot_is_simulated(self.bot):
+            # The same rule for the token: a scripted repair must not reach a
+            # channel people read, whatever credential this process holds.
+            self.bot = None
+            self.problem = SIMULATED_REFUSAL
+        self.log.bootstrap_threads(self.channel, HISTORICAL_THREADS)
         # Slack answers a webhook with `ok`, not JSON, and must never be
         # followed to another host: a redirect off hooks.slack.com would post
         # the message body somewhere nobody approved.
@@ -291,7 +483,14 @@ class Notifier:
 
     @property
     def enabled(self) -> bool:
-        return bool(self.webhook) and not self.problem
+        return (self.bot is not None or bool(self.webhook)) and not self.problem
+
+    @property
+    def transport_name(self) -> str:
+        """Which of the two wires is live. Never both."""
+        if self.bot is not None:
+            return "bot"
+        return "webhook" if self.webhook else "none"
 
     def publish(
         self,
@@ -324,7 +523,7 @@ class Notifier:
             self.log.settle(
                 int(row["id"]),
                 DISABLED,
-                self.problem or "no SLACK_WEBHOOK_URL configured",
+                self.problem or "no SLACK_BOT_TOKEN or SLACK_WEBHOOK_URL configured",
                 tried=False,
             )
             return DISABLED
@@ -337,6 +536,8 @@ class Notifier:
         return [self._attempt(row) for row in self.log.due(self._clock().isoformat())]
 
     def _attempt(self, row: dict[str, Any]) -> str:
+        if self.bot is not None:
+            return self._attempt_bot(self.bot, row)
         notification_id = int(row["id"])
         attempts = int(row["attempts"])
         try:
@@ -370,6 +571,123 @@ class Notifier:
             self.log.settle(notification_id, SENT, "")
             return SENT
         return self._retry(notification_id, attempts, response.error())
+
+    def _attempt_bot(self, bot: SlackBot, row: dict[str, Any]) -> str:
+        """Deliver one row through the Web API, in its repair's thread.
+
+        A repair's first delivered message becomes the parent of the rest, so
+        the lifecycle of one incident reads as a conversation and never mixes
+        with another repair's.
+        """
+        notification_id = int(row["id"])
+        attempts = int(row["attempts"])
+        repair_id = row["repair_id"]
+        thread_ts = (
+            self.log.thread_of(int(repair_id), self.channel)
+            if repair_id is not None
+            else ""
+        )
+        try:
+            ts = bot.post(_labelled(str(row["text"])), thread_ts=thread_ts)
+        except Ambiguous as exc:
+            self.log.settle(
+                notification_id,
+                UNKNOWN,
+                redact_webhook(f"delivery outcome unknown ({exc})", self.webhook),
+            )
+            return UNKNOWN
+        except (Refused, SlackRejected) as exc:
+            return self._retry(notification_id, attempts, f"{type(exc).__name__}: {exc}")
+        except Exception as exc:  # noqa: BLE001 - a status message may not break a repair
+            return self._retry(notification_id, attempts, f"{type(exc).__name__}")
+        self.log.record_ts(notification_id, ts)
+        if repair_id is not None and not thread_ts:
+            self.log.remember_thread(int(repair_id), self.channel, ts)
+        self.log.settle(notification_id, SENT, "")
+        return SENT
+
+    def attach(
+        self,
+        upload_id: str,
+        path: Path,
+        recording: Recording,
+        repair: dict[str, Any],
+        *,
+        simulated_record: bool = False,
+    ) -> dict[str, str]:
+        """Upload one existing local clip into its repair's thread.
+
+        The clip must say which capture it is and which commit it ran at, and
+        that commit must be the accepted head, or nothing is offered to Slack:
+        an unbound file next to a verified result reads as proof of it.
+
+        The reservation row is written before the upload is attempted and is
+        never re-attempted from it, so a repeated run cannot post the same
+        clip twice, and a failure part-way through Slack's multi-step upload
+        is recorded as `unknown` rather than as a delivered file.
+        """
+        repair_id = repair.get("id")
+        problem = recording_problem(recording, repair)
+        if problem:
+            return {"state": DISABLED, "detail": problem, "file_id": ""}
+        if not path.is_file():
+            return {"state": DISABLED, "detail": "no such clip file", "file_id": ""}
+        if self.simulated or simulated_record:
+            return {
+                "state": DISABLED,
+                "detail": SIMULATED_RECORD_REFUSAL,
+                "file_id": "",
+            }
+        if self.bot is None:
+            return {
+                "state": DISABLED,
+                "detail": "file upload needs SLACK_BOT_TOKEN; the webhook cannot",
+                "file_id": "",
+            }
+        if not self.enabled:
+            return {"state": DISABLED, "detail": self.problem, "file_id": ""}
+        sha = recording.sha.strip().lower()
+        row = self.log.claim_upload(
+            upload_id,
+            int(repair_id) if repair_id is not None else None,
+            str(path),
+            sha,
+        )
+        if row is None:
+            known = self.log.upload(upload_id) or {}
+            return {
+                "state": str(known.get("state") or UNKNOWN),
+                "detail": str(known.get("detail") or "already recorded"),
+                "file_id": str(known.get("file_id") or ""),
+            }
+        thread_ts = (
+            self.log.thread_of(int(repair_id), self.channel)
+            if repair_id is not None
+            else ""
+        )
+        comment = _labelled(
+            f"{escape(recording.case)} replay captured {escape(recording.recorded_at)} "
+            f"against `{sha[:12]}` — {_short(recording.scope or 'scope unstated', 120)}"
+        )
+        try:
+            file_id = self.bot.upload(
+                path,
+                title=f"{recording.case} · {sha[:12]}",
+                comment=comment,
+                thread_ts=thread_ts,
+            )
+        except Ambiguous as exc:
+            # Part of the upload may have been applied. A second attempt could
+            # publish the clip twice, so this stays unknown and visible.
+            detail = redact_webhook(f"upload outcome unknown ({exc})", self.webhook)
+            self.log.settle_upload(upload_id, UNKNOWN, detail)
+            return {"state": UNKNOWN, "detail": detail, "file_id": ""}
+        except Exception as exc:  # noqa: BLE001 - an upload may not break a repair
+            detail = redact_webhook(f"{type(exc).__name__}: {exc}", self.webhook)
+            self.log.settle_upload(upload_id, FAILED, detail)
+            return {"state": FAILED, "detail": detail, "file_id": ""}
+        self.log.settle_upload(upload_id, SENT, "", file_id)
+        return {"state": SENT, "detail": "", "file_id": file_id}
 
     def _retry(self, notification_id: int, attempts: int, detail: str) -> str:
         detail = redact_webhook(detail, self.webhook)
@@ -895,22 +1213,39 @@ def webhook_from_environment() -> str:
     return os.environ.get("SLACK_WEBHOOK_URL", "").strip()
 
 
+def token_from_environment() -> str:
+    """The bot token, read only here, in the coordinator's own process.
+
+    It is never placed in a prompt, an issue body, an event, a candidate
+    container or a message, and no code path returns it to a caller.
+    """
+    return os.environ.get("SLACK_BOT_TOKEN", "").strip()
+
+
 def build_notifier(
     config: Settings = settings,
     *,
     transport: Transport | None = None,
+    bot: SlackBot | None = None,
     simulated: bool = False,
 ) -> Notifier:
     """The notifier this deployment gets: configured, or a recording no-op.
 
-    `simulated=True` refuses the ambient webhook outright. The channel is a
-    production incident feed, so a scripted repair may reach it only through
-    a transport the caller passes in deliberately, and says `[SIMULATED]`
-    when it does.
+    The bot token is preferred and the webhook is the fallback: exactly one
+    of them is live, because two configured transports would deliver every
+    message twice.
+
+    `simulated=True` refuses both ambient credentials outright. The channel
+    is a production incident feed, so a scripted repair may reach it only
+    through a transport the caller passes in deliberately, and says
+    `[SIMULATED]` when it does.
     """
+    token = "" if simulated else token_from_environment()
+    bot = bot or (WebClientBot(token=token) if token else None)
     return Notifier(
         log=NotificationLog(config.data_dir / "notifications.sqlite"),
-        webhook=webhook_from_environment(),
+        webhook="" if bot is not None else webhook_from_environment(),
+        bot=bot,
         transport=transport,
         simulated=simulated,
     )
@@ -925,7 +1260,16 @@ def _state(config: Settings) -> Any:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Slack status notifications.")
     parser.add_argument(
-        "command", choices=("test", "backfill", "result", "correction", "status")
+        "command",
+        choices=("test", "backfill", "result", "attach", "correction", "status"),
+    )
+    parser.add_argument(
+        "--clip",
+        default="",
+        help=(
+            "path to an existing local recording to upload into the repair's "
+            "thread; needs the recording metadata flags and a bot token"
+        ),
     )
     parser.add_argument(
         "--text",
@@ -991,9 +1335,26 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
+                    "transport": notifier.transport_name,
+                    "channel": notifier.channel,
                     "webhook_configured": bool(notifier.webhook),
-                    "webhook_problem": notifier.problem,
+                    "problem": notifier.problem,
                     "totals": notifier.log.totals(),
+                    "threads": notifier.log.threads(),
+                    "uploads": [
+                        {
+                            key: row[key]
+                            for key in (
+                                "upload_id",
+                                "repair_id",
+                                "sha",
+                                "file_id",
+                                "state",
+                                "detail",
+                            )
+                        }
+                        for row in notifier.log.uploads()
+                    ],
                     "messages": [
                         {
                             key: row[key]
@@ -1012,7 +1373,8 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "sent": False,
-                    "reason": notifier.problem or "no SLACK_WEBHOOK_URL configured",
+                    "reason": notifier.problem
+                    or "no SLACK_BOT_TOKEN or SLACK_WEBHOOK_URL configured",
                 }
             )
         )
@@ -1045,6 +1407,19 @@ def main(argv: list[str] | None = None) -> int:
             if attempt["verdict"] == "passed"
         ]
         incident = state.incidents.get(int(repair["incident_id"]))
+        if args.command == "attach":
+            if recording is None or not args.clip:
+                raise SystemExit("attach needs --clip and the recording metadata")
+            clip = Path(args.clip)
+            outcome = notifier.attach(
+                clip_upload_id(repair_id, recording, clip),
+                clip,
+                recording,
+                repair,
+                simulated_record=bool(repair.get("simulated")),
+            )
+            results.append({"repair": repair_id, **outcome})
+            continue
         if args.command == "result":
             passed = attempts[-1] if attempts else None
             problem = result_problem(repair, passed)

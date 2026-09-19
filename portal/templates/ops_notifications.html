@@ -4,12 +4,13 @@
 <div class="card">
   <h2>Slack status notifications</h2>
   <p class="muted">
-    Written by the host coordinator, one row per message. The webhook is
-    configured only in that process and never appears here. A
-    <code>disabled</code> row is a message that was recorded while no webhook
-    was configured; <code>unknown</code> is a delivery whose outcome the
-    network never reported, which may or may not have arrived — delivery is
-    de-duplicated by event id but is not exactly-once.
+    Written by the host coordinator, one row per message. The bot token and
+    the webhook are configured only in that process and never appear here. A
+    <code>disabled</code> row is a message recorded while no credential was
+    configured, or one a simulated repair was refused; <code>unknown</code>
+    is a delivery whose outcome the network never reported, which may or may
+    not have arrived — delivery is de-duplicated by event id but is not
+    exactly-once.
   </p>
   <p class="muted">
     {% for state, count in totals.items() %}
@@ -34,6 +35,62 @@
         <td>{{ row.text }}</td>
         <td class="muted">{{ row.detail or '' }}</td>
       </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<div class="card">
+  <h2>Threads</h2>
+  <p class="muted">
+    Each repair's updates reply under one parent message, so a repair reads as
+    a conversation and never mixes with another's. A <code>bootstrap</code>
+    row is a result verified in the channel before this ledger existed; it is
+    reused rather than posted again.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Repair</th><th>Channel</th><th>Parent</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      {% for row in threads %}
+      <tr>
+        <td>{{ row.repair_id }}</td>
+        <td><code>{{ row.channel }}</code></td>
+        <td><code>{{ row.parent_ts }}</code></td>
+        <td class="muted">{{ row.source }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">No thread is recorded.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<div class="card">
+  <h2>Clip uploads</h2>
+  <p class="muted">
+    One row per recording offered to a repair's thread, reserved before the
+    upload is attempted so a repeated run cannot publish the same clip twice.
+    Slack's upload is several requests, so <code>unknown</code> means part of
+    it may have been applied; it is never counted as delivered.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Upload</th><th>Repair</th><th>Captured at</th><th>State</th><th>File</th><th>Detail</th></tr>
+    </thead>
+    <tbody>
+      {% for row in uploads %}
+      <tr>
+        <td><code>{{ row.upload_id }}</code></td>
+        <td>{{ row.repair_id }}</td>
+        <td><code>{{ row.sha[:12] }}</code></td>
+        <td>
+          <span class="pill {{ 'ok' if row.state == 'sent' else ('bad' if row.state in ('failed', 'unknown') else '') }}">{{ row.state }}</span>
+        </td>
+        <td class="muted">{{ row.file_id or '—' }}</td>
+        <td class="muted">{{ row.detail or '' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">No clip has been offered.</td></tr>
       {% endfor %}
     </tbody>
   </table>
