@@ -56,6 +56,10 @@ services:
       SUPERSET_RESTRICTED_PASSWORD: ${SUPERSET_RESTRICTED_PASSWORD:-restricted-analyst-local}
       PORTAL_ENVIRONMENT_KIND: ${PORTAL_ENVIRONMENT_KIND:-baseline-light}
       PORTAL_RUN_ID: ${PORTAL_RUN_ID:-local}
+      # A deliberate re-run of an already repaired incident names itself here.
+      # Both processes must agree: the state records the first namespace it
+      # is opened with, and the coordinator refuses a state that says another.
+      PORTAL_RUN_NAMESPACE: ${PORTAL_RUN_NAMESPACE:-}
       PORTAL_OPS_USERNAME: ${PORTAL_OPS_USERNAME:-operator}
       PORTAL_OPS_PASSWORD: ${PORTAL_OPS_PASSWORD:-operator-local}
       PORTAL_DEMO_USERNAME: ${PORTAL_DEMO_USERNAME:-demo}
