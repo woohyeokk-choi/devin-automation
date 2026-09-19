@@ -213,7 +213,15 @@ Recommended changes to the proposed approach, with evidence:
   same-session feedback), and the real validator run against an isolated
   baseline as a negative control. No repaired code exists to pass, and none
   was fabricated. See §7g.
-- Phases 6–7 — not started.
+- **Phase 6 — complete, live.** Two genuine pilots (S2 then S1) each went from
+  a real portal failure to a real fork issue, exactly one API-created session
+  and an independently verified pull-request head. Both stand at
+  `verified_in_preview`; neither is merged or deployed. See §7h.
+- **Phase 7 — complete.** README reconciled with the published branch, a
+  credential-free `--network none` simulation verified from a clean clone,
+  `docs/results.md`, `docs/demo-script.md` and `docs/submission.md` written,
+  bounded browser QA of the live console with dispatch off, and the two
+  console defects that QA found fixed. See §7j.
 
 ## 7. Commands run and results (Phase 0)
 
@@ -733,6 +741,8 @@ and the 401 vs 403 split.
 3. A first live dispatch with the flag on, then a real candidate PR run
    through the verifier on a machine with Docker headroom for a second stack.
 
+## 7h. Phase 6 results — the two live pilots
+
 ### Phase 6 preflight (read-only, no live creation)
 
 Run at `d4a0785` plus the session-id fix below. Nothing was created: no issue,
@@ -823,6 +833,40 @@ S2's defect is not required to pass this candidate: PR #2 is open and unmerged,
 so that bug remains in the baseline this branch starts from, and each repair is
 judged against its own registered cases. Evidence in
 `artifacts/phase6/S1/`.
+
+## 7j. Phase 7 results — handoff, simulation and console QA
+
+No live repair, verification or paid session ran in this phase; the coordinator
+stayed stopped and both live states were preserved untouched.
+
+| Deliverable | Result |
+| --- | --- |
+| README | rewritten from the actual implementation: the working code is on `devin/1789830208-phase1-baseline-reproductions` (PR #1), not `main`; bind-mounted state and UID/GID created before Compose; host-only credential/git/Docker boundary; exact log, ops and export locations; `python3 -m portal.coordinator check`; repair-slot dedup vs per-state coordinator lock; cleanup scoped to this project |
+| Simulation | `scripts/check_shared_state.py` from a clean clone at `79c9c94`, image `sha256:64da1872be7d…`, `docker run --rm --network none` with `FakeDevin`/`FakeGitHub`, printing `shared state check: PASS`; it refuses to run against a state directory that already holds live databases (exit 2). Evidence in `artifacts/phase7/simulation/` |
+| Documents | `docs/results.md` (both cases, exact links, S2 19 checks / 7 blocked + 1 pass, S1 13 checks / 1 pass, 0 product follow-ups), `docs/submission.md`, `docs/demo-script.md` (one continuous take, 4:45 target, 5:00 ceiling) |
+| Console QA | real traces, request/response steps and sanitized input/output; `/ops/export.jsonl` returned 190 valid JSONL events matching no container secret; a repeated baseline S1 observation produced no third incident, repair or session; counts stayed at 2 incidents / 2 repairs / 2 sessions; `AUTO_REPAIR_ENABLED=false` and no UI control can start a repair |
+
+QA found two real console defects, both fixed and regression-tested:
+
+1. The incident list and detail read state and links from the incident row,
+   which only ever records detection — so pages showing a verified pull request
+   also said `detected` and `not connected`. `lifecycle()` in
+   `portal/controller.py` now projects the repair row, which is the only writer
+   of issue, session, pull request and verdict.
+2. A verdict was shown without its assertions, and the attempt table was wide
+   enough to need heavy horizontal scrolling. Attempts now render per case with
+   every check's name, kind, expected, observed and `holds`, link to the stored
+   report at `/ops/verifications/{id}/report`, and wrap instead of overflowing.
+
+The checks shown are the same stored records the grader used: 19 for S2
+(16 S2 + 3 N1) and 13 for S1 (10 S1 + 3 N1). N1 is shared, so the two runs are
+not 32 unique tests, and setup and control checks are counted alongside target
+assertions.
+
+The candidate stacks were destroyed after validation, so the console shows
+stored verification evidence, not a live preview. Slack has a channel, app and
+bot but no outbound notifier exists in this code and native sync is owner-only
+for service-user sessions: no alerting or Q&A is claimed.
 
 ## 8. Blockers and required credentials
 
