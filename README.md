@@ -107,8 +107,9 @@ another machine, forward the port over SSH rather than changing the bind.
 | Incidents, repairs, verifications | `$PORTAL_DATA_DIR/{incidents,repairs,verifications}.sqlite` |
 | Verification reports | `$PORTAL_DATA_DIR/artifacts/repair-<id>/<sha>-<timestamp>.json` |
 | Coordinator lock | `$PORTAL_DATA_DIR/coordinator.lock` |
+| Slack delivery ledger | `$PORTAL_DATA_DIR/notifications.sqlite` |
 | Handoff bundles | `$PORTAL_DATA_DIR/handoff/<fingerprint>/`, downloadable from the console |
-| Operator UI | `/ops` (events), `/ops/incidents` (incidents, repairs, verification attempts), `/ops/export.jsonl` (redacted export) |
+| Operator UI | `/ops` (events), `/ops/incidents` (incidents, repairs, verification attempts), `/ops/notifications` (Slack delivery ledger), `/ops/export.jsonl` (redacted export) |
 | Candidate checkouts | `$PORTAL_VERIFICATION_WORKSPACE` (default `runtime/candidates`), removed after each attempt |
 | Published evidence | `artifacts/` in this repository |
 
@@ -403,6 +404,44 @@ chart-data API returns, so its `rows` count is that grouped projection (60),
 not the 600 seeded records. It catches fixture content that would move a
 scenario's numbers rather than every possible row-level difference.
 
+## Status notifications (optional)
+
+`portal/notify.py` posts one short English line to a Slack incoming webhook
+when the lifecycle actually moves: session started, pull request available,
+independent verification passed / blocked / failed, a same-session follow-up,
+needs-attention, and terminal stop. Polling, queueing and progress are silent,
+and an expected authenticated 403 never becomes an incident, so it can never
+become an alert.
+
+```bash
+export SLACK_WEBHOOK_URL='https://hooks.slack.com/services/...'   # host only
+python3 -m portal.notify status                 # ledger, no network
+python3 -m portal.notify test                   # one marked connectivity line
+python3 -m portal.notify backfill --repair 1 --repair 2
+```
+
+- **Optional.** With no `SLACK_WEBHOOK_URL`, messages are recorded `disabled`
+  and no request is made. The URL must be `https`, host `hooks.slack.com`,
+  path under `/services/`; redirects are refused, because a redirect would
+  hand the body to whatever host the response names.
+- **Host-only.** The webhook is read by the coordinator process
+  (`portal/coordinator.py`) and nothing else: not the portal container, not a
+  child prompt, not a candidate stack. The console at `/ops/notifications` is
+  read-only over the ledger and never shows the URL, which `portal.redaction`
+  also scrubs by shape from any log, error or exported event.
+- **Durable ledger.** `notifications.sqlite` beside the other state, one row
+  per message keyed by a stable event id (`<repair>:<transition>[:<sha>]`,
+  `backfill:<repair>`), so repeated worker passes and repeated backfills send
+  nothing new. Delivery is at most 4 attempts with 0/30/120/600s backoff;
+  ambiguous transport outcomes stop at `unknown` rather than risk a duplicate.
+- **Never part of the repair.** The worker announces only after the controller
+  has written its decision, and every notifier failure is swallowed into the
+  ledger; no delivery can change an outcome or start a session.
+- `backfill` reads stored repair / incident / verification rows, prefixes
+  *Historical result — repair ran earlier*, and writes nothing back to that
+  history. It does not start dispatch and does not flood: only the repairs
+  named on the command line are sent, once.
+
 ## Artifacts
 
 - `artifacts/baseline/{S1,S2,N1}/` — Phase 1 API-level reproductions (historical).
@@ -455,10 +494,14 @@ scenario's numbers rather than every possible row-level difference.
 - **Nothing is merged or deployed.** `verified_in_preview` is the end state,
   and because neither product pull request is merged, the baseline is still
   buggy.
-- **No Slack integration.** A channel, app and bot exist, but this repository
-  contains no outbound notifier, and native session sync is available only to
-  a session's owner — the `superset-runtime-repair` service user. No alerting
-  or Slack Q&A works today.
+- **Slack is outbound status only.** `portal/notify.py` posts lifecycle
+  messages to one incoming webhook (see below). There is no Q&A, no
+  interactivity and no bot listening: native conversational session sync is
+  available only to a session's owner — the `superset-runtime-repair` service
+  user — and is not used here.
+- **Delivery is not exactly-once.** A message whose network outcome is
+  ambiguous is recorded `unknown` and never retried, so it may or may not have
+  arrived; a retried message can in principle arrive twice.
 - Human touch time and cost per repair were not measured, and the API's
   `acus_consumed: 0.0` is reported as received, not as a claim that the work
   was free.

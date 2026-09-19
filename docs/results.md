@@ -105,8 +105,13 @@ Neither repair ever received product feedback, because no product check failed.
 ## What this does not show
 
 - Nothing merged, nothing deployed, no production or public preview.
-- No Slack alerting or Q&A: a channel, app and bot exist, but there is no
-  outbound notifier in this repository, and native session sync is available
-  only to a session's owner — here the `superset-runtime-repair` service user.
+- Slack is outbound status only. `portal/notify.py` posts lifecycle lines to
+  one incoming webhook and de-duplicates by event id, but delivery is not
+  exactly-once (ambiguous outcomes are recorded `unknown`), and there is no
+  Q&A: native conversational sync is available only to a session's owner —
+  here the `superset-runtime-repair` service user — and is not used.
+- The two results above were announced to Slack by `portal.notify backfill`
+  after the fact, marked *Historical result — repair ran earlier*; no Slack
+  message was part of either live run.
 - Two defects, two repairs, one repository, on a fork with a synthetic
   fixture. Nothing here establishes a rate on real customer incidents.

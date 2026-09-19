@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Status notifications{% endblock %}
+{% block body %}
+<div class="card">
+  <h2>Slack status notifications</h2>
+  <p class="muted">
+    Written by the host coordinator, one row per message. The webhook is
+    configured only in that process and never appears here. A
+    <code>disabled</code> row is a message that was recorded while no webhook
+    was configured; <code>unknown</code> is a delivery whose outcome the
+    network never reported, which may or may not have arrived — delivery is
+    de-duplicated by event id but is not exactly-once.
+  </p>
+  <p class="muted">
+    {% for state, count in totals.items() %}
+      <span class="pill {{ 'ok' if state == 'sent' else ('bad' if state in ('failed', 'unknown') else '') }}">{{ state }}: {{ count }}</span>
+    {% else %}
+      Nothing has been announced.
+    {% endfor %}
+  </p>
+  <table>
+    <thead>
+      <tr><th>Event</th><th>Kind</th><th>State</th><th>Tries</th><th>Message</th><th>Detail</th></tr>
+    </thead>
+    <tbody>
+      {% for row in notifications %}
+      <tr>
+        <td><code>{{ row.event_id }}</code></td>
+        <td class="muted">{{ row.kind }}</td>
+        <td>
+          <span class="pill {{ 'ok' if row.state == 'sent' else ('bad' if row.state in ('failed', 'unknown') else '') }}">{{ row.state }}</span>
+        </td>
+        <td>{{ row.attempts }}</td>
+        <td>{{ row.text }}</td>
+        <td class="muted">{{ row.detail or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

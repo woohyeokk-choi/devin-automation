@@ -14,9 +14,10 @@ containers. So the deployment is two processes over one state directory:
 
     host coordinator   AUTO_REPAIR_ENABLED=true  (this module, `run`)
                        same code, same SQLite files through the *host* path
-                       of that same directory, plus git, docker and the
-                       controller credentials. It claims queued proposals,
-                       dispatches them, polls them and verifies candidates.
+                       of that same directory, plus git, docker, the
+                       controller credentials and the Slack webhook. It
+                       claims queued proposals, dispatches them, polls them
+                       and verifies candidates.
 
 Both see one queue, because the queue is the `repairs` table and the
 single-flight claim is a row in it; whichever process holds the slot holds it
@@ -39,6 +40,9 @@ the coordinator, and the Docker socket is never mounted into a candidate.
     python3 -m portal.coordinator check            # can this process run it?
     python3 -m portal.coordinator run              # the worker loop
     python3 -m portal.coordinator baseline <sha>   # prepare + validate a commit
+
+Status notifications are published by the loop here (`portal.notify`), so the
+webhook shares this process's trust boundary and no other.
 """
 
 from __future__ import annotations
@@ -62,6 +66,7 @@ from .controller import RepairStore
 from .events import EventStore, utcnow
 from .incidents import IncidentStore
 from .isolation import IsolatedStack, replay_through_validator
+from .notify import build_notifier
 from .providers import Devin, GitHub
 from .verification import RunnerError, VerificationStore, provenance_problem
 from .worker import RepairWorker, build_controller
@@ -136,7 +141,10 @@ def build_worker(
         mcp_port=config.verification_mcp_port,
         incident_of=opened.incidents.get,
     )
-    return RepairWorker(controller), opened
+    # Slack lives here and nowhere else: this process already holds the
+    # credentials, and a webhook must never reach the portal container, a
+    # repair prompt or a candidate stack.
+    return RepairWorker(controller, notifier=build_notifier(config)), opened
 
 
 def _tool(*argv: str) -> str:

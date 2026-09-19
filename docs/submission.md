@@ -47,8 +47,9 @@ the two runs share three permission checks; they are not 32 unique tests.
 Not verified: no upstream CI ran on either candidate (0 check-runs, 0
 statuses), nothing is merged or deployed, human touch time and cost per repair
 were not measured, the API's `acus_consumed: 0.0` is reported exactly as
-returned rather than as a cost claim, and Slack notification/Q&A does not
-exist in this implementation.
+returned rather than as a cost claim, and Slack is outbound status only — a
+webhook notifier with a durable ledger, no Q&A, no exactly-once guarantee, and
+no message sent during either live run.
 
 ## Safety boundaries worth knowing
 

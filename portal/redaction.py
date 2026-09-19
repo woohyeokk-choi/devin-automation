@@ -81,6 +81,10 @@ _SCRUBBERS: tuple[tuple[re.Pattern[str], str], ...] = (
         ),
         rf"\1\2{REDACTED}",
     ),
+    # An incoming webhook URL is a bearer credential in path form: anyone
+    # holding it can post to the channel, and it carries no `key=value` shape
+    # for the rules above to catch.
+    (re.compile(r"(?i)https://hooks\.slack\.com/\S*"), REDACTED),
     # JWTs and Flask session cookies, which appear bare in logs and tracebacks
     (re.compile(r"\beyJ[A-Za-z0-9._\-]{10,}"), REDACTED),
     (re.compile(r"\bsession=[^\s;,\"']+"), f"session={REDACTED}"),

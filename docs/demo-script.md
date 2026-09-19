@@ -104,8 +104,9 @@ Hard stop by 5:00.
 
 ## Do not say
 
-- That Slack alerting or Q&A works — a channel, app and bot exist, but there
-  is no outbound notifier here and native sync is owner-only.
+- That Slack Q&A works, or that either repair alerted the channel while it
+  ran — the notifier is outbound status only, and the two messages in
+  `#superset-alerts` are backfills marked "Historical result".
 - That CI passed. Both candidate heads had 0 check-runs and 0 statuses.
 - Any dollar figure derived from `acus_consumed`, or any ROI multiplier.
 - That a preview environment is still running.

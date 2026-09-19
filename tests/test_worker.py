@@ -322,3 +322,54 @@ def test_the_poller_stays_asleep_while_dispatch_is_disabled(
         assert poller._thread is None
     finally:
         poller.stop()
+
+
+# --- status notifications --------------------------------------------------
+
+
+def test_the_worker_announces_a_dispatch_and_says_nothing_about_polling(
+    repairs: RepairStore, incident: dict[str, Any], tmp_path: Path
+) -> None:
+    from portal.notify import NotificationLog, Notifier
+
+    from test_notify import WEBHOOK, Recorder
+
+    wire = Recorder()
+    notifier = Notifier(
+        log=NotificationLog(tmp_path / "notifications.sqlite"),
+        webhook=WEBHOOK,
+        transport=wire,
+    )
+    controller = worker_controller(repairs, {1: incident}, fakes()[:2])
+    worker = RepairWorker(controller, notifier=notifier)
+
+    controller.consider(incident)
+    assert [d.action for d in worker.tick()] == ["dispatched"]
+    assert len(wire.calls) == 1
+    assert "Repair session started" in wire.calls[0]["json"]["text"]
+
+    # The next pass only polls a running session: nothing new to say.
+    assert [d.action for d in worker.tick()] == ["running"]
+    assert len(wire.calls) == 1
+
+
+def test_a_broken_notifier_cannot_change_a_repair(
+    repairs: RepairStore, incident: dict[str, Any], tmp_path: Path
+) -> None:
+    """Slack is a side effect of the lifecycle, never part of it."""
+    from portal.notify import NotificationLog, Notifier
+
+    class Exploding(Notifier):
+        def publish(self, *args: Any, **kwargs: Any) -> str:
+            raise RuntimeError("slack is down")
+
+    controller = worker_controller(repairs, {1: incident}, fakes()[:2])
+    worker = RepairWorker(
+        controller,
+        notifier=Exploding(log=NotificationLog(tmp_path / "n.sqlite"), webhook=""),
+    )
+    controller.consider(incident)
+
+    assert [d.action for d in worker.tick()] == ["dispatched"]
+    repair = repairs.by_fingerprint(incident["fingerprint"])
+    assert repair is not None and repair["session_id"]

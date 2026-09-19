@@ -1,0 +1,337 @@
+"""Outbound status notifications, with no Slack anywhere.
+
+Every delivery here goes to a recording transport or to a throwaway HTTP
+server on loopback. What is real is the notifier, its ledger and the message
+text; only the far end is local.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from portal.controller import CANDIDATE, DISPATCHED, NEEDS_ATTENTION, VERIFIED
+from portal.notify import (
+    DISABLED,
+    FAILED,
+    MAX_ATTEMPTS,
+    PENDING,
+    SENT,
+    UNKNOWN,
+    NotificationLog,
+    Notifier,
+    historical_message,
+    message_for,
+    webhook_problem,
+)
+from portal.redaction import REDACTED, scrub
+from portal.transport import Ambiguous, HttpTransport, Refused, Response
+
+WEBHOOK = "https://hooks.slack.com/services/T0C30Q2H64W/B0000000000/xxxxxxxxxxxxxxxx"
+
+
+class Recorder:
+    """A wire that records what was posted and answers however it is told."""
+
+    def __init__(self, *answers: Any) -> None:
+        self.answers = list(answers) or [Response(200)]
+        self.calls: list[dict[str, Any]] = []
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> Response:
+        self.calls.append({"method": method, "url": url, "json": json})
+        answer = self.answers[min(len(self.calls) - 1, len(self.answers) - 1)]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+@pytest.fixture()
+def log(tmp_path: Path) -> NotificationLog:
+    return NotificationLog(tmp_path / "notifications.sqlite")
+
+
+def clock_from(start: datetime) -> Any:
+    return lambda: start
+
+
+REPAIR: dict[str, Any] = {
+    "id": 2,
+    "incident_id": 2,
+    "state": VERIFIED,
+    "attempt": 1,
+    "follow_ups": 0,
+    "session_id": "18b04127f4a44af6a9c71f9eb3eaba9e",
+    "session_url": "https://app.devin.ai/sessions/18b04127f4a44af6a9c71f9eb3eaba9e",
+    "issue_url": "https://github.com/acme/superset/issues/3",
+    "agent_pr_url": "https://github.com/acme/superset/pull/4",
+    "pr_head_sha": "f" * 40,
+    "attention": None,
+    "terminal_reason": None,
+    "updated_at": "2026-09-19T22:10:00+00:00",
+}
+INCIDENT = {"id": 2, "scenario": "S1", "family": "omitted_row_limit_is_reset"}
+
+
+# --- the webhook itself ----------------------------------------------------
+
+
+def test_only_a_slack_webhook_url_is_accepted() -> None:
+    assert webhook_problem(WEBHOOK) == ""
+    # A plain-text post, another host, or an arbitrary path on the right host
+    # are all configuration mistakes rather than things to try once.
+    assert webhook_problem(WEBHOOK.replace("https", "http"))
+    assert webhook_problem("https://hooks.slack.example.com/services/a/b/c")
+    assert webhook_problem("https://hooks.slack.com/anything/else")
+
+
+def test_a_missing_webhook_records_the_message_and_sends_nothing(
+    log: NotificationLog,
+) -> None:
+    wire = Recorder()
+    notifier = Notifier(log=log, webhook="", transport=wire)
+    assert notifier.publish("e1", "verified", "text") == DISABLED
+    assert wire.calls == []
+    # The lifecycle is still readable: the message exists, unsent.
+    assert log.get("e1")["state"] == DISABLED
+
+
+def test_a_malformed_webhook_is_refused_rather_than_tried(log: NotificationLog) -> None:
+    wire = Recorder()
+    notifier = Notifier(log=log, webhook="https://example.com/hook", transport=wire)
+    assert not notifier.enabled and notifier.problem
+    assert notifier.publish("e1", "verified", "text") == DISABLED
+    assert wire.calls == []
+
+
+# --- delivery --------------------------------------------------------------
+
+
+def test_a_message_is_posted_once_and_never_repeated(log: NotificationLog) -> None:
+    wire = Recorder(Response(200))
+    notifier = Notifier(log=log, webhook=WEBHOOK, transport=wire)
+    assert notifier.publish("2:verified:abc", "verified", "Verification passed") == SENT
+    # The same transition seen again on the next worker pass: one message.
+    assert notifier.publish("2:verified:abc", "verified", "Verification passed") == SENT
+    assert len(wire.calls) == 1
+    body = wire.calls[0]["json"]
+    assert body["text"] == "Verification passed"
+    assert body["unfurl_links"] is False and body["unfurl_media"] is False
+
+
+def test_an_http_error_is_retried_with_backoff_and_then_given_up(
+    log: NotificationLog,
+) -> None:
+    now = datetime(2026, 9, 20, 9, 0, tzinfo=timezone.utc)
+    wire = Recorder(Response(500, {"message": "no"}))
+    notifier = Notifier(log=log, webhook=WEBHOOK, transport=wire, now=lambda: now)
+    assert notifier.publish("e1", "verified", "text") == PENDING
+    # Nothing is due yet, so a tick does not hammer a failing endpoint.
+    assert notifier.deliver_due() == []
+    assert len(wire.calls) == 1
+
+    states = []
+    for _ in range(MAX_ATTEMPTS):
+        now = now + timedelta(hours=1)
+        notifier.now = lambda: now
+        notifier._clock = lambda: now
+        states.extend(notifier.deliver_due())
+    assert states[-1] == FAILED
+    assert log.get("e1")["state"] == FAILED
+    assert len(wire.calls) == MAX_ATTEMPTS
+    # Given up, so a later pass stays quiet rather than retrying forever.
+    assert notifier.deliver_due() == []
+
+
+def test_an_ambiguous_delivery_is_recorded_and_not_retried(log: NotificationLog) -> None:
+    wire = Recorder(Ambiguous("ReadTimeout"))
+    notifier = Notifier(log=log, webhook=WEBHOOK, transport=wire)
+    # The body may have arrived; sending again would post the same line twice.
+    assert notifier.publish("e1", "verified", "text") == UNKNOWN
+    assert notifier.deliver_due() == []
+    assert len(wire.calls) == 1
+    assert log.get("e1")["state"] == UNKNOWN
+
+
+def test_a_refusal_is_retried(log: NotificationLog) -> None:
+    now = datetime(2026, 9, 20, 9, 0, tzinfo=timezone.utc)
+    wire = Recorder(Refused("NewConnectionError"), Response(200))
+    notifier = Notifier(log=log, webhook=WEBHOOK, transport=wire, now=lambda: now)
+    assert notifier.publish("e1", "verified", "text") == PENDING
+    now = now + timedelta(minutes=5)
+    notifier._clock = lambda: now
+    assert notifier.deliver_due() == [SENT]
+
+
+# --- the secret ------------------------------------------------------------
+
+
+def test_the_webhook_never_reaches_the_ledger_or_a_log(log: NotificationLog) -> None:
+    class Exploding:
+        def request(self, *args: Any, **kwargs: Any) -> Response:
+            # The shape a `requests` error takes: the URL inside the message.
+            raise Refused(f"failed to post to {WEBHOOK}")
+
+    notifier = Notifier(log=log, webhook=WEBHOOK, transport=Exploding())
+    notifier.publish("e1", "verified", "text")
+    detail = str(log.get("e1")["detail"])
+    assert WEBHOOK not in detail and "xxxxxxxxxxxxxxxx" not in detail
+
+
+def test_a_webhook_url_is_scrubbed_at_any_depth() -> None:
+    # A webhook URL is a bearer credential in path form, and carries no
+    # `key=value` shape for the generic rules to catch.
+    canary = {"deep": {"config": [f"posting to {WEBHOOK} now"]}}
+    assert WEBHOOK not in json.dumps(scrub(canary))
+    assert REDACTED in json.dumps(scrub(canary))
+
+
+# --- what is worth saying --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "action", ["running", "deferred", "skipped", "queued", "in_flight", "proposed"]
+)
+def test_progress_noise_is_not_announced(action: str) -> None:
+    assert message_for(action, REPAIR, INCIDENT) is None
+
+
+def test_the_verified_message_carries_the_head_and_the_preview_caveat() -> None:
+    event_id, kind, text = message_for("verified", REPAIR, INCIDENT)
+    assert event_id == f"2:verified:{'f' * 40}"
+    assert kind == "verified"
+    assert "f" * 40 in text
+    assert "verified in isolated preview; not merged/deployed" in text
+    assert "https://github.com/acme/superset/pull/4" in text
+    assert "S1" in text
+
+
+def test_each_lifecycle_moment_has_a_stable_distinct_id() -> None:
+    dispatched = message_for("dispatched", REPAIR | {"state": DISPATCHED}, INCIDENT)
+    candidate = message_for("candidate", REPAIR | {"state": CANDIDATE}, INCIDENT)
+    attention = message_for(
+        "parked", REPAIR | {"state": NEEDS_ATTENTION, "attention": "PR unusable"}, INCIDENT
+    )
+    ids = {message[0] for message in (dispatched, candidate, attention)}
+    assert len(ids) == 3
+    assert "18b04127f4a44af6a9c71f9eb3eaba9e" in dispatched[0]
+    assert "Not verified yet" in candidate[2]
+    assert "PR unusable" in attention[2]
+
+
+def test_slack_markup_in_a_stored_reason_cannot_forge_a_message() -> None:
+    hostile = REPAIR | {
+        "state": NEEDS_ATTENTION,
+        "attention": "<!channel> see <https://evil.example|here> & hurry",
+    }
+    _, _, text = message_for("parked", hostile, INCIDENT)
+    assert "<!channel>" not in text and "&lt;!channel&gt;" in text
+    assert "<https://evil.example|here>" not in text
+
+
+def test_an_expected_denial_never_reaches_the_notifier(tmp_path: Path) -> None:
+    """A 403 a role is supposed to get is not an incident, so it is not news."""
+    from portal.incidents import IncidentStore
+
+    from test_incidents import REPO, event
+
+    store = IncidentStore(tmp_path / "incidents.sqlite", target_repo=REPO)
+    denial = event(
+        event_id="n1",
+        outcome="expected_denial",
+        assertion="restricted_user_cannot_write",
+        scenario="N1",
+    )
+    store.observe(denial)
+    assert store.list() == []
+
+
+# --- history ---------------------------------------------------------------
+
+
+def test_a_backfill_is_marked_historical_and_runs_only_once(
+    log: NotificationLog,
+) -> None:
+    wire = Recorder(Response(200))
+    notifier = Notifier(log=log, webhook=WEBHOOK, transport=wire)
+    attempt = {
+        "verdict": "passed",
+        "finished_at": "2026-09-19T22:07:55+00:00",
+        "cases": "S1,N1",
+    }
+    event_id, kind, text = historical_message(REPAIR, INCIDENT, attempt)
+    assert text.startswith("Historical result — repair ran earlier.")
+    assert "2026-09-19T22:07:55+00:00" in text and "f" * 40 in text
+    assert "verified in isolated preview; not merged/deployed" in text
+
+    assert notifier.publish(event_id, kind, text, 2) == SENT
+    # Running the command again must not spam the channel.
+    assert notifier.publish(*historical_message(REPAIR, INCIDENT, attempt), 2) == SENT
+    assert len(wire.calls) == 1
+
+
+# --- against a real socket -------------------------------------------------
+
+
+class _Hook(BaseHTTPRequestHandler):
+    received: list[bytes] = []
+    status = 200
+    location = ""
+
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's contract
+        length = int(self.headers.get("Content-Length", "0"))
+        _Hook.received.append(self.rfile.read(length))
+        self.send_response(_Hook.status)
+        if _Hook.location:
+            self.send_header("Location", _Hook.location)
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, *args: Any) -> None:
+        return
+
+
+@pytest.fixture()
+def hook() -> Any:
+    _Hook.received, _Hook.status, _Hook.location = [], 200, ""
+    server = HTTPServer(("127.0.0.1", 0), _Hook)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server
+    server.shutdown()
+
+
+def test_delivery_over_a_real_socket_reaches_the_server(
+    log: NotificationLog, hook: HTTPServer
+) -> None:
+    url = f"http://127.0.0.1:{hook.server_port}/services/T/B/x"
+    notifier = Notifier(log=log, webhook=WEBHOOK, transport=HttpTransport(timeout=5))
+    # The host check is about configuration; this exercises the real wire.
+    notifier.webhook = url
+    assert notifier.publish("e1", "verified", "hello") == SENT
+    assert json.loads(_Hook.received[0])["text"] == "hello"
+
+
+def test_a_redirect_is_not_followed(log: NotificationLog, hook: HTTPServer) -> None:
+    """A 302 must not hand the message body to whatever host it names."""
+    _Hook.status, _Hook.location = 302, "http://127.0.0.1:1/elsewhere"
+    url = f"http://127.0.0.1:{hook.server_port}/services/T/B/x"
+    notifier = Notifier(
+        log=log, webhook=WEBHOOK, transport=HttpTransport(timeout=5, allow_redirects=False)
+    )
+    notifier.webhook = url
+    assert notifier.publish("e1", "verified", "hello") == PENDING
+    assert len(_Hook.received) == 1

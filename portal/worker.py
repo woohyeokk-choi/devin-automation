@@ -18,6 +18,7 @@ from typing import Any, Callable
 from .brief import BASE_BRANCH
 from .controller import Controller, Decision, RepairStore
 from .isolation import IsolatedStack, replay_through_validator
+from .notify import Notifier, message_for
 from .providers import Devin, GitHub, NotConfigured
 from .transport import HttpTransport, Transport
 from .verification import VerificationStore, Verifier
@@ -187,16 +188,48 @@ class RepairWorker:
         *,
         interval_seconds: float = 30.0,
         stale_after_minutes: int = 15,
+        notifier: Notifier | None = None,
     ) -> None:
         self.controller = controller
         self.interval = interval_seconds
         self.stale_after_minutes = stale_after_minutes
         controller.stale_after_minutes = stale_after_minutes
+        self.notifier = notifier
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     def tick(self) -> list[Decision]:
-        return self.controller.advance()
+        decisions = self.controller.advance()
+        self._announce(decisions)
+        return decisions
+
+    def _announce(self, decisions: list[Decision]) -> None:
+        """Tell the channel what already happened.
+
+        After the controller has written its decision, never during it: a
+        notifier that is missing, misconfigured or failing must leave the
+        repair exactly as it was, so every failure here is swallowed into the
+        delivery ledger and the log.
+        """
+        if self.notifier is None:
+            return
+        try:
+            for decision in decisions:
+                if decision.repair_id is None:
+                    continue
+                repair = self.controller.store.get(decision.repair_id)
+                if repair is None:
+                    continue
+                message = message_for(
+                    decision.action,
+                    repair,
+                    self.controller.incident_of(int(repair["incident_id"])),
+                )
+                if message is not None:
+                    self.notifier.publish(*message, repair_id=decision.repair_id)
+            self.notifier.deliver_due()
+        except Exception:  # noqa: BLE001 - a status message may not break a repair
+            log.exception("status notification failed")
 
     def _run(self) -> None:
         while not self._stop.wait(self.interval):

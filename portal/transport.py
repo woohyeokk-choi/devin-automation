@@ -82,9 +82,15 @@ class Transport(Protocol):
 
 @dataclass
 class HttpTransport:
-    """`requests` with a hard timeout and no retries of its own."""
+    """`requests` with a hard timeout and no retries of its own.
+
+    `allow_redirects` is a parameter because one caller must refuse them: a
+    redirect on a webhook post would deliver the body to whatever host the
+    response names.
+    """
 
     timeout: float = 30.0
+    allow_redirects: bool = True
 
     def request(
         self,
@@ -97,7 +103,13 @@ class HttpTransport:
     ) -> Response:
         try:
             response = requests.request(
-                method, url, headers=headers, json=json, params=params, timeout=self.timeout
+                method,
+                url,
+                headers=headers,
+                json=json,
+                params=params,
+                timeout=self.timeout,
+                allow_redirects=self.allow_redirects,
             )
         except requests.ConnectionError as exc:
             if _never_sent(exc):

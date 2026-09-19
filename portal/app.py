@@ -26,6 +26,7 @@ from .controller import RepairStore, lifecycle
 from .verification import VerificationStore
 from .worker import RepairWorker, build_controller
 from .incidents import IncidentStore
+from .notify import NotificationLog
 from .provenance import summary as provenance_summary
 from .security import (
     PROFILES,
@@ -78,6 +79,10 @@ repairs = RepairStore(settings.db_path.with_name("repairs.sqlite"))
 # so the console can show the evidence timeline even for attempts that were
 # blocked, and so a simulated run can never be counted as a real pass.
 verifications = VerificationStore(settings.db_path.with_name("verifications.sqlite"))
+# Read-only here. The console shows what the coordinator tried to announce and
+# what became of it; the webhook itself is never configured in this process,
+# so a compromised web application cannot post to the channel.
+notifications = NotificationLog(settings.db_path.with_name("notifications.sqlite"))
 # With AUTO_REPAIR_ENABLED=false no provider is configured and none is faked:
 # the controller records the exact issue and session bodies instead of sending
 # them. With it true the live clients are built from the configured
@@ -422,6 +427,17 @@ def ops_events(
         outcome=outcome or "",
         note=note,
         trace_id=trace_id,
+    )
+
+
+@app.get("/ops/notifications", response_class=HTMLResponse)
+def ops_notifications(request: Request, _: str = Depends(ops_guard)) -> HTMLResponse:
+    """The Slack delivery ledger: what was announced, and what failed."""
+    return render(
+        "ops_notifications.html",
+        request,
+        notifications=list(reversed(notifications.list())),
+        totals=notifications.totals(),
     )
 
 

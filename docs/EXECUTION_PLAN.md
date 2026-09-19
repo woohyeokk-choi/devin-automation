@@ -864,9 +864,39 @@ not 32 unique tests, and setup and control checks are counted alongside target
 assertions.
 
 The candidate stacks were destroyed after validation, so the console shows
-stored verification evidence, not a live preview. Slack has a channel, app and
-bot but no outbound notifier exists in this code and native sync is owner-only
-for service-user sessions: no alerting or Q&A is claimed.
+stored verification evidence, not a live preview.
+
+### Phase 7b — outbound Slack status notifier
+
+`portal/notify.py` publishes one line per real lifecycle transition (session
+started, PR available, verification passed/blocked/failed, follow-up sent,
+needs-attention, terminal stop) to a single incoming webhook held only by the
+host coordinator process. Polling and queueing are silent, and an expected
+authenticated 403 is not an incident, so it cannot alert. Messages escape
+Slack markup, disable unfurls and mentions, and carry the case, incident and
+repair ids, the real issue/session/PR links, the exact tested SHA and
+"verified in isolated preview; not merged/deployed".
+
+Delivery is a SQLite ledger (`$PORTAL_DATA_DIR/notifications.sqlite`) with
+stable event ids, at most 4 attempts and 0/30/120/600s backoff, visible at
+`/ops/notifications`. Ambiguous transport outcomes are recorded `unknown` and
+never retried: **delivery is not exactly-once**, and a retry can duplicate. A
+missing or invalid webhook records `disabled` and makes no request; the URL is
+validated (`https`, `hooks.slack.com`, `/services/…`), redirects are refused,
+and `portal.redaction` scrubs webhook-shaped strings from logs, errors and
+exports. Nothing here can change a repair outcome or start a session: the
+worker announces only after the controller has written its decision, and
+notifier failures are swallowed into the ledger.
+
+Three real messages were sent to `#superset-alerts`, all authorized:
+`connectivity-test:2026-09-19T21:47:22.152+00:00`, `backfill:1` and
+`backfill:2`, each `sent`. The two backfills are marked "Historical result —
+repair ran earlier" and were read from the stored repair/verification records
+without touching them; re-running the command sends nothing. All other
+testing uses a fake transport or a loopback HTTP server.
+
+Native conversational Slack sync remains owner-only for service-user sessions
+and is not used or claimed here.
 
 ## 8. Blockers and required credentials
 
