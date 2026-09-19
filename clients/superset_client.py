@@ -80,7 +80,8 @@ class SupersetClient:
 
     # ----------------------------------------------------------- resources
     def find_database(self, name: str) -> int | None:
-        resp = self.get("/api/v1/database/")
+        query = f"(filters:!((col:database_name,opr:eq,value:'{name}')),page_size:100)"
+        resp = self.get(f"/api/v1/database/?q={query}")
         resp.raise_for_status()
         for item in resp.json()["result"]:
             if item["database_name"] == name:
@@ -100,7 +101,14 @@ class SupersetClient:
         return int(resp.json()["id"])
 
     def find_dataset(self, table_name: str) -> int | None:
-        resp = self.get("/api/v1/dataset/")
+        """The dataset with this exact name, asked for by name.
+
+        Listing the first page and scanning it finds the fixture only while
+        the stack holds few datasets: a freshly built stack carries the
+        example datasets too, and the fixture falls off page one.
+        """
+        query = f"(filters:!((col:table_name,opr:eq,value:'{table_name}')),page_size:100)"
+        resp = self.get(f"/api/v1/dataset/?q={query}")
         resp.raise_for_status()
         for item in resp.json()["result"]:
             if item["table_name"] == table_name:
