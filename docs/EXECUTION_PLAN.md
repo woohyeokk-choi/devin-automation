@@ -207,7 +207,13 @@ Recommended changes to the proposed approach, with evidence:
   controller with a database-enforced single-flight claim, durable creation
   intents, budget policy and a background poller. No issue, session or message
   was ever sent: `AUTO_REPAIR_ENABLED=false` throughout. See §7f.
-- Phases 5–7 — not started.
+- **Phase 5 — complete, offline.** Dispatch moved off the request path into
+  the durable worker, the independent verifier (pull-request validation,
+  change scope, isolated candidate stack, measured provenance, bounded
+  same-session feedback), and the real validator run against an isolated
+  baseline as a negative control. No repaired code exists to pass, and none
+  was fabricated. See §7g.
+- Phases 6–7 — not started.
 
 ## 7. Commands run and results (Phase 0)
 
@@ -577,6 +583,93 @@ usable, not entirely healthy. Recorded in `artifacts/phase4/bootstrap/`.
 - Pull-request path and diff checks are Phase 5; only URL, repository, base,
   head SHA and open/merged state are validated here.
 - The MCP health caveat above is unexplained.
+
+## 7g. Phase 5 results — independent verification (offline)
+
+### Review gaps closed
+
+| Gap | Resolution |
+| --- | --- |
+| Dispatch on the HTTP request path | A request now persists the event, admits the incident and writes a **proposal**. `Controller.consider()` touches no network. `RepairWorker.tick()` → `Controller.advance()` settles dead creation claims, walks the repair holding the slot (dispatch / poll / verify), and claims the oldest queued proposal when the slot frees. Proven with injected slow fakes: the request returns while `create_session` is still sleeping, and a second incident queued behind the first starts on the next tick with no further browser action. |
+| Phase 4 bootstrap called "clean" while its own provenance said `checkout_dirty=true` | The historical evidence and its `provenance.json` are unchanged; `artifacts/phase4/bootstrap/README.md` carries a correction. New evidence in `artifacts/phase5/bootstrap/` is a fresh clone of pushed automation code (`c7ba960`, clean) and Superset at `394bca5` (clean), in its own Compose project `phase5check` on ports 8288/5208/8290. |
+| MCP container `unhealthy` | The sidecar inherited the *web* image's healthcheck (`docker/docker-healthcheck.sh` → `/health`), a route the MCP listener does not serve. The overlay replaces it with an MCP `initialize` against `127.0.0.1:5008/mcp` requiring `serverInfo`. The container reports `healthy`. Independently, `portal.validator.mcp_readiness` speaks `initialize` + `tools/list` before S1 runs: server `Superset MCP Server 3.4.7`, protocol `2025-06-18`, tools `get_instance_info, health_check, search_tools, call_tool`. |
+| Restricted 401 treated as an expected denial | `SupersetGateway` classifies 401 as `blocked` with structured `authentication_failure` metadata, and only 403 from the restricted profile as `expected_denial`. The N1 validator case blocks on any 401 and on any 5xx, since neither answers the authorization question. |
+| Provenance strength claimed rather than measured | `portal/measure.py` measures each service the verification actually uses: container/image/compose identity, the hash of the Python tree *inside* the container, the host path its mount points at and that tree's hash, checkout SHA and dirty flag, config-file revision, fixture table row count and content digest, plus `measured_at` and the selected automation ref. A candidate whose measured source hash or SHA disagrees with the head under test is blocked, not passed. |
+
+### The verification loop
+
+| Stage | Rule |
+| --- | --- |
+| Candidate metadata | Re-read from GitHub: allowed host, target repository, head repository inside `woohyeokk-choi/superset`, base `runtime-repair/baseline`, open and unmerged, full 40-character head SHA. An agent-supplied URL or SHA is never sufficient. |
+| Change scope | Changed paths are judged **before** anything is built. Automation, validator, fixtures, authentication/CSRF, workflows, dependencies and Docker bootstrap are forbidden. A scope rejection is `blocked`, not `failed`: no candidate code ran, so there is no product evidence to feed back. |
+| Execution | `portal/isolation.py` checks the exact head SHA into a candidate-only checkout and brings up its own Compose project, ports, database, cache, volumes and network. No host Docker socket, no controller/GitHub/Devin credential in the environment or the mounts (the whole-stack mount was narrowed to the single non-secret `superset_config_mcp.py`), and a canary check refuses to start a stack carrying any known secret name. |
+| Assertions | Imported from `portal.validator` at a pinned automation revision inside the trusted checkout, never from the candidate. |
+| Verdict | `passed` only if every registered target and control check ran and held; `failed` only if the product contract was exercised and did not hold; everything else — setup failure, empty trace, skipped check, missing assertion, transport error, stale or moved head, missing/mismatched provenance — is `blocked`. The head is re-read afterwards so a newer commit cannot inherit an older pass. A pass becomes `verified_in_preview`; it is not deployed, merged or production-ready. |
+| Feedback | A product-contract failure sends the precise expected/observed lines to the **same** session, once per candidate SHA, at most two follow-ups, and only after the ACU and deadline checks. Infrastructure failures ask for attention instead. |
+| Slot | Released only when nothing can still be running. Verified or terminal with a confirmed termination releases and the next queued proposal advances; an ambiguous termination keeps the claim and stays visible. |
+| Simulated vs real | Simulated attempts are stored with `simulated=1` and excluded from `verified_count()`, which counts `verdict='passed' AND simulated=0`. |
+
+### Negative control — the validator against the immutable baseline
+
+`artifacts/phase5/negative-control/` (real validator, published automation
+`449edb3`, isolated baseline stack):
+
+| Report | Exit | Verdict |
+| --- | --- | --- |
+| `baseline.json` | 1 | failed — S2 and S1 target contracts |
+| `blocked-web-unreachable.json` | 2 | blocked |
+| `blocked-mcp-unreachable.json` | 2 | blocked |
+| `blocked-bad-credentials.json` | 2 | blocked |
+
+```
+S2.new_exploration_does_not_reuse_a_discarded_key: expected False, observed True
+S2.discarded_link_stays_dead_after_a_new_exploration: expected 404, observed 200
+S1.an_omitted_row_limit_keeps_the_saved_value: expected 137, observed 1000
+```
+
+Every control held: a second workspace gets its own key and state; a
+same-context save without discarding updates in place; the requested sort
+change persisted; the palette survived; explicit row limits (including `1000`,
+which is indistinguishable from a reset unless checked) were applied; a new
+chart kept the schema default; and the authenticated Gamma user listed charts
+(200) while being refused both the exploration-state write and chart data
+with 403.
+
+### Tests
+
+`python3 -m pytest -q` → **188 passed**; flake8 and compileall clean over
+`portal scenarios scripts tests`.
+
+Beyond the Phase 4 set: a customer request that returns while the provider is
+still sleeping; the next queued incident starting without a browser action;
+the queue surviving a restart; candidate SHA and mount-provenance mismatch;
+missing assertions and empty evidence; a foreign head repository; no
+credential reaching the candidate environment; forbidden path scopes
+(automation, validator, fixtures, auth, workflows, dependencies, Docker);
+setup failure; a head that moved during the run; duplicate feedback
+suppression for the same SHA; the two-follow-up cap; ambiguous termination
+keeping the claim; a simulated pass excluded from the real verified count;
+and the 401 vs 403 split.
+
+### Not covered in Phase 5
+
+- **No candidate stack has ever actually been built**, because no repair PR
+  exists. `portal/isolation.py` is exercised through injected fakes and
+  through the same Compose overlay that the Phase 5 bootstrap ran for real,
+  but an end-to-end candidate run is Phase 6.
+- No repaired code, therefore no passing target contract anywhere. The first
+  genuine pass must come from an API-created repair PR.
+- No live GitHub issue, Devin session or message; no credential read;
+  `AUTO_REPAIR_ENABLED=false` throughout.
+
+### What Phase 6 still needs
+
+1. The funding/credential decision: `DEVIN_API_KEY`, `DEVIN_ORG_ID`,
+   `GITHUB_TOKEN`, and confirmation that API-created sessions can push to
+   `woohyeokk-choi/superset`.
+2. Approved numeric ACU and wall-clock limits.
+3. A first live dispatch with the flag on, then a real candidate PR run
+   through the verifier on a machine with Docker headroom for a second stack.
 
 ## 8. Blockers and required credentials
 

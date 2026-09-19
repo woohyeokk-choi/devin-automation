@@ -1,0 +1,27 @@
+{
+  "ran_at": "2026-09-19T17:10:49.031564+00:00",
+  "verdict": "blocked",
+  "cases": [
+    {
+      "case": "S1",
+      "verdict": "blocked",
+      "checks": [],
+      "blocked_reason": "the MCP service is not ready: ConnectionError",
+      "facts": {}
+    }
+  ],
+  "mcp_readiness": {
+    "ready": false,
+    "reason": "the MCP service is not ready: ConnectionError",
+    "tools": [],
+    "server": {}
+  },
+  "unknown_cases": [],
+  "target": {
+    "base_url": "http://127.0.0.1:8288",
+    "mcp_url": "http://127.0.0.1:5999/mcp"
+  },
+  "failures": [
+    "S1: blocked \u2014 the MCP service is not ready: ConnectionError"
+  ]
+}

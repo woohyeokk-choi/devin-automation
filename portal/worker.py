@@ -54,12 +54,16 @@ def live_verifier(
     workspace: Path,
     automation_ref: str,
     artifacts: Path,
+    automation_dirty: bool = False,
 ) -> Verifier:
     """The real verifier: an isolated candidate stack graded by the pinned validator.
 
     `automation_ref` is the revision the assertions come from. It is the
     deployment's, not the candidate's: the repair session can change product
-    code, and nothing else that takes part in judging it.
+    code, and nothing else that takes part in judging it. It has to be a
+    commit the candidate checkout can fetch, so a dirty deployment tree is
+    recorded next to the ref rather than folded into it — uncommitted work
+    is not in the revision the verifier actually runs.
     """
     return Verifier(
         github=github,
@@ -72,7 +76,7 @@ def live_verifier(
         store=verifications,
         target_repo=target_repo,
         base_branch=BASE_BRANCH,
-        validator_ref=automation_ref,
+        validator_ref=automation_ref + (" (deployment tree dirty)" if automation_dirty else ""),
         replay=replay_through_validator,
         artifacts=artifacts,
         simulated=False,
@@ -115,10 +119,8 @@ def build_controller(
             target_repo=target_repo,
             automation_dir=automation_dir,
             workspace=workspace,
-            # Pin to what this deployment measured about its own checkout. A
-            # dirty tree is recorded as dirty rather than passed off as a ref.
-            automation_ref=str(versions.get("automation_sha") or "")
-            + ("-dirty" if versions.get("automation_dirty") else ""),
+            automation_ref=str(versions.get("automation_sha") or ""),
+            automation_dirty=bool(versions.get("automation_dirty")),
             artifacts=artifacts,
         )
     return Controller(

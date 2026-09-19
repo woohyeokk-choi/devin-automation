@@ -188,7 +188,36 @@ both in protected incident detail. Nothing is sent, and no credential is read.
 | Budget | ACU and wall-clock are checked before anything is sent, follow-up messages included. The deadline starts at activation, not when a disabled proposal was written. At most two follow-ups, counted durably. A candidate is never terminated before verification can answer it. |
 | Candidate | GitHub, not the agent, must report the allowed repository, base `runtime-repair/baseline`, a head branch in `woohyeokk-choi/superset`, a full 40-character head SHA and an open, unmerged pull request. `candidate` is not success; only Phase 5 verification produces `verified_in_preview`. |
 | Live providers | `AUTO_REPAIR_ENABLED=true` builds the real clients from `GITHUB_TOKEN`, `DEVIN_API_KEY` and `DEVIN_ORG_ID`; missing or malformed values stop start-up. There is no simulated fallback, and simulated runs use their own database and `simulated-` ids. |
-| Off the request path | `RepairPoller` polls the claimed repair and settles creation claims whose worker died. Poll failures (401/403/429 included) become persisted state, never an exception in a customer request. |
+| Off the request path | A request persists the event, admits the incident and writes a proposal — nothing more. `RepairWorker` is the only place repair work touches the network: it settles creation claims whose worker died, walks the repair holding the slot (dispatch, poll or verify) and claims the oldest queued proposal once the slot frees, so a second incident starts without another browser action and a customer never waits on api.github.com. Poll failures (401/403/429 included) become persisted state, never an exception in a customer request. |
+
+## Independent verification
+
+`candidate` means the agent opened a pull request. It is not success. What
+decides is `portal/verification.py`, built so the session under test cannot
+influence the answer.
+
+| Stage | Rule |
+| --- | --- |
+| Candidate | Re-read from GitHub: allowed host and repository, head branch inside `woohyeokk-choi/superset`, base `runtime-repair/baseline`, open, unmerged, full 40-character head SHA. |
+| Scope | Changed paths are judged before anything is built. Automation, validator, fixtures, auth/CSRF, workflows, dependencies and Docker bootstrap are forbidden. A scope rejection is `blocked` — no candidate code ran, so there is nothing to feed back as a product failure. |
+| Isolation | The exact head SHA is checked out on its own and brought up as its own Compose project, ports, database, cache, volumes and network. No Docker socket, no controller/GitHub/Devin credential in the environment or the mounts, and the stack refuses to start if a known secret name is present. |
+| Assertions | `portal/validator.py` at a pinned automation revision in the trusted checkout — never the candidate's copy. |
+| Verdict | `passed` only when every registered target and control check ran and held. Setup failure, empty traces, skipped checks, missing assertions, transport errors, a moved head or provenance that disagrees with the SHA under test are `blocked`, never a pass and never a product failure. The head is re-read before a verdict is accepted. |
+| Outcome | A pass is `verified_in_preview`. Not deployed, not merged, not production-ready. Simulated attempts are stored separately and excluded from the verified count. |
+| Feedback | Failures return the precise expected/observed lines to the same session, once per candidate SHA, at most twice, and only after the ACU and deadline checks. |
+
+The validator also runs standalone, which is how it is proved to catch the
+defects it claims to:
+
+```bash
+python3 -m portal.validator --case S2 --case S1 --case N1 \
+  --base-url http://127.0.0.1:8088 --mcp-url http://127.0.0.1:5008/mcp \
+  --out report.json     # exit 0 passed, 1 product-contract failed, 2 blocked
+```
+
+S1 runs only after MCP readiness is established in the MCP protocol itself
+(`initialize`, then `tools/list`) — the web container answering `/health` says
+nothing about a different process in a different container.
 
 ### Provenance
 
@@ -212,9 +241,15 @@ presented as proof of what is running.
 - `artifacts/phase3/handoff/<fingerprint>/` — the four-file handoff bundles as
   the console wrote them.
 - `artifacts/phase3/screenshots/` — incident console and browser demonstration.
-- `artifacts/phase4/bootstrap/` — the clean-checkout bootstrap in an isolated
-  Compose namespace: measured provenance and the S2 reproduction it produced,
-  plus the MCP health caveat.
+- `artifacts/phase4/bootstrap/` — bootstrap in an isolated Compose namespace:
+  measured provenance and the S2 reproduction it produced. Its README carries
+  a correction: that checkout was dirty, so it was not a published-code run.
+- `artifacts/phase5/bootstrap/` — the published-code bootstrap: clean clones of
+  both repositories, isolated project `phase5check`, a healthy MCP container
+  under a protocol-level healthcheck, and the discovered MCP tool list.
+- `artifacts/phase5/negative-control/` — the real validator against the
+  immutable baseline: S2 and S1 fail their target contracts, every control and
+  N1 pass, and three unreachable/unauthenticated variants block.
 
 ### Not covered
 
@@ -227,5 +262,9 @@ presented as proof of what is running.
 - No GitHub issue, Devin session or message has been created. Every controller
   result recorded here comes from the labelled fakes in `portal/simulation.py`
   against an isolated simulation database.
-- Verification does not exist yet: a repair can reach `candidate`, never
-  `verified_in_preview`.
+- No candidate stack has been built for real, because no repair pull request
+  exists yet. The verifier is exercised through injected fakes and the same
+  Compose overlay the Phase 5 bootstrap ran; an end-to-end candidate run needs
+  a live repair.
+- No repaired code, so nothing has reached `verified_in_preview` and no
+  passing target contract is recorded anywhere.
