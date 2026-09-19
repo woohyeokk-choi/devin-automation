@@ -11,8 +11,18 @@ Target repository: [`woohyeokk-choi/superset`](https://github.com/woohyeokk-choi
 The single living plan — decisions, phase status, commands and blockers — is in
 [docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md).
 
-Status: Phase 2 (portal + structured logging). No incident engine, no issue
-creation and no repair sessions yet. `AUTO_REPAIR_ENABLED=false`.
+**Where the code is.** Everything described here lives on the branch
+`devin/1789830208-phase1-baseline-reproductions`, published as
+[pull request #1](https://github.com/woohyeokk-choi/devin-automation/pull/1)
+and not merged. `main` does **not** contain the application; clone the branch.
+
+Status: two real repairs ran end to end and reached `verified_in_preview`
+(Superset [#2](https://github.com/woohyeokk-choi/superset/pull/2) and
+[#4](https://github.com/woohyeokk-choi/superset/pull/4), both open and
+unmerged, nothing deployed). The portal never dispatches: it is fixed at
+`AUTO_REPAIR_ENABLED=false` and only a trusted host coordinator holds
+credentials. See [artifacts/phase6/](artifacts/phase6/) for the evidence and
+[docs/results.md](docs/results.md) for the numbers.
 
 ---
 
@@ -35,10 +45,15 @@ Two checkouts are needed — this repository and the Superset fork at the
 baseline revision:
 
 ```bash
-git clone https://github.com/woohyeokk-choi/devin-automation.git
+git clone --branch devin/1789830208-phase1-baseline-reproductions \
+  https://github.com/woohyeokk-choi/devin-automation.git
 git clone https://github.com/woohyeokk-choi/superset.git
 git -C superset checkout 394bca55c792b7b3547e23f6e175a7cb0f0757e8
 ```
+
+Requires Docker with the Compose plugin and Python 3.11 on the host. Nothing
+below needs a credential; the only secrets in the whole project belong to the
+coordinator, and only when live dispatch is enabled.
 
 ```bash
 # from the automation checkout
@@ -67,10 +82,66 @@ python3 scripts/seed_synthetic.py
 # 3. measured provenance for the running containers
 python3 scripts/capture_provenance.py   # writes runtime/provenance.json
 
-# 4. portal + operator viewer
+# 4. the shared state directory must exist, be owned by you and be exported
+#    BEFORE Compose starts: the compose file requires PORTAL_DATA_DIR and the
+#    container runs as PORTAL_UID:PORTAL_GID, so a directory created later (or
+#    created by the container as uid 10001) leaves one of the two processes
+#    unable to write the SQLite files.
+export PORTAL_DATA_DIR=$PWD/runtime/state
+export PORTAL_UID=$(id -u) PORTAL_GID=$(id -g)
+mkdir -p "$PORTAL_DATA_DIR" && chmod 0700 "$PORTAL_DATA_DIR"
+
+# 5. portal + operator viewer
 docker compose -f stack/docker-compose.portal.yml up -d --build
 curl -s http://127.0.0.1:8090/healthz
 ```
+
+All three ports bind to `127.0.0.1`; nothing is published. To watch it from
+another machine, forward the port over SSH rather than changing the bind.
+
+### Where things are written
+
+| What | Where |
+| --- | --- |
+| Structured events | `$PORTAL_DATA_DIR/events.sqlite`, and the same safe JSON on the container's stdout (`docker compose -f stack/docker-compose.portal.yml logs -f portal`) |
+| Incidents, repairs, verifications | `$PORTAL_DATA_DIR/{incidents,repairs,verifications}.sqlite` |
+| Verification reports | `$PORTAL_DATA_DIR/artifacts/repair-<id>/<sha>-<timestamp>.json` |
+| Coordinator lock | `$PORTAL_DATA_DIR/coordinator.lock` |
+| Handoff bundles | `$PORTAL_DATA_DIR/handoff/<fingerprint>/`, downloadable from the console |
+| Operator UI | `/ops` (events), `/ops/incidents` (incidents, repairs, verification attempts), `/ops/export.jsonl` (redacted export) |
+| Candidate checkouts | `$PORTAL_VERIFICATION_WORKSPACE` (default `runtime/candidates`), removed after each attempt |
+| Published evidence | `artifacts/` in this repository |
+
+### Known setup pitfalls
+
+- `PORTAL_DATA_DIR` is required by the compose file (`${PORTAL_DATA_DIR:?}`) —
+  Compose fails fast rather than silently creating a named volume the host
+  cannot read.
+- If `PORTAL_UID`/`PORTAL_GID` do not match the owner of that directory, the
+  first cross-process write fails with a permission error, not a data error.
+- Compose names a built image after its project, so in an isolated namespace
+  set `COMPOSE_PROJECT_NAME` *and* `SUPERSET_LIGHT_IMAGE=<project>-superset-light`.
+- The MCP sidecar is ready when the MCP protocol answers (`initialize`, then
+  `tools/list`); the web container's `/health` says nothing about it.
+- Verification needs free ports: with the demo stack up, pass
+  `PORTAL_VERIFICATION_WEB_PORT` / `PORTAL_VERIFICATION_MCP_PORT`.
+- Container-created bytecode under a candidate checkout is root-owned;
+  teardown handles it, but a manual `rm -rf` may need `sudo`.
+
+### Cleanup
+
+Scoped to this project only — never `docker system prune`:
+
+```bash
+docker compose -f stack/docker-compose.portal.yml down            # portal
+cd "$SUPERSET_DIR" && docker compose -f docker-compose-light.yml \
+  -f "$AUTOMATION_DIR/stack/docker-compose.ports.yml" down        # baseline
+docker compose -p candidate<sha12> down -v                        # a candidate
+```
+
+The verifier removes its own candidate project, checkout and volumes after
+every attempt; the command above is for one it did not get to. Leave
+`$PORTAL_DATA_DIR` alone unless you mean to discard the recorded history.
 
 Tests: `pip install -r requirements-dev.txt && python3 -m pytest tests -q`.
 
@@ -146,6 +217,15 @@ python3 scripts/export_examples.py
   input, nested output and exception text and asserts they appear in none of
   the three sinks.
 - All three ports bind to `127.0.0.1` only.
+- Secrets are passed as environment variables to the process that needs them
+  and to nothing else: demo/operator passwords and the upstream Superset
+  identity to the portal, `DEVIN_API_KEY`/`DEVIN_ORG_ID` to the coordinator.
+  Nothing is written to the repository, the state directory or an artifact,
+  and no credential is ever given to a candidate stack or a repair session.
+  GitHub needs **no broad personal access token**: the host adapter resolves a
+  fresh credential per request from the existing `gh` authentication, so a
+  two-hour repair outlives a one-hour installation token. `GITHUB_TOKEN` is
+  still honoured where a deployment outside this machine sets one.
 
 ## Incidents
 
@@ -257,8 +337,27 @@ The portal is fixed at `AUTO_REPAIR_ENABLED=false` in the Compose file — the
 credentials, the git and Docker access and the dispatching all belong to the
 coordinator, and the Docker socket is mounted nowhere.
 
-`python3 scripts/check_shared_state.py` proves the seam end to end without a
-network: the real portal image (`--network none`) records a failure and a
+#### Try the whole seam without a credential
+
+One command, no network, no account, nothing live — the real portal image
+under `--network none` plus the coordinator's own wiring against
+`FakeGitHub`/`FakeDevin`:
+
+```bash
+docker build -t runtime-repair-portal .
+PORTAL_DATA_DIR=$PWD/runtime/sim PORTAL_UID=$(id -u) PORTAL_GID=$(id -g) \
+  python3 scripts/check_shared_state.py     # prints "shared state check: PASS"
+```
+
+Everything it reports is **simulated**: the session id is `simulated-…`, the
+issue and pull request come from the fakes, and `FakeTransport` is the only
+transport involved, so no request leaves the machine. It refuses to run
+against a state directory that already holds SQLite files, which is what keeps
+a simulated dispatch out of a live queue — point it at a throwaway directory,
+never at the live state. `artifacts/phase7/simulation/` is a recorded run of
+exactly this command from a clean clone.
+
+It proves the seam end to end without a network: the real portal image (`--network none`) records a failure and a
 proposal in the bind mount, and the coordinator's own wiring claims it and
 dispatches it to simulated providers with the request trace intact —
 `artifacts/phase5/wiring/`.
@@ -332,6 +431,12 @@ scenario's numbers rather than every possible row-level difference.
   (`candidate394bca55c792`, ports 8388/5308), measured provenance and ran the
   pinned validator through it, then removed everything it created.
 
+- `artifacts/phase6/S2/`, `artifacts/phase6/S1/` — the two live repairs: the
+  full verification record (every check with expected and observed values),
+  the attempts, and a README stating exactly what was and was not run.
+- `artifacts/phase7/simulation/` — the credential-free simulation above, run
+  from a clean clone of the published branch.
+
 ### Not covered
 
 - Submitting the chart-sort form as the restricted profile is **not applicable**:
@@ -340,15 +445,20 @@ scenario's numbers rather than every possible row-level difference.
   not weakened to manufacture coverage.
 - No public preview exists. Everything is loopback-only by design, so the URLs
   above are reachable only on the host running the stack.
-- No GitHub issue, Devin session or message has been created. Every controller
-  result recorded here comes from the labelled fakes in `portal/simulation.py`
-  against an isolated simulation database.
-- No candidate stack has been built from **repaired** code, because no repair
-  pull request exists yet. `IsolatedStack.prepare()` has been run for real
-  against the baseline commit; the GitHub pull-request read that precedes it
-  is still exercised only through fakes.
 - Verification runs from the trusted host coordinator, never from inside the
   portal container, which has no git or Docker CLI and reports
   `can_verify=false`.
-- No repaired code, so nothing has reached `verified_in_preview` and no
-  passing target contract is recorded anywhere.
+- **No CI ran on either candidate.** Both head SHAs have 0 check-runs and 0
+  commit statuses; the combined `pending` is the absence of reporting, not a
+  passing build. The only independent checks are this validator's behavioural
+  assertions.
+- **Nothing is merged or deployed.** `verified_in_preview` is the end state,
+  and because neither product pull request is merged, the baseline is still
+  buggy.
+- **No Slack integration.** A channel, app and bot exist, but this repository
+  contains no outbound notifier, and native session sync is available only to
+  a session's owner — the `superset-runtime-repair` service user. No alerting
+  or Slack Q&A works today.
+- Human touch time and cost per repair were not measured, and the API's
+  `acus_consumed: 0.0` is reported as received, not as a claim that the work
+  was free.
