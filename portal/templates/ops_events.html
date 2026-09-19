@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block body %}
+{% if note %}<div class="banner">{{ note }}{% if trace_id %} — trace
+  <a href="/ops/traces/{{ trace_id }}">{{ trace_id }}</a>{% endif %}</div>{% endif %}
+<div class="card">
+  <h2>Traces</h2>
+  <p class="muted">
+    <strong>Baseline defects</strong> are Superset contract failures this environment
+    is meant to reproduce at <code>394bca5</code> — expected, not automation faults.
+    <strong>Harness failures</strong> are the portal's own checks; those are the ones
+    that mean something here is broken.
+  </p>
+  <table>
+    <thead><tr><th>Trace</th><th>Started</th><th>Scenario</th><th>Actor</th><th>Steps</th><th>Baseline defects</th><th>Harness failures</th><th>Expected denials</th><th>Blocked</th></tr></thead>
+    <tbody>
+      {% for item in traces %}
+      <tr>
+        <td><a href="/ops/traces/{{ item.trace_id }}">{{ item.trace_id }}</a></td>
+        <td class="muted">{{ item.started_at }}</td>
+        <td>{{ item.scenario or '—' }}</td>
+        <td>{{ item.actor }}</td>
+        <td>{{ item.steps }}</td>
+        <td>{% if item.baseline_defects %}<span class="pill assertion_failed">{{ item.baseline_defects }}</span>{% else %}0{% endif %}</td>
+        <td>{% if item.harness_failures %}<span class="pill assertion_failed">{{ item.harness_failures }}</span>{% else %}0{% endif %}</td>
+        <td>{% if item.expected_denials %}<span class="pill expected_denial">{{ item.expected_denials }}</span>{% else %}0{% endif %}</td>
+        <td>{% if item.blocked %}<span class="pill blocked">{{ item.blocked }}</span>{% else %}0{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Events</h2>
+  <form method="get" action="/ops">
+    <label for="outcome">Outcome</label>
+    <select name="outcome" id="outcome" onchange="this.form.submit()">
+      {% for value in ['', 'ok', 'assertion_failed', 'expected_denial', 'blocked', 'error'] %}
+      <option value="{{ value }}" {% if value == outcome %}selected{% endif %}>{{ value or 'all' }}</option>
+      {% endfor %}
+    </select>
+    <a href="/ops/export.jsonl">Export JSONL</a>
+  </form>
+  <form method="post" action="/ops/fixtures/reset">
+    <button class="secondary" type="submit">
+      Reset the demo fixture to its documented starting state
+    </button>
+  </form>
+  <table>
+    <thead><tr><th>Time (UTC)</th><th>Trace/step</th><th>Operation</th><th>Outcome</th><th>HTTP</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for event in events %}
+      <tr>
+        <td class="muted">{{ event.ts_utc }}</td>
+        <td><a href="/ops/traces/{{ event.trace_id }}">{{ event.trace_id }}</a>/{{ event.step_index }}</td>
+        <td>{{ event.operation }}</td>
+        <td><span class="pill {{ event.outcome }}">{{ event.outcome }}</span></td>
+        <td>{{ event.http_status or '' }}</td>
+        <td class="muted">{{ event.assertion.name if event.assertion else (event.message or '') }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

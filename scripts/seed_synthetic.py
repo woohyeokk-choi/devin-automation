@@ -16,17 +16,27 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import subprocess
 import sys
+from pathlib import Path
 
-from superset_client import SupersetClient
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-DB_CONTAINER = "superset-db-light-1"
-DB_NAME = "superset_light"
-DB_USER = "superset"
+from clients.superset_client import SupersetClient  # noqa: E402
+
+COMPOSE_PROJECT = os.environ.get("SUPERSET_COMPOSE_PROJECT", "superset")
+DB_CONTAINER = os.environ.get("SUPERSET_DB_CONTAINER", f"{COMPOSE_PROJECT}-db-light-1")
+DB_NAME = os.environ.get("SUPERSET_DB_NAME", "superset_light")
+DB_USER = os.environ.get("SUPERSET_DB_USER", "superset")
+DB_PASSWORD = os.environ.get("SUPERSET_DB_PASSWORD", "superset")
+DB_HOST = os.environ.get("SUPERSET_DB_HOST", "db-light")
 DATABASE_NAME = "Synthetic Analytics"
-SQLALCHEMY_URI = f"postgresql+psycopg2://superset:superset@db-light:5432/{DB_NAME}"
+SQLALCHEMY_URI = (
+    f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:5432/{DB_NAME}"
+)
 TABLE_NAME = "synthetic_orders"
 SCHEMA = "public"
 
@@ -57,6 +67,14 @@ FROM generate_series(1, {ROW_COUNT}) AS g;
 TABLE_EXISTS_SQL = (
     f"SELECT to_regclass('{SCHEMA}.{TABLE_NAME}') IS NOT NULL;"  # noqa: S608
 )
+
+
+def fixture_revision(row_count: int) -> str:
+    """Content revision of the fixture: the DDL that defines it plus its size."""
+    digest = hashlib.sha256()
+    digest.update(DDL.encode())
+    digest.update(f"|rows={row_count}".encode())
+    return "sha256:" + digest.hexdigest()[:16]
 
 
 def run_sql(sql: str) -> str:
@@ -99,6 +117,7 @@ def main() -> int:
                 "database_id": database_id,
                 "dataset_id": dataset_id,
                 "table": f"{SCHEMA}.{TABLE_NAME}",
+                "fixture_revision": fixture_revision(int(row_count)),
             },
             indent=2,
         )

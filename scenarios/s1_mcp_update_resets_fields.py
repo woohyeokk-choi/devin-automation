@@ -25,11 +25,11 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from _harness import Transcript, write_artifacts  # noqa: E402
-from mcp_client import MCPClient  # noqa: E402
-from superset_client import SupersetClient  # noqa: E402
+from scenarios._harness import Transcript, write_artifacts  # noqa: E402
+from clients.mcp_client import MCPClient  # noqa: E402
+from clients.superset_client import SupersetClient  # noqa: E402
 
 SCENARIO_ID = "S1"
 CHART_NAME = "S1 synthetic orders by region"

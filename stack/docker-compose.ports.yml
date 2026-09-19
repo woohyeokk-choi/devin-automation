@@ -7,17 +7,22 @@
 #   2. run the MCP service as an explicit sidecar — the baseline revision has no
 #      MCP service in any compose file, and scenario S1 drives it.
 #
-# Host paths are absolute because Compose resolves relative paths against the
-# project directory (the Superset checkout), not against this file.
+# The MCP service authenticates as an admin development user, so it is bound to
+# the loopback interface only and is never published to a shared preview.
+#
+# Paths come from the environment (see stack/.env.example) because Compose
+# resolves relative paths against the project directory (the Superset
+# checkout), not against this file.
 #
 # Usage (from the Superset checkout):
+#   set -a; . <automation>/stack/.env.example; set +a
 #   docker compose -f docker-compose-light.yml \
-#     -f /home/ubuntu/repos/devin-automation/stack/docker-compose.ports.yml \
+#     -f "$AUTOMATION_DIR/stack/docker-compose.ports.yml" \
 #     up -d superset-light superset-mcp-light
 services:
   superset-light:
     ports:
-      - "${SUPERSET_PORT_HOST:-8088}:8088"
+      - "${SUPERSET_PORT_BIND:-127.0.0.1}:${SUPERSET_PORT_HOST:-8088}:8088"
 
   superset-mcp-light:
     image: superset-superset-light
@@ -25,19 +30,20 @@ services:
     restart: unless-stopped
     user: root
     env_file:
-      - path: /home/ubuntu/repos/superset/docker/.env
+      - path: ${SUPERSET_DIR:?set SUPERSET_DIR}/docker/.env
         required: true
-      - path: /home/ubuntu/repos/superset/docker/.env-local
+      - path: ${SUPERSET_DIR:?set SUPERSET_DIR}/docker/.env-local
         required: false
     depends_on:
       superset-light:
         condition: service_started
     ports:
-      - "${SUPERSET_MCP_PORT_HOST:-5008}:5008"
+      # loopback only: this development endpoint runs as an admin user
+      - "127.0.0.1:${SUPERSET_MCP_PORT_HOST:-5008}:5008"
     volumes:
-      - /home/ubuntu/repos/superset/docker:/app/docker
-      - /home/ubuntu/repos/superset/superset:/app/superset
-      - /home/ubuntu/repos/devin-automation/stack:/app/automation_stack
+      - ${SUPERSET_DIR:?set SUPERSET_DIR}/docker:/app/docker
+      - ${SUPERSET_DIR:?set SUPERSET_DIR}/superset:/app/superset
+      - ${AUTOMATION_DIR:?set AUTOMATION_DIR}/stack:/app/automation_stack
       - superset_home_light:/app/superset_home
     environment:
       DATABASE_HOST: db-light

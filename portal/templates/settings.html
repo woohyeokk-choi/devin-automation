@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block body %}
+<p class="muted">{% if note %}Last action: {{ note }} · {% endif %}
+  <a href="/ops/traces/{{ trace_id }}">trace {{ trace_id }}</a></p>
+
+{% if denied_reason %}
+<div class="card"><h2>Not available for your role</h2><p>{{ denied_reason }}</p>
+<p class="muted">Recorded as <span class="pill expected_denial">expected_denial</span>.</p></div>
+{% endif %}
+
+{% if blocked_reason %}
+<div class="card"><h2 class="bad">Chart unavailable</h2><p>{{ blocked_reason }}</p>
+<p class="muted">Recorded as <span class="pill blocked">blocked</span>.</p></div>
+{% endif %}
+
+{% if chart %}
+<div class="card">
+  <h2>{{ chart.name }}</h2>
+  <p class="muted">Settings read back from Superset after every change — this is the saved
+  chart, not a local copy.</p>
+  <table>
+    <tr><th>Chart id</th><td>{{ chart.id }}</td></tr>
+    <tr><th>Rows shown (row limit)</th><td><strong>{{ chart.row_limit }}</strong></td></tr>
+    <tr><th>Colour scheme</th><td>{{ chart.color_scheme }}</td></tr>
+    <tr><th>Sorted by</th><td>{{ chart.sort_by }} ({{ 'descending' if chart.order_desc else 'ascending' }})</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Change how this chart is sorted</h2>
+  <form method="post" action="/settings/sort">
+    <label for="descending">Order</label>
+    <select name="descending" id="descending">
+      <option value="true" {% if chart.order_desc %}selected{% endif %}>highest revenue first</option>
+      <option value="false" {% if chart.order_desc is not none and not chart.order_desc %}selected{% endif %}>lowest revenue first</option>
+    </select>
+    <label for="explicit_row_limit">Row limit (optional)</label>
+    <input type="text" name="explicit_row_limit" id="explicit_row_limit" placeholder="leave blank to keep">
+    <button type="submit">Apply</button>
+  </form>
+  <p class="muted">Leaving the row limit blank means “don't touch it”. After applying,
+  compare the row limit above with what you had before.</p>
+</div>
+{% endif %}
+{% endblock %}

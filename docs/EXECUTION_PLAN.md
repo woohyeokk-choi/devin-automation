@@ -3,7 +3,7 @@
 Single living plan. Updated at the end of every phase: decisions, phase status,
 commands actually run with their results, and open blockers.
 
-Last updated: Phase 1 (2026-09-19).
+Last updated: Phase 2 (2026-09-19).
 
 ---
 
@@ -198,7 +198,10 @@ Recommended changes to the proposed approach, with evidence:
 - **Phase 1 — complete.** Light stack built and running, synthetic fixtures
   seeded, S2 and S1 reproduced against the baseline commit and N1 confirmed as
   a clean denial. Artifacts in `artifacts/baseline/`. See §7b.
-- Phases 2–7 — not started.
+- **Phase 2 — complete.** Portal, structured event log, redaction and operator
+  viewer built and exercised through a browser against the running baseline.
+  See §7c.
+- Phases 3–7 — not started.
 
 ## 7. Commands run and results (Phase 0)
 
@@ -298,6 +301,124 @@ rebuilt with baseline source mounted still runs baseline code. Verification
 must use an isolated clone at the exact PR SHA under its own Compose project
 name, or drop those mounts. Every `result.json` records the executed source SHA,
 the fixture revision and whether the tree was dirty.
+
+## 7c. Phase 2 results — portal and logging
+
+### What was built
+
+FastAPI + server-rendered Jinja, no frontend framework, no telemetry stack; the
+only new service is the portal itself. It drives the same REST/MCP clients the
+Phase 1 scenarios use (moved to `clients/`), so every page renders real
+Superset state.
+
+| Module | Role |
+| --- | --- |
+| `portal/config.py` | Environment-driven settings; no host paths are baked in. |
+| `portal/redaction.py` | Allowlist `pick()` + recursive `scrub()` over values *and* free-form text. |
+| `portal/events.py` | SQLite store + identical safe JSON to stdout + JSONL export. |
+| `portal/provenance.py` | Loads the measured container/source/fixture revision; `unmeasured` when absent. |
+| `portal/tracing.py` | `trace_id` per user action, `request_id` + `step_index` per upstream call, contract assertions. |
+| `portal/upstream.py` | Superset REST and MCP gateways; outcome classification. |
+| `portal/domain.py` | Customer actions: explorations, revenue table, chart settings, sort change. |
+| `portal/app.py` + `portal/templates/` | Customer pages and the protected operator viewer. |
+
+### Scope correction carried from Phase 1
+
+The native Superset frontend is not built at this revision (no compiled assets
+are served by the light stack), so the portal renders the real data and real
+chart settings itself rather than embedding Superset's UI. This is stated
+plainly rather than worked around; a frontend build is deferred until something
+actually requires it.
+
+### Customer-visible behaviour
+
+- **S2** — save an exploration, open its link, discard it, save a *different*
+  exploration in the same workspace, then re-open the first link: it comes back
+  alive showing the second exploration's state. That is the customer-facing
+  stale link. No HTTP failure is manufactured; the trace records
+  `assertion_failed` on the fresh-key and A/B-content contracts.
+  "Start over in a fresh workspace" rotates the tab id, so the discarded link
+  stays gone — that path is the negative control, not the reproduction.
+- **S1** — `/settings` reads the chart back after a sort change: the requested
+  sort took effect (`ok`), `color_scheme` is preserved (`ok`, control), and the
+  omitted `row_limit` is reset 137 → 1000 (`assertion_failed`). An explicit
+  `row_limit` change is a normal control and stays `ok`.
+- **N1** — the restricted profile gets a "Not available for your role" page;
+  the upstream 403s and the portal's own chart-edit policy are recorded as
+  `expected_denial`. Nothing escalates.
+
+A denial is never confused with a failure: unreachable upstream, a missing
+fixture or failed login is `blocked`, and `tests/test_outcomes.py` asserts that
+a setup failure cannot masquerade as a verdict.
+
+### Baseline defects vs harness health
+
+At this baseline a correct replay *must* produce failed assertions, so the two
+kinds are separated everywhere rather than summed into one "tests failed"
+number:
+
+- Assertions carry `subject` (`product_contract` / `harness`) and
+  `known_baseline_defect`. The S2 key-reuse, S2 stale-link and S1 row-limit
+  contracts are the known baseline defects.
+- `/ops` shows separate **Baseline defects**, **Harness failures**, **Expected
+  denials** and **Blocked** columns; trace detail tags a known defect with
+  "known baseline defect — expected here".
+- `artifacts/examples/{S2,S1,N1}/verdict.json` is the machine-readable form:
+  `baseline_defect_reproduced`, `harness_failures`, `blocked_steps`,
+  `expected_denials`, `not_applicable`, `harness_healthy`.
+
+Superset stays untouched: these defects are the target of the Phase 6 repair
+sessions, not something this builder session fixes.
+
+### Deterministic fixture reset
+
+The first browser run had to restore the row limit by hand because an earlier
+run had left it at 1000. `POST /ops/fixtures/reset` (button on `/ops`, also the
+first step of `scripts/export_examples.py`) now forgets the portal's
+exploration records and restores **only** the demo chart to row limit 137,
+highest-revenue-first and `googleCategory10c`, then asserts (as a `harness`
+check) that it reached that state. A replay therefore always starts from the
+same documented "before" values, and a reproduction cannot depend on leftovers.
+
+### Not applicable
+
+Submitting the chart-sort form as the restricted profile cannot be exercised:
+the settings page is denied to that role, so the form is never rendered. It is
+recorded as `not_applicable` with that reason in `N1/verdict.json`. The form is
+not exposed and authorization is not weakened to manufacture coverage.
+
+### Logging, storage and export
+
+| Fact | Value |
+| --- | --- |
+| SQLite | `/data/events.sqlite` inside the portal container, on Docker volume `stack_portal_data` |
+| stdout | identical sanitized JSON records (`docker logs stack-portal-1`) |
+| Export | `GET /ops/export.jsonl` (HTTP Basic) |
+| Examples | `artifacts/examples/{S2,S1,N1}/events.redacted.jsonl` + `verdict.json` |
+| Replay command | `python3 scripts/export_examples.py` (reset → S2 → S1 → N1 → export) |
+| Screenshots | `artifacts/examples/screenshots/` |
+
+### Verified in Phase 2
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Unit + canary tests | `python3 -m pytest tests -q` | 8 passed — canaries in headers, nested input, nested output and exception text appear in none of stdout / SQLite bytes / JSONL export; unreachable upstream classifies as `blocked`; an `assertion_failed` keeps `http_status` unset |
+| Fresh reset + replay | `python3 scripts/export_examples.py` | S2 reproduced both defects (31 events), S1 reproduced 137 → 1000 (25 events), N1 2 expected denials (20 events); `harness_healthy: true` for all three, no manual fix-up |
+| Browser click-through after reset | recorded run, screenshots in `artifacts/examples/screenshots/` | reset restored 137/highest-first/`googleCategory10c`; S1 `trace_72d09f9adc00`, S2 `trace_3357e53dd60b` + `trace_6800108c60e5`, N1 `trace_e89f313b7b26` + `trace_98aacb9a1447`; baseline defects flagged as expected, harness failures 0 |
+| Persistence across container replacement | `docker compose -f stack/docker-compose.portal.yml rm -sf portal && ... up -d` | 598 events before removal, 598 after recreation; `stack_portal_data` → `/data/events.sqlite` |
+| Internal MCP reachability | `docker exec stack-portal-1 python -c "urllib.request.urlopen('http://superset-mcp-light:5008/mcp')"` | reachable by service name (HTTP 405 for GET), no published port needed |
+| Network safety | `ss -ltn`, `curl http://<host-ip>:{8088,5008,8090}` | all three listen on `127.0.0.1` only; every host-IP request fails |
+| Provenance | `python3 scripts/capture_provenance.py` | `running-code-hash+mount-match`, container `superset-light`, checkout `394bca55`, clean, fixture `sha256:67ff039835f9890c` |
+
+### Not verified in Phase 2
+
+- No incident engine, fingerprinting or dedup (Phase 3).
+- No issue creation, Devin API call, repair session or Slack message.
+- No product fix; the Superset checkout is untouched and still at
+  `baseline-394bca5`.
+- No authenticated public preview URL — the stack is loopback-only by design,
+  and the admin MCP endpoint is not exposed merely to publish one.
+- No multi-user or load behaviour; the portal is single-operator by design.
 
 ## 8. Blockers and required credentials
 

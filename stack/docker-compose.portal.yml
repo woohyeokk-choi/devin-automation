@@ -1,0 +1,52 @@
+# The synthetic-analytics portal and its operator log viewer.
+#
+# It joins the Superset light stack's network so it reaches Superset and the
+# MCP sidecar by service name — the admin MCP endpoint never has to be
+# published for the portal to work. Events live on the `portal_data` volume,
+# so they survive `docker compose restart` and container replacement.
+#
+# Usage (from the automation checkout):
+#   set -a; . stack/.env.example; set +a
+#   docker compose -f stack/docker-compose.portal.yml up -d --build
+services:
+  portal:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: runtime-repair-portal
+    restart: unless-stopped
+    ports:
+      - "${PORTAL_PORT_BIND:-127.0.0.1}:${PORTAL_PORT_HOST:-8090}:8090"
+    environment:
+      SUPERSET_BASE_URL: ${SUPERSET_BASE_URL:-http://superset-light:8088}
+      SUPERSET_MCP_URL: ${SUPERSET_MCP_URL:-http://superset-mcp-light:5008/mcp}
+      SUPERSET_USERNAME: ${SUPERSET_USERNAME:-admin}
+      SUPERSET_PASSWORD: ${SUPERSET_PASSWORD:-admin}
+      SUPERSET_RESTRICTED_USERNAME: ${SUPERSET_RESTRICTED_USERNAME:-restricted_analyst}
+      SUPERSET_RESTRICTED_PASSWORD: ${SUPERSET_RESTRICTED_PASSWORD:-restricted-analyst-local}
+      PORTAL_ENVIRONMENT_KIND: ${PORTAL_ENVIRONMENT_KIND:-baseline-light}
+      PORTAL_RUN_ID: ${PORTAL_RUN_ID:-local}
+      PORTAL_OPS_USERNAME: ${PORTAL_OPS_USERNAME:-operator}
+      PORTAL_OPS_PASSWORD: ${PORTAL_OPS_PASSWORD:-operator-local}
+      PORTAL_DATA_DIR: /data
+      PORTAL_PROVENANCE_PATH: /provenance/provenance.json
+      AUTO_REPAIR_ENABLED: ${AUTO_REPAIR_ENABLED:-false}
+    volumes:
+      - portal_data:/data
+      # measured by scripts/capture_provenance.py on the host
+      - ${AUTOMATION_DIR:?set AUTOMATION_DIR}/runtime:/provenance:ro
+    networks:
+      - superset
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  portal_data:
+
+networks:
+  superset:
+    name: ${SUPERSET_NETWORK:-superset_default}
+    external: true

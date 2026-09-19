@@ -1,0 +1,21 @@
+{
+  "scenario": "N1",
+  "traces": {
+    "dashboard": "trace_27bdc32a4564",
+    "save_attempt": "trace_bd2a42fadd7d",
+    "settings_attempt": "trace_2d0d1dfba77f"
+  },
+  "events": 20,
+  "baseline_defect_reproduced": [],
+  "expected_denials": 4,
+  "harness_failures": [],
+  "blocked_steps": [],
+  "not_applicable": [
+    {
+      "case": "restricted profile submits the chart sort form",
+      "status": "not_applicable",
+      "reason": "the settings page is denied to this profile, so the sort form is never rendered; the denial itself is the covered behaviour and the form is not exposed to force coverage"
+    }
+  ],
+  "harness_healthy": true
+}
