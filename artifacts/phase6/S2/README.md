@@ -2,9 +2,16 @@
 
 Export of the one real S2 run for independent review. Nothing here was re-run to
 produce it: the files are the stored records of the run that happened on
-2026-09-19, redacted through `portal.redaction.scrub` before commit. No
-credentials, no raw database dumps, no new live run, and the coordinator is
-stopped.
+2026-09-19. No credentials, no raw database dumps, no new live run, and the
+coordinator is stopped.
+
+`scripts/export_verification.py` writes them. It sanitises every string leaf
+with `portal.redaction.scrub_text` but walks the tree itself, because the event
+redactor's depth and item caps — correct for a log, which must survive a
+hostile trace — replaced exactly the check names and observed values this
+export exists to show. The script then reads the published file back and runs
+the real `portal.verification.grade()` on it, which must return `passed` over
+all 19 checks or the export fails; that is where the numbers below come from.
 
 | | |
 | --- | --- |
@@ -16,7 +23,7 @@ stopped.
 | Baseline the PR branches from | `394bca55c792b7b3547e23f6e175a7cb0f0757e8` (untouched) |
 | Validator / automation ref | `0ddca84740d985bb68d90697d1fdcade1295f4ed` (pinned, agent cannot change it) |
 | Fixture revision | `sha256:67ff039835f9890c`, content digest `47bea47eb499e2b929604bd1a5863a58`, 60 aggregate rows |
-| Verdict | `passed` → repair state `verified_in_preview` (attempt 1, verification 8) |
+| Verdict | `passed` → repair state `verified_in_preview` (attempt 1, verification 8, 20:20:08.747–20:24:51.208 UTC) |
 | Product follow-ups sent | 0 |
 | Simulated | no (`simulated=0`) |
 
@@ -69,8 +76,9 @@ Measured at verification time, not asserted by the agent:
 
 ## The eight attempts
 
-Attempt 8 is the only pass. The seven before it are `blocked` — never
-`passed`, never silently retried into a pass. Two kinds, kept distinct:
+Eight attempts in total: **seven blocked, one pass**. The seven blocked ones
+are never `passed` and were never silently retried into a pass. Two kinds, kept
+distinct — two policy rejections and five environment failures:
 
 | # | Kind | What happened |
 | --- | --- | --- |
@@ -101,13 +109,36 @@ Run on the automation repository at the current PR #1 head, on this machine:
 - `python3 -m flake8 portal tests` — clean
 - `python3 -m compileall -q portal tests` — clean
 
+## What the repair agent reports running (self-reported, not independent)
+
+Read out of the repair session's own shell history, so it is the agent's
+account of its own machine — a different environment from the verification
+stack, and not part of the verdict above. Distinct from the 19 host checks.
+
+- `pytest tests/unit_tests/commands/explore/form_data/test_create.py` inside
+  the agent's own baseline web container. With its fix stashed: **1 failed, 4
+  passed** (its new `test_run_does_not_reuse_a_deleted_key` failing). With the
+  fix applied: **5 passed**. That is a before/after on one unit test file, not
+  a suite run.
+- `pre-commit run` on the two staged files. `ruff`/`ruff-format` first failed
+  with `Executable ruff not found`, then passed once `ruff==0.9.7` was
+  installed; `pylint` was **skipped**; several hooks reported no files to
+  check.
+- `pre-commit run mypy` repository-wide reported **454 errors in 94 files**,
+  and the agent's own grep counted **0** of them in the two files it changed.
+  The commit itself was made with `SKIP=mypy,pylint`.
+
+So mypy and pylint did not pass on the candidate — they were skipped at commit
+time, against a baseline that already fails mypy repo-wide.
+
 ## What was NOT run
 
 - **No CI on the candidate.** The head SHA has **0 check-runs and 0 commit
   statuses**; the combined state reads `pending` only because nothing ever
   reported. That is the absence of CI, not a passing CI result.
-- Apache Superset's upstream workflows, `pre-commit` hooks, `tox`, the full
-  `pytest` suite and any frontend job were not executed against the candidate.
-  The only tests that ran on it are this validator's behavioural replay.
+- Nothing in this lifecycle ran Apache Superset's upstream workflows, `tox`,
+  the full `pytest` suite or any frontend job, on the candidate or anywhere
+  else. The only checks the host performed independently are this validator's
+  19 behavioural assertions.
 - No merge, no deployment. `verified_in_preview` is the end state.
 - S1 was not triggered.
