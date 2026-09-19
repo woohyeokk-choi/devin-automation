@@ -1,0 +1,88 @@
+{
+  "attempts": [
+    {
+      "id": 1,
+      "verdict": "blocked",
+      "candidate_sha": "d234055eaf85a70d5e5ec5a7a7256ee43d02dde6",
+      "started_at": "2026-09-19T20:04:27.917+00:00",
+      "finished_at": "2026-09-19T20:04:28.770+00:00",
+      "reason": "the candidate changes files a repair may not change",
+      "failures": [
+        "tests/unit_tests/commands/explore/form_data/test_create.py is not in the registered scope for discarded_form_data_key_is_reused"
+      ],
+      "artifact": true
+    },
+    {
+      "id": 2,
+      "verdict": "blocked",
+      "candidate_sha": "d234055eaf85a70d5e5ec5a7a7256ee43d02dde6",
+      "started_at": "2026-09-19T20:06:59.183+00:00",
+      "finished_at": "2026-09-19T20:06:59.991+00:00",
+      "reason": "the candidate changes files a repair may not change",
+      "failures": [
+        "tests/unit_tests/commands/explore/form_data/test_create.py is not in the registered scope for discarded_form_data_key_is_reused"
+      ],
+      "artifact": true
+    },
+    {
+      "id": 3,
+      "verdict": "blocked",
+      "candidate_sha": "d234055eaf85a70d5e5ec5a7a7256ee43d02dde6",
+      "started_at": "2026-09-19T20:06:41.838+00:00",
+      "finished_at": "2026-09-19T20:11:15.462+00:00",
+      "reason": "RunnerError: docker compose --project-name exited 1: didated234055eaf85-superset-init-light-1 Exited \n Container candidated234055eaf85-superset-light-1 Starting \nError response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint candidated2\u2026",
+      "failures": [],
+      "artifact": false
+    },
+    {
+      "id": 4,
+      "verdict": "blocked",
+      "candidate_sha": "d234055eaf85a70d5e5ec5a7a7256ee43d02dde6",
+      "started_at": "2026-09-19T20:12:05.743+00:00",
+      "finished_at": "2026-09-19T20:12:16.686+00:00",
+      "reason": "RunnerError: docker compose --project-name exited 1: t-1 Started \n Container candidated234055eaf85-superset-init-light-1 Starting \n Container candidated234055eaf85-superset-init-light-1 Started \n Container candidated234055eaf85-superset-init-light-1 Waiting \n Container candidated234055eaf85-superset\u2026",
+      "failures": [],
+      "artifact": false
+    },
+    {
+      "id": 5,
+      "verdict": "blocked",
+      "candidate_sha": "d234055eaf85a70d5e5ec5a7a7256ee43d02dde6",
+      "started_at": "2026-09-19T20:12:15.641+00:00",
+      "finished_at": "2026-09-19T20:12:21.127+00:00",
+      "reason": "RunnerError: git fetch --depth exited 128: sh: 0: getcwd() failed: No such file or directory\nfatal: unable to get current working directory: No such file or directory",
+      "failures": [],
+      "artifact": false
+    },
+    {
+      "id": 6,
+      "verdict": "blocked",
+      "candidate_sha": "d234055eaf85a70d5e5ec5a7a7256ee43d02dde6",
+      "started_at": "2026-09-19T20:17:31.956+00:00",
+      "finished_at": "2026-09-19T20:17:49.064+00:00",
+      "reason": "RunnerError: docker compose --project-name exited 1: t-1 Started \n Container candidated234055eaf85-superset-init-light-1 Starting \n Container candidated234055eaf85-superset-init-light-1 Started \n Container candidated234055eaf85-superset-init-light-1 Waiting \n Container candidated234055eaf85-superset\u2026",
+      "failures": [],
+      "artifact": false
+    },
+    {
+      "id": 7,
+      "verdict": "blocked",
+      "candidate_sha": "d234055eaf85a70d5e5ec5a7a7256ee43d02dde6",
+      "started_at": "2026-09-19T20:17:47.469+00:00",
+      "finished_at": "2026-09-19T20:17:53.406+00:00",
+      "reason": "RunnerError: git fetch --depth exited 128: fatal: unable to get current working directory: No such file or directory",
+      "failures": [],
+      "artifact": false
+    },
+    {
+      "id": 8,
+      "verdict": "passed",
+      "candidate_sha": "d234055eaf85a70d5e5ec5a7a7256ee43d02dde6",
+      "started_at": "2026-09-19T20:20:08.747+00:00",
+      "finished_at": "2026-09-19T20:24:51.208+00:00",
+      "reason": "",
+      "failures": [],
+      "artifact": true
+    }
+  ]
+}

@@ -1,0 +1,304 @@
+{
+  "exported_at": "2026-09-19T20:47:00+00:00",
+  "kind": "independent verification of a live repair candidate",
+  "simulated": false,
+  "incident_id": 1,
+  "repair": {
+    "repair_id": 1,
+    "state": "verified_in_preview",
+    "attempt": 1,
+    "product_follow_ups_sent": 0,
+    "terminal_reason": "independently verified on d234055eaf85",
+    "issue_url": "https://github.com/woohyeokk-choi/superset/issues/1",
+    "session_url": "https://app.devin.ai/sessions/4b7011c76c1e4ec8bf28cb373b614577",
+    "pr_url": "https://github.com/woohyeokk-choi/superset/pull/2",
+    "pr_head_sha": "d234055eaf85a70d5e5ec5a7a7256ee43d02dde6",
+    "requested_acu_limit": 20,
+    "deadline_utc": "2026-09-19T21:46:07.871915+00:00",
+    "api_reported_usage": {
+      "field": "acus_consumed",
+      "value": 0.0,
+      "note": "value as the Devin v3 session read returned it at the final poll; session reads carry no max_acu_limit field, so the requested cap is only what the create body asked for. ACUs are not dollars."
+    },
+    "agent_self_report": {
+      "status": "running",
+      "status_detail": "waiting_for_user",
+      "note": "the agent's own readiness claim; it did not decide the verdict"
+    }
+  },
+  "verification": {
+    "verification_id": 8,
+    "verdict": "passed",
+    "cases": [
+      "S2",
+      "N1"
+    ],
+    "candidate_sha": "d234055eaf85a70d5e5ec5a7a7256ee43d02dde6",
+    "validator_ref": "0ddca84740d985bb68d90697d1fdcade1295f4ed",
+    "fixture_rev": "sha256:67ff039835f9890c",
+    "started_at": "2026-09-19T20:20:08.747+00:00",
+    "finished_at": "2026-09-19T20:24:51.208+00:00",
+    "commands": [
+      "git init --quiet /home/ubuntu/repos/devin-automation/runtime/candidates/candidated234055eaf85",
+      "git remote add origin https://github.com/woohyeokk-choi/superset.git",
+      "git fetch --depth 1 origin d234055eaf85a70d5e5ec5a7a7256ee43d02dde6",
+      "git checkout --quiet FETCH_HEAD",
+      "docker compose --project-name candidated234055eaf85 -f docker-compose-light.yml -f /home/ubuntu/repos/devin-automation/stack/docker-compose.ports.yml up -d superset-light superset-mcp-light",
+      "wait for http://127.0.0.1:35933/health",
+      "python3 scripts/seed_synthetic.py"
+    ],
+    "provenance": {
+      "measured_at": "2026-09-19T20:24:36.018+00:00",
+      "automation_ref": "0ddca84740d985bb68d90697d1fdcade1295f4ed",
+      "compose_project": "candidated234055eaf85",
+      "checkout": {
+        "path": "/home/ubuntu/repos/devin-automation/runtime/candidates/candidated234055eaf85",
+        "source_sha": "d234055eaf85a70d5e5ec5a7a7256ee43d02dde6",
+        "clean": true,
+        "code_hash": "f5e7c645aa2f0284eb6fce4130bfe48f"
+      },
+      "config_revision": "491043576833080a",
+      "fixture": {
+        "kind": "content",
+        "rows": 60,
+        "grouping": [
+          "region",
+          "channel",
+          "product"
+        ],
+        "digest": "47bea47eb499e2b929604bd1a5863a58",
+        "description": "sha256 of the region/channel/product revenue aggregate the chart-data API returns for the fixture; `rows` counts that projection, not the seeded records"
+      },
+      "web": {
+        "service": "superset-light",
+        "container_id": "825292ff401d",
+        "image_id": "sha256:b2941c74286ab4b6c8d41447482c15d165ca848931d82745408a78827264d1dd",
+        "state": "running",
+        "health": "starting",
+        "source_mount": "/home/ubuntu/repos/devin-automation/runtime/candidates/candidated234055eaf85/superset",
+        "config_path": "/app/docker/pythonpath_dev/superset_config_docker_light.py",
+        "code_hash": "f5e7c645aa2f0284eb6fce4130bfe48f",
+        "source_sha": "d234055eaf85a70d5e5ec5a7a7256ee43d02dde6",
+        "clean": true
+      },
+      "mcp": {
+        "service": "superset-mcp-light",
+        "container_id": "b12affd38e1d",
+        "image_id": "sha256:b2941c74286ab4b6c8d41447482c15d165ca848931d82745408a78827264d1dd",
+        "state": "running",
+        "health": "healthy",
+        "source_mount": "/home/ubuntu/repos/devin-automation/runtime/candidates/candidated234055eaf85/superset",
+        "config_path": "/app/automation_stack/superset_config_mcp.py",
+        "code_hash": "f5e7c645aa2f0284eb6fce4130bfe48f",
+        "source_sha": "d234055eaf85a70d5e5ec5a7a7256ee43d02dde6",
+        "clean": true
+      }
+    },
+    "report": {
+      "ran_at": "2026-09-19T20:24:38.688303+00:00",
+      "verdict": "passed",
+      "cases": [
+        {
+          "case": "S2",
+          "verdict": "passed",
+          "checks": [
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            },
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            },
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            },
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            },
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            },
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            },
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            },
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            },
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            },
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            },
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            },
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            },
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            },
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            },
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            },
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            }
+          ],
+          "blocked_reason": "",
+          "facts": {
+            "tab_id": "868653",
+            "k1": "Ry0rxlI0zgNWl9l4QnL7Yw",
+            "k2": "0_3Sv8hzG5BFv-6BRwJe2w",
+            "dataset_id": 22
+          }
+        },
+        {
+          "case": "N1",
+          "verdict": "passed",
+          "checks": [
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            },
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            },
+            {
+              "name": "<dropped>",
+              "kind": "<dropped>",
+              "expected": "<dropped>",
+              "observed": "<dropped>",
+              "holds": "<dropped>",
+              "note": "<dropped>"
+            }
+          ],
+          "blocked_reason": "",
+          "facts": {}
+        }
+      ],
+      "mcp_readiness": {
+        "ready": true,
+        "reason": "",
+        "tools": [
+          "get_instance_info",
+          "health_check",
+          "search_tools",
+          "call_tool"
+        ],
+        "server": {
+          "name": "Superset MCP Server",
+          "version": "3.4.7"
+        },
+        "protocol_version": "2025-06-18"
+      },
+      "unknown_cases": [],
+      "target": {
+        "base_url": "http://127.0.0.1:35933",
+        "mcp_url": "http://127.0.0.1:40609/mcp"
+      },
+      "failures": []
+    }
+  },
+  "upstream_checks": {
+    "github_check_runs": 0,
+    "github_commit_statuses": 0,
+    "combined_state": "pending",
+    "note": "no CI ran on the candidate: zero check-runs and zero statuses on the head SHA. Apache Superset's upstream workflows, pre-commit hooks and tox suites were not executed by this lifecycle."
+  }
+}
