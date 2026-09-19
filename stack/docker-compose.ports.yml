@@ -54,10 +54,34 @@ services:
     ports:
       # loopback only: this development endpoint runs as an admin user
       - "127.0.0.1:${SUPERSET_MCP_PORT_HOST:-5008}:5008"
+    healthcheck:
+      # The image's own HEALTHCHECK runs docker/docker-healthcheck.sh, which
+      # curls the *web* application's /health on SUPERSET_PORT. This sidecar
+      # serves MCP on 5008 and has no such route, so the container reported
+      # `unhealthy` while answering every request correctly. Probe the thing
+      # that actually runs here: a side-effect-free JSON-RPC `initialize`
+      # against the MCP listener, which is only answered once the tool
+      # registry is up.
+      test:
+        - CMD-SHELL
+        - >-
+          curl -sf -X POST http://localhost:5008/mcp
+          -H 'Content-Type: application/json'
+          -H 'Accept: application/json, text/event-stream'
+          -H 'MCP-Protocol-Version: 2025-06-18'
+          -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"healthcheck","version":"1"}}}'
+          | grep -q '"serverInfo"'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
     volumes:
       - ${SUPERSET_DIR:?set SUPERSET_DIR}/docker:/app/docker
       - ${SUPERSET_DIR:?set SUPERSET_DIR}/superset:/app/superset
-      - ${AUTOMATION_DIR:?set AUTOMATION_DIR}/stack:/app/automation_stack
+      # Only the one non-secret config file, not the whole stack directory:
+      # that directory also holds stack/.env on a developer host, and this
+      # service runs candidate code in verification runs.
+      - ${AUTOMATION_DIR:?set AUTOMATION_DIR}/stack/superset_config_mcp.py:/app/automation_stack/superset_config_mcp.py:ro
       - superset_home_light:/app/superset_home
     environment:
       DATABASE_HOST: db-light

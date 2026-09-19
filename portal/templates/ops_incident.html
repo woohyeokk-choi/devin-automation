@@ -128,6 +128,56 @@
   {% endif %}
 </div>
 
+<div class="card">
+  <h2>Independent verification</h2>
+  <p class="muted">
+    Replayed by the pinned automation validator against the candidate commit in
+    its own isolated stack. A pass here is <strong>verified in preview</strong>
+    only: nothing is merged, deployed or production-ready. Agent-reported
+    readiness above is not a verification result.
+    Real (non-simulated) passes recorded so far: {{ verified_total }}.
+  </p>
+  {% if not attempts %}
+  <p class="muted">No verification has been attempted for this incident.</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Finished (UTC)</th><th>Verdict</th><th>Candidate SHA</th>
+        <th>Validator ref</th><th>Cases</th><th>Fixture / config</th>
+        <th>Reason</th><th>Artifact</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for attempt in attempts %}
+      <tr>
+        <td class="muted">{{ attempt.started_at }} → {{ attempt.finished_at }}</td>
+        <td>
+          {{ attempt.verdict }}
+          {% if attempt.simulated %}<span class="muted">(SIMULATED — excluded from verified counts)</span>{% endif %}
+        </td>
+        <td><code>{{ attempt.candidate_sha or 'unknown' }}</code></td>
+        <td>{{ attempt.validator_ref }}</td>
+        <td>{{ attempt.cases }}</td>
+        <td class="muted">{{ attempt.fixture_rev or '—' }} / {{ attempt.config_rev or '—' }}</td>
+        <td>{{ attempt.reason or '—' }}</td>
+        <td class="muted">{{ attempt.artifact_path or '—' }}</td>
+      </tr>
+      {% if attempt.failures and attempt.failures != '[]' %}
+      <tr><td colspan="8"><pre>{{ attempt.failures }}</pre></td></tr>
+      {% endif %}
+      {% if attempt.commands and attempt.commands != '[]' %}
+      <tr><td colspan="8"><pre>{{ attempt.commands }}</pre></td></tr>
+      {% endif %}
+      {% if attempt.provenance and attempt.provenance != '{}' %}
+      <tr><td colspan="8"><pre>{{ attempt.provenance }}</pre></td></tr>
+      {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
 {% if incident.processing_errors %}
 <div class="card">
   <h2>Processing errors</h2>

@@ -11,11 +11,15 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from pathlib import Path
 from typing import Any
 
+from .brief import BASE_BRANCH
 from .controller import Controller, Decision, RepairStore
+from .isolation import IsolatedStack, replay_through_validator
 from .providers import Devin, GitHub, NotConfigured
 from .transport import HttpTransport, Transport
+from .verification import VerificationStore, Verifier
 
 log = logging.getLogger("portal.worker")
 
@@ -41,6 +45,40 @@ def live_providers(
     return github, devin
 
 
+def live_verifier(
+    github: GitHub,
+    verifications: VerificationStore,
+    *,
+    target_repo: str,
+    automation_dir: Path,
+    workspace: Path,
+    automation_ref: str,
+    artifacts: Path,
+) -> Verifier:
+    """The real verifier: an isolated candidate stack graded by the pinned validator.
+
+    `automation_ref` is the revision the assertions come from. It is the
+    deployment's, not the candidate's: the repair session can change product
+    code, and nothing else that takes part in judging it.
+    """
+    return Verifier(
+        github=github,
+        runner=IsolatedStack(
+            target_repo=target_repo,
+            automation_dir=automation_dir,
+            workspace=workspace,
+            automation_ref=automation_ref,
+        ),
+        store=verifications,
+        target_repo=target_repo,
+        base_branch=BASE_BRANCH,
+        validator_ref=automation_ref,
+        replay=replay_through_validator,
+        artifacts=artifacts,
+        simulated=False,
+    )
+
+
 def build_controller(
     store: RepairStore,
     *,
@@ -48,6 +86,10 @@ def build_controller(
     versions: dict[str, Any],
     dispatch_enabled: bool,
     providers: tuple[GitHub, Devin] | None = None,
+    verifications: VerificationStore | None = None,
+    automation_dir: Path | None = None,
+    workspace: Path | None = None,
+    artifacts: Path | None = None,
     **kwargs: Any,
 ) -> Controller:
     """A controller wired for the mode it is actually in.
@@ -65,6 +107,20 @@ def build_controller(
             **kwargs,
         )
     github, devin = providers or live_providers(target_repo)
+    verifier = None
+    if verifications is not None and automation_dir and workspace and artifacts:
+        verifier = live_verifier(
+            github,
+            verifications,
+            target_repo=target_repo,
+            automation_dir=automation_dir,
+            workspace=workspace,
+            # Pin to what this deployment measured about its own checkout. A
+            # dirty tree is recorded as dirty rather than passed off as a ref.
+            automation_ref=str(versions.get("automation_sha") or "")
+            + ("-dirty" if versions.get("automation_dirty") else ""),
+            artifacts=artifacts,
+        )
     return Controller(
         store,
         target_repo=target_repo,
@@ -72,16 +128,23 @@ def build_controller(
         github=github,
         devin=devin,
         dispatch_enabled=True,
+        verifier=verifier,
         **kwargs,
     )
 
 
-class RepairPoller:
-    """Walks the claimed repair on a timer, bounded and off the request path.
+class RepairWorker:
+    """The only place repair work touches the network.
 
-    One tick: resolve creation claims whose creator died, then poll whichever
-    repair holds the single-flight slot. Every failure the controller records
-    is persisted state; this loop only decides when to look.
+    One tick asks the controller to advance the world by one step: settle
+    creation claims whose creator died, walk the repair holding the
+    single-flight slot — dispatch, poll or verify it — and, when the slot is
+    free, claim the oldest queued proposal. So a second incident raised while
+    the first is in flight starts on its own, with no further browser action,
+    and a customer request never waits on api.github.com.
+
+    The queue is the `repairs` table. There is no broker to lose it, and a
+    restart resumes from whatever the database says.
     """
 
     def __init__(
@@ -94,31 +157,26 @@ class RepairPoller:
         self.controller = controller
         self.interval = interval_seconds
         self.stale_after_minutes = stale_after_minutes
+        controller.stale_after_minutes = stale_after_minutes
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     def tick(self) -> list[Decision]:
-        decisions: list[Decision] = list(
-            self.controller.recover(self.stale_after_minutes)
-        )
-        active = self.controller.store.active()
-        if active is not None and active["session_id"]:
-            decisions.append(self.controller.poll(int(active["id"])))
-        return decisions
+        return self.controller.advance()
 
     def _run(self) -> None:
         while not self._stop.wait(self.interval):
             try:
                 self.tick()
             except Exception:  # noqa: BLE001 - a worker thread may not die
-                log.exception("repair poll tick failed")
+                log.exception("repair worker tick failed")
 
     def start(self) -> None:
         if self._thread is not None or not self.controller.dispatch_enabled:
             # Nothing to poll while dispatch is off: no session exists.
             return
         self._thread = threading.Thread(
-            target=self._run, name="repair-poller", daemon=True
+            target=self._run, name="repair-worker", daemon=True
         )
         self._thread.start()
 
@@ -129,9 +187,15 @@ class RepairPoller:
             self._thread = None
 
 
+#: The poller became a worker when dispatch moved off the request path; the
+#: old name still resolves so existing deployments and tests keep working.
+RepairPoller = RepairWorker
+
 __all__ = [
     "NotConfigured",
+    "live_verifier",
     "RepairPoller",
+    "RepairWorker",
     "build_controller",
     "live_providers",
 ]

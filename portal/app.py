@@ -22,7 +22,8 @@ from .domain import DIMENSIONS, SORTS, Denied, ExplorationSpec, FixtureMissing, 
 from .events import EventStore
 from .handoff import FILES as BUNDLE_FILES, write_bundle
 from .controller import RepairStore
-from .worker import RepairPoller, build_controller
+from .verification import VerificationStore
+from .worker import RepairWorker, build_controller
 from .incidents import IncidentStore
 from .provenance import summary as provenance_summary
 from .security import (
@@ -36,7 +37,7 @@ from .security import (
     require_known_profile,
 )
 from .tracing import Trace
-from .upstream import UpstreamUnavailable
+from .upstream import NotAuthenticated, UpstreamUnavailable
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 store = EventStore(settings.db_path)
@@ -72,6 +73,10 @@ def handoff_versions() -> dict[str, Any]:
 
 
 repairs = RepairStore(settings.db_path.with_name("repairs.sqlite"))
+# Every verification attempt, whatever it concluded. Kept beside the repairs
+# so the console can show the evidence timeline even for attempts that were
+# blocked, and so a simulated run can never be counted as a real pass.
+verifications = VerificationStore(settings.db_path.with_name("verifications.sqlite"))
 # With AUTO_REPAIR_ENABLED=false no provider is configured and none is faked:
 # the controller records the exact issue and session bodies instead of sending
 # them. With it true the live clients are built from the configured
@@ -82,10 +87,29 @@ controller = build_controller(
     target_repo=settings.target_repo,
     versions=handoff_versions(),
     dispatch_enabled=settings.auto_repair_enabled,
+    # The verifier is built only when dispatch is on and this deployment was
+    # told where to build candidate stacks. It is never faked: a candidate
+    # with no verifier is parked for attention, not passed.
+    verifications=verifications,
+    automation_dir=Path(settings.automation_dir) if settings.automation_dir else None,
+    workspace=(
+        Path(settings.verification_workspace)
+        if settings.verification_workspace
+        else None
+    ),
+    artifacts=(
+        Path(settings.verification_artifacts)
+        if settings.verification_artifacts
+        else None
+    ),
+    # The worker rebuilds the brief from stored evidence when it claims a
+    # queued proposal, rather than carrying it from the request that observed
+    # the failure.
+    incident_of=lambda incident_id: incidents.get(incident_id),
 )
 # Network work belongs off the request path: polling a session, and resolving
 # a creation claim whose worker died, happen on this timer.
-poller = RepairPoller(controller)
+worker = RepairWorker(controller)
 
 
 def observe_and_consider(event: dict[str, Any]) -> dict[str, Any]:
@@ -96,6 +120,12 @@ def observe_and_consider(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def consider(fingerprint: str) -> None:
+    """Queue the repair. Nothing here talks to GitHub or Devin.
+
+    `consider` writes a proposal row and returns; the worker claims the
+    single-flight slot and does the dispatching, so this customer request
+    finishes at local-database speed.
+    """
     incident = incidents.by_fingerprint(fingerprint) if fingerprint else None
     if incident is not None:
         controller.consider(incident)
@@ -107,8 +137,8 @@ for pending in incidents.eligible():
     # never been seen by a live observer.
     controller.consider(pending)
 app = FastAPI(title="Synthetic Analytics portal", docs_url=None, redoc_url=None)
-app.add_event_handler("startup", poller.start)
-app.add_event_handler("shutdown", poller.stop)
+app.add_event_handler("startup", worker.start)
+app.add_event_handler("shutdown", worker.stop)
 
 # Every route below the demo gate. `/healthz` stays open so a container health
 # check needs no credential; nothing else does, because an anonymous client
@@ -192,7 +222,7 @@ def home(
         rows = portal.query_rows(trace, gateway, dataset_id, spec)
     except Denied as exc:
         denied_reason = str(exc)
-    except (UpstreamUnavailable, FixtureMissing) as exc:
+    except (UpstreamUnavailable, NotAuthenticated, FixtureMissing) as exc:
         trace.blocked("portal.view_dashboard", exc)
         blocked_reason = str(exc)
 
@@ -254,7 +284,7 @@ def save_exploration(
         )
     except Denied:
         return back(request, trace, note="not permitted for this role", keep=spec.to_dict())
-    except (UpstreamUnavailable, FixtureMissing) as exc:
+    except (UpstreamUnavailable, NotAuthenticated, FixtureMissing) as exc:
         trace.blocked("portal.save_exploration", exc)
         return back(request, trace, note="blocked", keep=spec.to_dict())
     if key is None:
@@ -282,7 +312,7 @@ def open_exploration(request: Request, key: str) -> HTMLResponse:
             )
     except Denied:
         pass
-    except (UpstreamUnavailable, FixtureMissing) as exc:
+    except (UpstreamUnavailable, NotAuthenticated, FixtureMissing) as exc:
         trace.blocked("portal.open_exploration", exc)
         blocked_reason = str(exc)
 
@@ -305,7 +335,7 @@ def discard_exploration(request: Request, key: str) -> RedirectResponse:
     try:
         gateway = portal.gateway(trace, profile)
         portal.discard_exploration(trace, gateway, key)
-    except (UpstreamUnavailable, FixtureMissing) as exc:
+    except (UpstreamUnavailable, NotAuthenticated, FixtureMissing) as exc:
         trace.blocked("portal.discard_exploration", exc)
         return back(request, trace, note="blocked")
     return back(request, trace, note="exploration discarded")
@@ -327,7 +357,7 @@ def chart_settings(
         chart = portal.ensure_chart(trace, gateway, dataset_id)
     except Denied as exc:
         denied_reason = str(exc)
-    except (UpstreamUnavailable, FixtureMissing) as exc:
+    except (UpstreamUnavailable, NotAuthenticated, FixtureMissing) as exc:
         trace.blocked("portal.view_chart_settings", exc)
         blocked_reason = str(exc)
     return render(
@@ -366,7 +396,7 @@ def change_sort(
         )
     except Denied:
         return back(request, trace, note="not permitted for this role", path="/settings")
-    except (UpstreamUnavailable, FixtureMissing) as exc:
+    except (UpstreamUnavailable, NotAuthenticated, FixtureMissing) as exc:
         trace.blocked("portal.change_chart_sort", exc)
         return back(request, trace, note="blocked", path="/settings")
     return back(request, trace, note="sort updated", path="/settings")
@@ -440,6 +470,10 @@ def ops_incident(
         # same path, so the proposal is inspectable before anything is live.
         repair=repairs.by_fingerprint(str(incident["fingerprint"])),
         intents=intents_of(str(incident["fingerprint"])),
+        # Agent-reported readiness and the independent verdict are rendered
+        # from different sources on purpose.
+        attempts=verifications.for_incident(incident_id),
+        verified_total=verifications.verified_count(),
         auto_repair_enabled=settings.auto_repair_enabled,
     )
 
@@ -499,7 +533,7 @@ def ops_reset(request: Request, _: str = Depends(ops_guard)) -> RedirectResponse
     try:
         gateway = portal.gateway(trace, "analyst")
         chart = portal.restore_fixture(trace, gateway, portal.dataset_id(trace, gateway))
-    except (UpstreamUnavailable, FixtureMissing, Denied) as exc:
+    except (UpstreamUnavailable, NotAuthenticated, FixtureMissing, Denied) as exc:
         trace.blocked("portal.reset_fixture", exc)
     portal.reload_provenance()
     note = "fixture reset" if chart else "fixture reset incomplete (see trace)"

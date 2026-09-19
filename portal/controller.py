@@ -17,6 +17,11 @@ The two properties everything else is built around:
   `agent_*` columns. `verification` is written only by the independent
   replay, so `status=running, status_detail=finished` can never turn into
   `verified_in_preview`.
+
+A request handler only ever *proposes*. Claiming the single-flight slot,
+creating the issue and the session, polling and verifying all happen on the
+worker (`advance`), so a customer response never waits on api.github.com and a
+second incident queued behind the first starts by itself when the slot frees.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import brief
 from .events import utcnow
@@ -95,6 +100,7 @@ CREATE TABLE IF NOT EXISTS repair_slot (
 PROPOSED = "proposed"
 DISPATCHED = "dispatched"
 CANDIDATE = "candidate"
+VERIFIED = "verified_in_preview"
 NEEDS_ATTENTION = "needs_attention"
 TERMINAL = "terminal"
 
@@ -214,6 +220,20 @@ class RepairStore:
         ).fetchone()
         return dict(row) if row else None
 
+    def queued(self) -> list[dict[str, Any]]:
+        """Proposals waiting for the slot, oldest first.
+
+        This is the whole queue: a proposal is written by the request handler
+        and picked up here by the worker, so nothing is lost if the process
+        dies between the two.
+        """
+        return [
+            dict(r)
+            for r in self._conn.execute(
+                "SELECT * FROM repairs WHERE state = ? ORDER BY id", (PROPOSED,)
+            ).fetchall()
+        ]
+
     # --- single-flight claim -----------------------------------------------
 
     def claim_slot(self, repair_id: int) -> bool:
@@ -237,6 +257,12 @@ class RepairStore:
                 "SELECT repair_id FROM repair_slot WHERE slot = 1"
             ).fetchone()
         return row is not None and int(row["repair_id"]) == repair_id
+
+    def slot_claimed_at(self) -> str:
+        row = self._conn.execute(
+            "SELECT claimed_at FROM repair_slot WHERE slot = 1"
+        ).fetchone()
+        return str(row["claimed_at"]) if row else ""
 
     def slot_holder(self) -> int | None:
         row = self._conn.execute(
@@ -316,6 +342,9 @@ class Controller:
         dispatch_enabled: bool = False,
         budget: Budget = Budget(),
         now: Any = None,
+        incident_of: Callable[[int], dict[str, Any] | None] | None = None,
+        verifier: Any = None,
+        stale_after_minutes: int = 15,
     ) -> None:
         if dispatch_enabled and (github is None or devin is None):
             # Missing live configuration is a refusal to dispatch, never a
@@ -329,14 +358,25 @@ class Controller:
         self.dispatch_enabled = dispatch_enabled
         self.budget = budget
         self._now = now or (lambda: datetime.now(timezone.utc))
+        # How the worker re-reads the incident a queued proposal came from:
+        # the brief is rebuilt from stored evidence at dispatch time, not
+        # carried in memory from the request that observed it.
+        self.incident_of = incident_of or (lambda _id: None)
+        self.verifier = verifier
+        self.stale_after_minutes = stale_after_minutes
 
     # --- proposal ----------------------------------------------------------
 
     def consider(self, incident: dict[str, Any]) -> Decision:
-        """Called for every incident the store admits. Idempotent."""
+        """Called for every incident the store admits, from the request path.
+
+        This writes a row and returns. No slot is claimed and nothing is sent,
+        so the customer's response time is the portal's, not GitHub's; the
+        worker picks the proposal up on its next pass.
+        """
         if incident.get("admission") != "eligible":
             return Decision("skipped", incident.get("admission_reason") or "not eligible")
-        if incident.get("state") == "verified_in_preview":
+        if incident.get("state") == VERIFIED:
             return Decision("skipped", "already verified")
 
         existing = self.store.by_fingerprint(incident["fingerprint"])
@@ -348,18 +388,91 @@ class Controller:
                 "body are recorded, nothing was sent",
                 int(repair["id"]),
             )
-        if repair["state"] in (TERMINAL, NEEDS_ATTENTION):
-            return Decision("skipped", repair["terminal_reason"] or repair["attention"] or "", int(repair["id"]))
-        if repair["state"] in (DISPATCHED, CANDIDATE):
-            return Decision("in_flight", "", int(repair["id"]))
-        if not self.store.claim_slot(int(repair["id"])):
+        if repair["state"] in (TERMINAL, NEEDS_ATTENTION, VERIFIED):
             return Decision(
-                "deferred",
-                f"repair {self.store.slot_holder()} holds the single-flight "
-                "claim; one at a time",
+                "skipped",
+                repair["terminal_reason"] or repair["attention"] or "",
                 int(repair["id"]),
             )
-        return self.dispatch(int(repair["id"]), incident)
+        if repair["state"] in (DISPATCHED, CANDIDATE):
+            return Decision("in_flight", "", int(repair["id"]))
+        return Decision("queued", "waiting for the worker to claim the slot", int(repair["id"]))
+
+    # --- the worker ---------------------------------------------------------
+
+    def advance(self) -> list[Decision]:
+        """One bounded worker pass. The only place network work starts.
+
+        Order matters: settle creation claims whose worker died, then walk the
+        repair holding the slot, and only when the slot is free take the next
+        queued proposal. One repair is in flight at a time, enforced by the
+        database, so this is safe to run from more than one process.
+        """
+        if not self.dispatch_enabled:
+            return []
+        decisions: list[Decision] = list(self.recover(self.stale_after_minutes))
+        active = self.store.active()
+        if active is not None:
+            decisions.append(self._walk(active))
+            return decisions
+        for queued in self.store.queued():
+            if not self.store.claim_slot(int(queued["id"])):
+                decisions.append(
+                    Decision(
+                        "deferred",
+                        f"repair {self.store.slot_holder()} holds the claim",
+                        int(queued["id"]),
+                    )
+                )
+                break
+            incident = self.incident_of(int(queued["incident_id"]))
+            if incident is None:
+                self.store.update(
+                    int(queued["id"]),
+                    state=NEEDS_ATTENTION,
+                    attention="the incident this proposal came from is gone",
+                )
+                self.store.release_slot(int(queued["id"]))
+                decisions.append(Decision("parked", "incident missing", int(queued["id"])))
+                continue
+            decisions.append(self.dispatch(int(queued["id"]), incident))
+            break
+        return decisions
+
+    def _walk(self, active: dict[str, Any]) -> Decision:
+        repair_id = int(active["id"])
+        state = str(active["state"])
+        if state in (NEEDS_ATTENTION, TERMINAL, VERIFIED):
+            # The slot is held on purpose: something may still be running
+            # remotely, and nobody but an operator may decide otherwise.
+            return Decision("parked", active["attention"] or active["terminal_reason"] or "", repair_id)
+        if state == CANDIDATE:
+            return self.verify(repair_id)
+        if state == PROPOSED:
+            # The slot is claimed but nothing was created yet, which normally
+            # means another worker is inside `dispatch` right now. Taking it
+            # over immediately is how two sessions get created for one
+            # repair, so it is only picked up once the claim has gone stale
+            # — and even then dispatch reconciles by marker before creating.
+            claimed_at = self.store.slot_claimed_at()
+            if claimed_at and not self._stale(claimed_at):
+                return Decision(
+                    "in_flight", "another worker is creating this repair", repair_id
+                )
+            incident = self.incident_of(int(active["incident_id"]))
+            if incident is None:
+                return Decision("parked", "incident missing", repair_id)
+            return self.dispatch(repair_id, incident)
+        return self.poll(repair_id)
+
+    def _stale(self, timestamp: str) -> bool:
+        try:
+            claimed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+        if claimed.tzinfo is None:
+            claimed = claimed.replace(tzinfo=timezone.utc)
+        return claimed < self._now() - timedelta(minutes=self.stale_after_minutes)
 
     def _propose(self, incident: dict[str, Any]) -> dict[str, Any]:
         attempt = 1
@@ -683,7 +796,81 @@ class Controller:
 
     # --- feedback ----------------------------------------------------------
 
-    def feedback(self, repair_id: int, failures: list[str]) -> Decision:
+    def verify(self, repair_id: int) -> Decision:
+        """Grade the candidate independently, then act on the verdict.
+
+        Three outcomes, three different things to do: a pass is the only
+        thing that may say `verified_in_preview` and the only thing that frees
+        the slot on success; a product failure goes back to the same session
+        as expected/observed lines; a blocked run asks for attention, because
+        telling a session to change product code over a stack that never came
+        up is how a good fix gets reverted.
+        """
+        repair = self.store.get(repair_id)
+        if repair is None:
+            return Decision("skipped", "no such repair", repair_id)
+        if self.verifier is None:
+            self.store.update(
+                repair_id,
+                state=NEEDS_ATTENTION,
+                attention="a candidate is waiting but no verifier is configured",
+            )
+            return Decision("parked", "no verifier configured", repair_id)
+        incident = self.incident_of(int(repair["incident_id"])) or {}
+        outcome = self.verifier.verify(repair, incident)
+        record = {
+            "verdict": outcome.verdict,
+            "reason": outcome.reason,
+            "candidate_sha": outcome.candidate_sha,
+            "attempt_id": outcome.record_id,
+            "at": self._now().isoformat(),
+        }
+        self.store.update(repair_id, verification=json.dumps(record))
+
+        if outcome.verdict == "passed":
+            self.store.update(
+                repair_id,
+                state=VERIFIED,
+                terminal_reason=f"independently verified on {outcome.candidate_sha[:12]}",
+            )
+            # Verified and nothing left running: the next queued repair may go.
+            self._release_after_verification(repair_id)
+            return Decision("verified", outcome.candidate_sha, repair_id)
+        if outcome.verdict == "blocked":
+            self.store.update(
+                repair_id,
+                state=NEEDS_ATTENTION,
+                attention=f"verification could not answer the question: {outcome.reason}",
+            )
+            return Decision("blocked", outcome.reason, repair_id)
+        return self.feedback(repair_id, list(outcome.failures), outcome.candidate_sha)
+
+    def _release_after_verification(self, repair_id: int) -> None:
+        """Stop the session if it is still open, then free the claim.
+
+        A termination whose outcome is unknown keeps the claim: "probably
+        stopped" is not a reason to let a second repair start.
+        """
+        repair = self.store.get(repair_id)
+        if repair is None:
+            return
+        if self.devin is not None and repair["session_id"]:
+            try:
+                self.devin.terminate_session(str(repair["session_id"]))
+            except (RuntimeError, Ambiguous, Refused) as exc:
+                self.store.update(
+                    repair_id,
+                    attention=(
+                        "the fix is verified, but the session could not be "
+                        f"confirmed stopped ({exc}); the claim is held"
+                    ),
+                )
+                return
+        self.store.release_slot(repair_id)
+
+    def feedback(
+        self, repair_id: int, failures: list[str], candidate_sha: str = ""
+    ) -> Decision:
         """Return a failed verification to the same session, at most twice."""
         repair = self.store.get(repair_id)
         if repair is None or self.devin is None:
@@ -705,7 +892,11 @@ class Controller:
         message = brief.follow_up_message(
             failures, str(repair["agent_pr_url"] or ""), str(repair["pr_head_sha"] or "")
         )
-        mark = f"{repair['fingerprint']}:follow-up-{int(repair['follow_ups']) + 1}"
+        # Keyed by the commit that failed, so polling the same candidate again
+        # finds a confirmed intent and says nothing twice; a new commit is a
+        # new marker and may be answered once.
+        sha = candidate_sha or str(repair["pr_head_sha"] or "")
+        mark = f"{repair['fingerprint']}:{sha or 'no-sha'}:follow-up"
         intent, claimed = self.store.intend(repair_id, "message", mark)
         if intent["state"] == CONFIRMED:
             return Decision("skipped", "this follow-up was already delivered", repair_id)

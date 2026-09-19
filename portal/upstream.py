@@ -20,6 +20,31 @@ from .redaction import SafeError, pick, safe_error, safe_error_text, scrub
 from .tracing import Timer, Trace, new_id
 
 
+class NotAuthenticated(SafeError):
+    """HTTP 401: there is no valid session. An environment failure.
+
+    A logged-in Gamma user being refused with 403 is the permission control
+    working. A 401 says the login never took or was lost, which makes every
+    other observation in the run meaningless — so it is `blocked`, never an
+    `expected_denial` and never evidence that a restriction held.
+    """
+
+    def __init__(self, profile: str, operation: str) -> None:
+        self.profile = profile
+        self.operation = operation
+        super().__init__(
+            f"{operation} returned HTTP 401: the {profile} session is not authenticated"
+        )
+
+    def safe_detail(self) -> dict[str, Any]:
+        return {
+            "http_status": 401,
+            "profile": self.profile,
+            "upstream_operation": self.operation,
+            "classification": "authentication_failure",
+        }
+
+
 class UpstreamUnavailable(SafeError):
     """The upstream service could not be reached or authenticated.
 
@@ -139,7 +164,10 @@ class SupersetGateway:
             # it is described, never quoted, because it is arbitrary text.
             body = {"message": f"non-JSON response body ({len(response.content)} bytes)"}
 
-        if response.status_code in (401, 403):
+        if response.status_code == 401:
+            # Not a denial of a permission: a denial of the session itself.
+            outcome = "blocked"
+        elif response.status_code == 403:
             outcome = "expected_denial" if self.profile == "restricted_viewer" else "error"
         elif response.status_code in expected_statuses:
             outcome = "ok"

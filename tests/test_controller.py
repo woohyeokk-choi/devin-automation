@@ -19,6 +19,7 @@ import pytest
 from portal import brief
 from portal.controller import (
     CANDIDATE,
+    Decision,
     DISPATCHED,
     MAX_FOLLOW_UPS,
     NEEDS_ATTENTION,
@@ -46,25 +47,12 @@ GOOD_OUTPUT = {
 }
 
 
-@pytest.fixture()
-def incident(tmp_path: Path) -> dict[str, Any]:
-    store = IncidentStore(tmp_path / "incidents.sqlite", target_repo=REPO)
-    store.observe(event(event_id="e1"))
-    found = store.get(1)
-    assert found is not None
-    return found
-
-
-@pytest.fixture()
-def repairs(tmp_path: Path) -> RepairStore:
-    # An isolated simulation database: simulated runs cannot touch real rows.
-    return RepairStore(tmp_path / "simulated-repairs.sqlite", simulated=True)
-
-
 class Wiring:
     """A controller with both providers faked, plus the fakes to drive them."""
 
     def __init__(self, repairs: RepairStore, **kwargs: Any) -> None:
+        #: What the worker re-reads a queued proposal's incident from.
+        self.incidents: dict[int, dict[str, Any]] = {}
         self.github_api = FakeGitHub()
         self.devin_api = FakeDevin()
         self.github_wire = FakeTransport(self.github_api)
@@ -79,6 +67,7 @@ class Wiring:
             devin=Devin(self.devin_wire, api_key="cog_simulated", org_id="org-simulated"),
             dispatch_enabled=True,
             now=lambda: self.clock,
+            incident_of=self.incidents.get,
             **kwargs,
         )
         self.pulls[7] = {
@@ -88,13 +77,24 @@ class Wiring:
             "merged": False,
         }
 
+    def dispatch(self, incident: dict[str, Any]) -> Decision:
+        """What production does: the request queues, the worker dispatches.
+
+        Returns the decision *for this repair*, so a proposal that had to wait
+        behind the claim holder reads as `deferred` rather than as whatever
+        the worker did with the repair already in flight.
+        """
+        self.incidents[int(incident["id"])] = incident
+        decision = self.controller.consider(incident)
+        if decision.action != "queued":
+            return decision
+        for taken in self.controller.advance():
+            if taken.repair_id == decision.repair_id:
+                return taken
+        return Decision("deferred", "another repair holds the claim", decision.repair_id)
+
     def session_id(self) -> str:
         return next(iter(self.devin_api.sessions))
-
-
-@pytest.fixture()
-def wiring(repairs: RepairStore) -> Wiring:
-    return Wiring(repairs)
 
 
 # --- disabled dispatch -----------------------------------------------------
@@ -166,7 +166,7 @@ def test_a_legacy_key_or_a_workspace_slug_is_refused(wiring: Wiring) -> None:
 def test_a_repair_is_recorded_as_simulated_in_its_own_database(
     repairs: RepairStore, incident: dict[str, Any], wiring: Wiring
 ) -> None:
-    wiring.controller.consider(incident)
+    wiring.dispatch(incident)
     repair = repairs.by_fingerprint(incident["fingerprint"])
     assert repair is not None and repair["simulated"] == 1
     assert SIMULATED in repair["session_url"]
@@ -180,7 +180,7 @@ def test_a_repair_is_recorded_as_simulated_in_its_own_database(
 def test_dispatch_creates_one_issue_and_one_session(
     wiring: Wiring, incident: dict[str, Any], repairs: RepairStore
 ) -> None:
-    decision = wiring.controller.consider(incident)
+    decision = wiring.dispatch(incident)
     assert decision.action == "dispatched"
     repair = repairs.get(decision.repair_id or 0)
     assert repair is not None and repair["state"] == DISPATCHED
@@ -203,30 +203,30 @@ def test_a_blocked_incident_is_never_dispatched(
         assert not wiring.github_api.issues
         return
     assert blocked["admission"] == "blocked"
-    assert wiring.controller.consider(blocked).action == "skipped"
+    assert wiring.dispatch(blocked).action == "skipped"
     assert not wiring.github_api.issues and not wiring.devin_api.sessions
 
 
 def test_only_one_repair_runs_at_a_time(
     wiring: Wiring, incident: dict[str, Any], tmp_path: Path
 ) -> None:
-    wiring.controller.consider(incident)
+    wiring.dispatch(incident)
     other = IncidentStore(tmp_path / "s1.sqlite", target_repo=REPO)
     other.observe(
         event(event_id="x1", assertion="row_limit_survives_an_unrelated_change", trace_id="t9")
     )
     second = other.get(1)
     assert second is not None
-    assert wiring.controller.consider(second).action == "deferred"
+    assert wiring.dispatch(second).action == "deferred"
     assert len(wiring.devin_api.sessions) == 1
 
 
 def test_a_repeated_delivery_does_not_create_a_second_session(
     wiring: Wiring, incident: dict[str, Any]
 ) -> None:
-    wiring.controller.consider(incident)
+    wiring.dispatch(incident)
     for _ in range(3):
-        assert wiring.controller.consider(incident).action == "in_flight"
+        assert wiring.dispatch(incident).action == "in_flight"
     assert len(wiring.github_api.issues) == 1 and len(wiring.devin_api.sessions) == 1
 
 
@@ -240,7 +240,7 @@ def test_concurrent_delivery_creates_one_repair(
 
     def deliver() -> None:
         barrier.wait()
-        actions.append(wiring.controller.consider(incident).action)
+        actions.append(wiring.dispatch(incident).action)
 
     threads = [threading.Thread(target=deliver) for _ in range(4)]
     for thread in threads:
@@ -258,13 +258,13 @@ def test_a_restart_reuses_the_issue_and_session_it_already_created(
     repairs: RepairStore, incident: dict[str, Any], tmp_path: Path
 ) -> None:
     first = Wiring(repairs)
-    first.controller.consider(incident)
+    first.dispatch(incident)
 
     # New process, same durable store, same remote state.
     second = Wiring(repairs)
     second.github_api.issues = first.github_api.issues
     second.devin_api.sessions = first.devin_api.sessions
-    assert second.controller.consider(incident).action == "in_flight"
+    assert second.dispatch(incident).action == "in_flight"
     assert len(second.github_api.issues) == 1
 
 
@@ -274,14 +274,16 @@ def test_an_ambiguous_create_that_landed_is_reconciled_by_its_marker(
     wiring = Wiring(repairs)
     wiring.github_api.fail_create_with = Ambiguous("ReadTimeout")
     wiring.github_api.write_lands = True  # the server did apply it
-    assert wiring.controller.consider(incident).action == "parked"
+    assert wiring.dispatch(incident).action == "parked"
 
     # The retry finds the issue by its marker instead of opening another.
     wiring.github_api.write_lands = False
     repair = repairs.by_fingerprint(incident["fingerprint"])
     assert repair is not None
     repairs.update(int(repair["id"]), state=PROPOSED, attention=None)
-    assert wiring.controller.consider(incident).action == "dispatched"
+    # An operator releasing a parked repair hands it straight back to the
+    # dispatcher; it already holds the claim.
+    assert wiring.controller.dispatch(int(repair["id"]), incident).action == "dispatched"
     assert len(wiring.github_api.issues) == 1
 
 
@@ -290,13 +292,13 @@ def test_an_ambiguous_create_that_cannot_be_found_is_parked_not_retried(
 ) -> None:
     wiring = Wiring(repairs)
     wiring.devin_api.fail_create_with = Ambiguous("ReadTimeout")
-    assert wiring.controller.consider(incident).action == "parked"
+    assert wiring.dispatch(incident).action == "parked"
     repair = repairs.by_fingerprint(incident["fingerprint"])
     assert repair is not None and repair["state"] == NEEDS_ATTENTION
     assert "unknown" in repair["attention"]
 
     repairs.update(int(repair["id"]), state=PROPOSED)
-    assert wiring.controller.consider(incident).action == "parked"
+    assert wiring.controller.dispatch(int(repair["id"]), incident).action == "parked"
     assert not wiring.devin_api.sessions  # never blindly created a second one
 
 
@@ -305,7 +307,7 @@ def test_a_refused_create_is_parked_without_a_remote_object(
 ) -> None:
     wiring = Wiring(repairs)
     wiring.github_api.fail_create_with = Refused("ConnectionError")
-    assert wiring.controller.consider(incident).action == "parked"
+    assert wiring.dispatch(incident).action == "parked"
     assert not wiring.github_api.issues
 
 
@@ -316,7 +318,7 @@ def test_an_authentication_or_rate_limit_answer_stops_the_dispatch(
     wiring = Wiring(repairs)
     wiring.devin_api.status = status
     with pytest.raises(RuntimeError) as raised:
-        wiring.controller.consider(incident)
+        wiring.dispatch(incident)
     assert str(status) in str(raised.value)
     repair = repairs.by_fingerprint(incident["fingerprint"])
     assert repair is not None and repair["session_id"] is None
@@ -328,7 +330,7 @@ def test_an_authentication_or_rate_limit_answer_stops_the_dispatch(
 def test_agent_finished_with_a_pull_request_is_a_candidate_not_a_success(
     wiring: Wiring, incident: dict[str, Any], repairs: RepairStore
 ) -> None:
-    decision = wiring.controller.consider(incident)
+    decision = wiring.dispatch(incident)
     wiring.devin_api.finish(wiring.session_id(), GOOD_OUTPUT, PR_URL, acus=3.0)
     result = wiring.controller.poll(decision.repair_id or 0)
 
@@ -344,7 +346,7 @@ def test_a_pull_request_on_the_wrong_base_or_host_is_not_a_candidate(
     repairs: RepairStore, incident: dict[str, Any]
 ) -> None:
     wiring = Wiring(repairs)
-    decision = wiring.controller.consider(incident)
+    decision = wiring.dispatch(incident)
     wiring.pulls[7]["base"] = {"ref": "master"}
     wiring.devin_api.finish(wiring.session_id(), GOOD_OUTPUT, PR_URL)
     assert wiring.controller.poll(decision.repair_id or 0).action == "parked"
@@ -359,7 +361,7 @@ def test_a_pull_request_on_the_wrong_base_or_host_is_not_a_candidate(
 def test_a_session_that_did_not_reproduce_first_is_parked(
     wiring: Wiring, incident: dict[str, Any]
 ) -> None:
-    decision = wiring.controller.consider(incident)
+    decision = wiring.dispatch(incident)
     wiring.devin_api.finish(wiring.session_id(), dict(GOOD_OUTPUT, reproduced=False), PR_URL)
     assert wiring.controller.poll(decision.repair_id or 0).action == "parked"
 
@@ -367,7 +369,7 @@ def test_a_session_that_did_not_reproduce_first_is_parked(
 def test_an_expected_denial_classification_ends_without_a_code_change(
     wiring: Wiring, incident: dict[str, Any], repairs: RepairStore
 ) -> None:
-    decision = wiring.controller.consider(incident)
+    decision = wiring.dispatch(incident)
     wiring.devin_api.finish(
         wiring.session_id(),
         dict(GOOD_OUTPUT, classification="expected_behaviour", pr_url=""),
@@ -381,7 +383,7 @@ def test_an_expected_denial_classification_ends_without_a_code_change(
 def test_a_finished_session_without_structured_output_is_parked(
     wiring: Wiring, incident: dict[str, Any]
 ) -> None:
-    decision = wiring.controller.consider(incident)
+    decision = wiring.dispatch(incident)
     wiring.devin_api.finish(wiring.session_id(), None, PR_URL)
     assert wiring.controller.poll(decision.repair_id or 0).action == "parked"
 
@@ -389,7 +391,7 @@ def test_a_finished_session_without_structured_output_is_parked(
 def test_waiting_and_suspended_sessions_are_surfaced_not_terminated(
     wiring: Wiring, incident: dict[str, Any]
 ) -> None:
-    decision = wiring.controller.consider(incident)
+    decision = wiring.dispatch(incident)
     wiring.devin_api.set_state(wiring.session_id(), status_detail="waiting_for_approval")
     assert wiring.controller.poll(decision.repair_id or 0).action == "waiting"
 
@@ -405,7 +407,7 @@ def test_the_acu_cap_stops_a_running_session_with_a_visible_reason(
     repairs: RepairStore, incident: dict[str, Any]
 ) -> None:
     wiring = Wiring(repairs, budget=Budget(acu_limit=5, wall_clock_minutes=60))
-    decision = wiring.controller.consider(incident)
+    decision = wiring.dispatch(incident)
     wiring.devin_api.set_state(wiring.session_id(), acus_consumed=5.5)
     assert wiring.controller.poll(decision.repair_id or 0).action == "stopped"
 
@@ -420,7 +422,7 @@ def test_the_deadline_survives_a_restart(
     repairs: RepairStore, incident: dict[str, Any]
 ) -> None:
     first = Wiring(repairs, budget=Budget(wall_clock_minutes=30))
-    decision = first.controller.consider(incident)
+    decision = first.dispatch(incident)
 
     second = Wiring(repairs)
     second.devin_api.sessions = first.devin_api.sessions
@@ -434,7 +436,7 @@ def test_a_candidate_is_never_terminated_before_verification_can_answer(
     repairs: RepairStore, incident: dict[str, Any]
 ) -> None:
     wiring = Wiring(repairs, budget=Budget(acu_limit=1, wall_clock_minutes=1))
-    decision = wiring.controller.consider(incident)
+    decision = wiring.dispatch(incident)
     wiring.devin_api.finish(wiring.session_id(), GOOD_OUTPUT, PR_URL, acus=99.0)
     wiring.clock += timedelta(hours=5)
 
@@ -448,7 +450,7 @@ def test_a_candidate_is_never_terminated_before_verification_can_answer(
 
 
 def _candidate(wiring: Wiring, incident: dict[str, Any]) -> int:
-    decision = wiring.controller.consider(incident)
+    decision = wiring.dispatch(incident)
     wiring.devin_api.finish(wiring.session_id(), GOOD_OUTPUT, PR_URL)
     wiring.controller.poll(decision.repair_id or 0)
     return decision.repair_id or 0
@@ -468,11 +470,13 @@ def test_failed_verification_goes_back_to_the_same_session(
 
 
 def test_a_follow_up_is_delivered_once_even_if_verification_reruns(
-    wiring: Wiring, incident: dict[str, Any]
+    wiring: Wiring, incident: dict[str, Any], repairs: RepairStore
 ) -> None:
+    """Polling the same candidate commit twice is one message, not two."""
     repair_id = _candidate(wiring, incident)
     wiring.controller.feedback(repair_id, ["still failing"])
-    wiring.controller.feedback(repair_id, ["still failing"])  # repair is dispatched again
+    repairs.update(repair_id, state=CANDIDATE)
+    wiring.controller.feedback(repair_id, ["still failing"])
     assert len(wiring.devin_api.messages) == 1
 
 
@@ -480,13 +484,16 @@ def test_the_third_follow_up_stops_the_repair_instead(
     wiring: Wiring, incident: dict[str, Any], repairs: RepairStore
 ) -> None:
     repair_id = _candidate(wiring, incident)
+    # Each round is a new commit on the same pull request: the agent pushed a
+    # fix, verification ran again on that commit, and it still fails.
     for round_number in range(MAX_FOLLOW_UPS):
-        assert wiring.controller.feedback(repair_id, [f"round {round_number}"]).action == (
-            "followed_up"
-        )
+        sha = str(round_number) * 40
+        assert wiring.controller.feedback(
+            repair_id, [f"round {round_number}"], sha
+        ).action == "followed_up"
         repairs.update(repair_id, state=CANDIDATE)
 
-    assert wiring.controller.feedback(repair_id, ["again"]).action == "stopped"
+    assert wiring.controller.feedback(repair_id, ["again"], "a" * 40).action == "stopped"
     assert len(wiring.devin_api.messages) == MAX_FOLLOW_UPS
     repair = repairs.get(repair_id)
     assert repair is not None and repair["state"] == TERMINAL
@@ -544,7 +551,7 @@ def test_the_console_shows_what_would_be_sent(tmp_path: Path) -> None:
 def test_sessions_are_found_through_documented_cursor_pagination(
     wiring: Wiring, incident: dict[str, Any]
 ) -> None:
-    wiring.controller.consider(incident)
+    wiring.dispatch(incident)
     mark = brief.marker(incident, 1)
     for index in range(5):
         wiring.devin_api.sessions[f"devin-noise-{index}"] = {
@@ -599,6 +606,11 @@ def test_two_distinct_incidents_cannot_both_dispatch_through_two_connections(
     two.github_wire.handler = one.github_api
     two.devin_api, two.github_api = one.devin_api, one.github_api
     two.pulls = one.pulls
+    # Both workers read incidents from the same store, as two processes of one
+    # deployment do. Giving each its own view would let either worker decide
+    # the other's proposal refers to a missing incident and free the slot.
+    two.incidents = one.incidents
+    two.controller.incident_of = one.incidents.get
 
     start = threading.Barrier(2)
     creating = threading.Event()
@@ -619,7 +631,7 @@ def test_two_distinct_incidents_cannot_both_dispatch_through_two_connections(
 
     def run(wire: Wiring, case: dict[str, Any]) -> None:
         start.wait(timeout=5)
-        results.append(wire.controller.consider(case))
+        results.append(wire.dispatch(case))
 
     threads = [
         threading.Thread(target=run, args=(w, i))
@@ -630,11 +642,18 @@ def test_two_distinct_incidents_cannot_both_dispatch_through_two_connections(
     for thread in threads:
         thread.join(timeout=10)
 
+    # Which worker wins, and whose proposal it takes up, is a race: a worker
+    # may well dispatch the repair the other thread proposed. What cannot
+    # happen is two of them getting past the claim, so the invariant is
+    # counted in the database and at the provider, not in who was told what.
     actions = sorted(d.action for d in results)
-    assert actions == ["deferred", "dispatched"], actions
+    assert set(actions) <= {"dispatched", "deferred", "in_flight"}, actions
     assert creating.is_set()
     assert len(one.devin_api.sessions) == 1
-    assert first.slot_holder() is not None
+    assert len(one.github_api.issues) == 1
+    dispatched = [r for r in first.list() if r["state"] == DISPATCHED]
+    assert len(dispatched) == 1, [r["state"] for r in first.list()]
+    assert first.slot_holder() == int(dispatched[0]["id"])
     second.close()
     first.close()
 
@@ -642,7 +661,7 @@ def test_two_distinct_incidents_cannot_both_dispatch_through_two_connections(
 def test_the_claim_survives_a_restart(tmp_path: Path, incident: dict[str, Any]) -> None:
     db = tmp_path / "restart-repairs.sqlite"
     store = RepairStore(db, simulated=True)
-    Wiring(store).controller.consider(incident)
+    Wiring(store).dispatch(incident)
     holder = store.slot_holder()
     store.close()
 
@@ -650,7 +669,7 @@ def test_the_claim_survives_a_restart(tmp_path: Path, incident: dict[str, Any]) 
     assert reopened.slot_holder() == holder
     # A different incident arriving after the restart still waits.
     fresh = Wiring(reopened)
-    decision = fresh.controller.consider(second_incident(tmp_path))
+    decision = fresh.dispatch(second_incident(tmp_path))
     assert decision.action == "deferred"
     assert not fresh.devin_api.sessions
     reopened.close()
@@ -659,7 +678,7 @@ def test_the_claim_survives_a_restart(tmp_path: Path, incident: dict[str, Any]) 
 def test_an_unknown_termination_outcome_keeps_the_claim(
     wiring: Wiring, incident: dict[str, Any]
 ) -> None:
-    wiring.controller.consider(incident)
+    wiring.dispatch(incident)
     repair_id = wiring.controller.store.active()["id"]
     # The terminate call answers with a server error: whether the session was
     # stopped is unknown.
@@ -675,7 +694,7 @@ def test_an_unknown_termination_outcome_keeps_the_claim(
 def test_a_finished_classification_releases_the_claim(
     wiring: Wiring, incident: dict[str, Any]
 ) -> None:
-    wiring.controller.consider(incident)
+    wiring.dispatch(incident)
     repair_id = int(wiring.controller.store.active()["id"])
     wiring.devin_api.finish(
         wiring.session_id(),
@@ -692,7 +711,7 @@ def test_a_follow_up_is_refused_once_the_deadline_has_passed(
     repairs: RepairStore, incident: dict[str, Any]
 ) -> None:
     wiring = Wiring(repairs, budget=Budget(acu_limit=5, wall_clock_minutes=1))
-    wiring.controller.consider(incident)
+    wiring.dispatch(incident)
     repair_id = int(repairs.active()["id"])
     wiring.devin_api.finish(wiring.session_id(), GOOD_OUTPUT)
     assert wiring.controller.poll(repair_id).action == "candidate"
@@ -711,7 +730,7 @@ def test_a_follow_up_is_refused_once_the_acu_limit_is_spent(
     repairs: RepairStore, incident: dict[str, Any]
 ) -> None:
     wiring = Wiring(repairs, budget=Budget(acu_limit=2, wall_clock_minutes=600))
-    wiring.controller.consider(incident)
+    wiring.dispatch(incident)
     repair_id = int(repairs.active()["id"])
     wiring.devin_api.finish(wiring.session_id(), GOOD_OUTPUT, acus=2.0)
     assert wiring.controller.poll(repair_id).action == "candidate"
@@ -734,7 +753,7 @@ def test_the_deadline_starts_when_the_session_does_not_when_it_is_proposed(
 
     wiring = Wiring(repairs, budget=Budget(acu_limit=5, wall_clock_minutes=30))
     wiring.clock += timedelta(hours=6)
-    wiring.controller.consider(incident)
+    wiring.dispatch(incident)
     repair = repairs.by_fingerprint(incident["fingerprint"])
     assert repair is not None
     started = datetime.fromisoformat(str(repair["deadline_utc"]))
@@ -755,7 +774,7 @@ def test_the_deadline_starts_when_the_session_does_not_when_it_is_proposed(
 def test_an_unusable_pull_request_never_becomes_a_candidate(
     wiring: Wiring, incident: dict[str, Any], head: dict[str, Any], reason: str
 ) -> None:
-    wiring.controller.consider(incident)
+    wiring.dispatch(incident)
     wiring.pulls[7]["head"].update(head)
     wiring.devin_api.finish(wiring.session_id(), GOOD_OUTPUT)
 
@@ -775,7 +794,7 @@ def test_an_unusable_pull_request_never_becomes_a_candidate(
 def test_a_closed_or_merged_pull_request_is_not_verifiable(
     wiring: Wiring, incident: dict[str, Any], pull: dict[str, Any], reason: str
 ) -> None:
-    wiring.controller.consider(incident)
+    wiring.dispatch(incident)
     wiring.pulls[7].update(pull)
     wiring.devin_api.finish(wiring.session_id(), GOOD_OUTPUT)
 

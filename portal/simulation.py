@@ -61,6 +61,8 @@ class FakeGitHub:
 
     issues: list[dict[str, Any]] = field(default_factory=list)
     pulls: dict[int, dict[str, Any]] = field(default_factory=dict)
+    #: Paths each simulated pull request touches, for change-scope checks.
+    pull_files: dict[int, list[str]] = field(default_factory=dict)
     #: Set to raise on the next write, simulating a timeout after the server
     #: may already have acted.
     fail_create_with: Exception | None = None
@@ -89,6 +91,13 @@ class FakeGitHub:
             return Response(201, issue)
         if call.method == "GET" and call.url.endswith("/issues"):
             return Response(200, {"items": list(self.issues)})
+        if call.method == "GET" and call.url.endswith("/files"):
+            number = int(call.url.rsplit("/", 2)[1])
+            page = int((call.params or {}).get("page", 1))
+            names = self.pull_files.get(number, [])
+            start = (page - 1) * 100
+            window = names[start:start + 100]
+            return Response(200, {"items": [{"filename": name} for name in window]})
         if call.method == "GET" and "/pulls/" in call.url:
             number = int(call.url.rsplit("/", 1)[1])
             pull = self.pulls.get(number)

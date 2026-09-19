@@ -184,6 +184,30 @@ class GitHub:
             "merged": str(bool(response.body.get("merged"))).lower(),
         }
 
+    def pull_request_files(self, number: int, limit: int = 300) -> list[str]:
+        """Every path the PR touches, so scope can be judged before it runs.
+
+        A PR larger than `limit` files is reported as-is and the caller
+        rejects it: a repair for one defect does not touch hundreds of files,
+        and silently truncating would hide exactly the file that matters.
+        """
+        paths: list[str] = []
+        page = 1
+        while page <= 10:
+            response = self._call(
+                "GET",
+                f"/repos/{self.repo}/pulls/{number}/files",
+                params={"per_page": 100, "page": page},
+            )
+            if not response.ok:
+                raise RuntimeError(f"pull request files not read ({response.error()})")
+            items = response.body.get("items") or []
+            paths.extend(str(item.get("filename") or "") for item in items)
+            if len(items) < 100 or len(paths) > limit:
+                break
+            page += 1
+        return paths
+
 
 @dataclass
 class Devin:

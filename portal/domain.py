@@ -18,7 +18,7 @@ from .provenance import load as load_provenance
 from .provenance import summary as provenance_summary
 from .redaction import SafeError
 from .tracing import Trace
-from .upstream import MCPGateway, SupersetGateway, UpstreamUnavailable
+from .upstream import MCPGateway, NotAuthenticated, SupersetGateway, UpstreamUnavailable
 
 SERVICE_PROFILE = "portal_service"
 RESTRICTED_PROFILE = "restricted_viewer"
@@ -189,7 +189,9 @@ class Portal:
                 "columns": body["result"][0].get("colnames"),
             },
         )
-        if status in (401, 403):
+        if status == 401:
+            raise NotAuthenticated(gateway.profile, "superset.query_rows")
+        if status == 403:
             raise Denied(status, "query this dataset")
         if status != 200:
             raise FixtureMissing(f"chart data query failed with HTTP {status}")
@@ -233,7 +235,10 @@ class Portal:
             },
             expected_statuses=(201,),
         )
-        if status in (401, 403):
+        if status == 401:
+            # The session is gone: this says nothing about what the role may do.
+            raise NotAuthenticated(gateway.profile, "portal.save_exploration")
+        if status == 403:
             trace.log(
                 "assertion",
                 "portal.save_exploration",
@@ -390,7 +395,9 @@ class Portal:
         status, body = gateway.call(
             trace, "superset.find_chart", "GET", "/api/v1/chart/", params={"q": query}
         )
-        if status in (401, 403):
+        if status == 401:
+            raise NotAuthenticated(gateway.profile, "superset.find_chart")
+        if status == 403:
             raise Denied(status, "browse charts")
         if status != 200 or not body.get("result"):
             return None
@@ -407,7 +414,9 @@ class Portal:
             f"/api/v1/chart/{chart_id}",
             input_summary={"chart_id": chart_id},
         )
-        if status in (401, 403):
+        if status == 401:
+            raise NotAuthenticated(gateway.profile, "superset.read_chart")
+        if status == 403:
             raise Denied(status, "open this chart")
         if status != 200:
             raise FixtureMissing(f"chart {chart_id} unreadable (HTTP {status})")

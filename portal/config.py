@@ -95,6 +95,16 @@ class Settings:
     parent_incident: str = field(
         default_factory=lambda: _env("PORTAL_PARENT_INCIDENT", "")
     )
+    #: Where verification builds candidate stacks, and where it writes their
+    #: reports. Both are empty by default: a deployment that has not been
+    #: given somewhere to work gets no verifier rather than a guessed path.
+    automation_dir: str = field(default_factory=lambda: _env("PORTAL_AUTOMATION_DIR", ""))
+    verification_workspace: str = field(
+        default_factory=lambda: _env("PORTAL_VERIFICATION_WORKSPACE", "")
+    )
+    verification_artifacts: str = field(
+        default_factory=lambda: _env("PORTAL_VERIFICATION_ARTIFACTS", "")
+    )
     #: The product SHA this deployment is supposed to be running. When set,
     #: evidence measured against any other SHA is recorded but never becomes
     #: dispatchable: we cannot ask for a repair of code we cannot pin.
