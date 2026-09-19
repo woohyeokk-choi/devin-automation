@@ -203,7 +203,11 @@ Recommended changes to the proposed approach, with evidence:
   See §7c. Three review findings were closed afterwards — see §7d.
 - **Phase 3 — complete.** Incident model, protected console and handoff export
   built on the tested portal slice. See §7e.
-- Phases 4–7 — not started.
+- **Phase 4 — complete, offline.** GitHub/Devin v3 clients, the repair
+  controller with a database-enforced single-flight claim, durable creation
+  intents, budget policy and a background poller. No issue, session or message
+  was ever sent: `AUTO_REPAIR_ENABLED=false` throughout. See §7f.
+- Phases 5–7 — not started.
 
 ## 7. Commands run and results (Phase 0)
 
@@ -513,6 +517,66 @@ second time on the way in, because the bundle leaves the portal. No ZIP.
 - No repair dispatch of any kind; `AUTO_REPAIR_ENABLED` stays `false`.
 - The preview/parent path is tested deterministically, but no preview
   environment has actually been deployed yet (Phase 5).
+
+## 7f. Phase 4 results — GitHub/Devin controller (offline)
+
+Everything below was exercised against `portal.simulation` fakes in an
+isolated simulation database. No GitHub issue, Devin session or message was
+created, and no credential was requested or used.
+
+### What the controller does
+
+| Concern | Behaviour |
+| --- | --- |
+| Trigger | An eligible incident reaching the store is considered immediately; nobody opens the console and nobody tags an issue. With dispatch off the exact issue body and Devin request body are persisted and shown in protected incident detail. |
+| Single flight | `repair_slot` is a one-row table. `INSERT OR IGNORE` decides the winner, so two `RepairStore` connections, two workers or a restarted process all contend on the database rather than on a read-then-act `active()` check. The claim is taken before the first remote write and covers creation, dispatch, candidate and verification. |
+| Releasing the claim | Only when nothing can still be running: a confirmed termination, or an agent that finished with no product candidate. An ambiguous or refused termination, an ambiguous create and any unread session state keep the claim and leave `needs_attention` visible. |
+| Budget | ACU and wall-clock are checked *before* anything is sent, including before a follow-up message. The deadline starts at activation — a proposal written while dispatch is disabled carries an empty deadline, so a live run does not begin already expired. Budget stops are a visible terminal reason. |
+| Follow-ups | At most two, counted durably, never sent past the budget. A candidate is not terminated before verification can return to it, because a terminated v3 session cannot resume. |
+| Pull requests | Before a repair becomes a candidate, GitHub — not the agent — must report the allowed host and repository, base `runtime-repair/baseline`, a head branch inside `woohyeokk-choi/superset`, a full 40-character head SHA, and an open, unmerged pull request. Candidate is still not success. |
+| Reconciliation | Creation intent is persisted before the remote write. Issue reuse matches the exact incident marker and skips anything carrying a `pull_request` field; session reuse requires the requested tag to actually be present. Ambiguous writes park for a human instead of retrying. |
+| Transport | Only a connection that was demonstrably never opened (`NewConnectionError`, `NameResolutionError`, `ConnectTimeout`) is `Refused`. A reset, a drop or an adapter-wrapped `ProtocolError`/`OSError` around the write is `Ambiguous`, because the server may already have acted. |
+| Off the request path | `RepairPoller` resolves stale creation claims and polls the claimed repair on a timer. A 401/403/429 or an unreadable session becomes persisted `needs_attention`, not an exception in a customer request. |
+| Providers | `AUTO_REPAIR_ENABLED=true` builds the real clients from configured credentials; missing or malformed credentials raise `NotConfigured` at start-up. There is no fake fallback. Disabled mode constructs no provider and reads no credential. |
+
+### Tests
+
+`python3 -m pytest tests -q` → **144 passed**; `python3 -m flake8 portal
+scenarios scripts tests` clean; `python3 -m compileall -q portal scripts
+scenarios tests` clean.
+
+| Check | Result |
+| --- | --- |
+| Two distinct incidents, two store connections, concurrent `consider()` | One `dispatched`, one `deferred`; the shared fake Devin holds exactly one session. |
+| Restart | The claim is still held by the same repair after reopening the database; a different incident is deferred. |
+| Termination outcome unknown | `terminal` with `session may still be running`; the claim is *not* released. |
+| Follow-up past the deadline / past the ACU limit | `stopped`, no message sent. |
+| Deadline start | Empty while proposed; set to activation + wall-clock minutes at dispatch, six hours after the proposal was written. |
+| Pull request head in `untrusted-owner/untrusted-fork`, short SHA, empty SHA, closed, merged | All parked; `pr_head_sha` stays unset. |
+| Transport | `NewConnectionError`/`ConnectTimeout` refused; `ProtocolError`, `ConnectionResetError`, `OSError`, bare `ConnectionError` and `ReadTimeout` ambiguous. |
+| Poll 401 / 403 / 429 | Persisted `needs_attention` with the status, claim held. |
+| Creation claim whose worker died | Settled `ambiguous` and parked for a human; never recreated. |
+| Session without the requested tag / issue that is a pull request | Not adopted, not reused. |
+| Providers | Disabled builds none; enabled without credentials raises; enabled with injected fakes dispatches. |
+
+### Fresh-host bootstrap evidence
+
+A clean checkout in an isolated Compose namespace (`bootstrapcheck`, ports
+8188/5108/8190, its own network and image) seeded 600 rows, served
+`/healthz` → `{"status":"ok","environment_kind":"baseline-light"}` and
+reproduced S2. The seed command refuses a project it was not pointed at.
+**Caveat:** the MCP container in that namespace reported `unhealthy` even
+though the S2 scenario and portal health both succeeded — the stack was
+usable, not entirely healthy. Recorded in `artifacts/phase4/bootstrap/`.
+
+### Not covered in Phase 4
+
+- No live GitHub or Devin call of any kind, and no credential in use.
+- Verification is not implemented: a repair can reach `candidate`, never
+  `verified_in_preview` (Phase 5).
+- Pull-request path and diff checks are Phase 5; only URL, repository, base,
+  head SHA and open/merged state are validated here.
+- The MCP health caveat above is unexplained.
 
 ## 8. Blockers and required credentials
 

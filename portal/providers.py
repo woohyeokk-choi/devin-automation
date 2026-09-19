@@ -153,6 +153,10 @@ class GitHub:
                 raise RuntimeError(f"issues not listed ({response.error()})")
             items = response.body.get("items") or []
             for item in items:
+                if item.get("pull_request"):
+                    # The issues endpoint also lists pull requests; a PR is
+                    # never the issue this attempt is looking for.
+                    continue
                 if marker in (item.get("body") or ""):
                     return Issue(
                         number=int(item["number"]),
@@ -264,4 +268,15 @@ class Devin:
                 return
 
     def find_tagged(self, tag: str) -> Session | None:
-        return next(iter(self.sessions_tagged(tag)), None)
+        """The session carrying this exact tag.
+
+        The filter is the server's; the check is ours. Reconciliation after an
+        ambiguous create must not adopt whatever session came back first if it
+        does not actually carry this attempt's marker.
+        """
+        for session in self.sessions_tagged(tag):
+            if tag in session.tags and session.session_id.startswith(
+                DEVIN_SESSION_PREFIX
+            ):
+                return session
+        return None

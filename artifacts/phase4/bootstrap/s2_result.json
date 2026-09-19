@@ -1,0 +1,36 @@
+{
+  "scenario_id": "S2",
+  "recorded_at": "2026-09-19T16:36:59.369230+00:00",
+  "revision": {
+    "superset_checkout": "/home/ubuntu/repos/superset",
+    "superset_sha": "394bca55c792b7b3547e23f6e175a7cb0f0757e8",
+    "superset_describe": "baseline-394bca5",
+    "superset_dirty": "no",
+    "automation_sha": "4882bf7b35dcac7c57907c96588b80461cb53cff"
+  },
+  "title": "Deleted explore form-data key is reused by the next exploration",
+  "reproduced": true,
+  "tab_id": "991177",
+  "dataset_id": 22,
+  "keys": {
+    "k1": "NV-Jy9512Z8HBerXxiB6aA",
+    "k2": "NV-Jy9512Z8HBerXxiB6aA",
+    "reused": true
+  },
+  "delete_status": 200,
+  "absence_status_after_delete": 404,
+  "k1_resurrected_after_create_b": true,
+  "expected": "K2 is a fresh key; K1 stays deleted and keeps returning 404 regardless of later explorations in the same tab",
+  "observed": "K2 == K1 (True); after the second exploration the deleted key resolves again (resurrected=True) and now serves the new exploration's form data",
+  "mechanism": "POST /api/v1/explore/form_data reads tab_id from the query string and stores a contextual mapping cache_key(session_id, tab_id, datasource_id, chart_id, datasource_type) -> key. DELETE /api/v1/explore/form_data/<key> builds CommandParameters(key=key) without tab_id, so the delete command deletes the contextual mapping for tab_id=None and leaves the real mapping in place. The next create finds that stale mapping and hands out the deleted key again.",
+  "code_paths": [
+    "superset/explore/form_data/api.py::ExploreFormDataRestApi.delete",
+    "superset/commands/explore/form_data/delete.py::DeleteFormDataCommand.run",
+    "superset/commands/explore/form_data/create.py::CreateFormDataCommand.run",
+    "superset/temporary_cache/utils.py::cache_key"
+  ],
+  "metastore_key_value_rows_after_delete": [
+    "superset_metastore_cache | 68fd8e87-896b-3880-aefb-1762a7a70181"
+  ],
+  "cache_backend": "SupersetMetastoreCache (key_value table, Postgres)"
+}

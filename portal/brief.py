@@ -12,8 +12,25 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .handoff import SETUP, automation_pin, bundle_events
+from .handoff import SETUP, STEPS, automation_pin, bundle_events
 from .handoff import reproduction_markdown
+
+#: The allowlisted view of one stored event that goes into the prompt. It is
+#: the request/response summary, not only the assertion: a session asked to
+#: reproduce a sequence needs the calls and their outcomes.
+PROMPT_FIELDS = (
+    "ts_utc",
+    "trace_id",
+    "request_id",
+    "step_index",
+    "operation",
+    "tool_name",
+    "http_status",
+    "outcome",
+    "input",
+    "output",
+    "assertion",
+)
 
 LABELS = ["runtime-repair"]
 BASE_BRANCH = "runtime-repair/baseline"
@@ -126,12 +143,7 @@ def prompt(incident: dict[str, Any], attempt: int, versions: dict[str, Any], iss
     events, gaps = bundle_events(incident)
     automation = automation_pin(versions)
     evidence = [
-        {
-            k: v
-            for k, v in event.items()
-            if k in ("ts_utc", "trace_id", "step_index", "operation", "outcome", "assertion")
-        }
-        for event in events
+        {k: v for k, v in event.items() if k in PROMPT_FIELDS} for event in events
     ]
     return f"""A user action in a synthetic-data analytics portal fails against
 Apache Superset at a fixed baseline commit. Reproduce it, fix the product
@@ -179,10 +191,16 @@ code, and open a pull request.
     automation_note=automation['note'],
 )}
 
+## Reproduce this case
+
+{STEPS.get(incident['scenario'], 'No scripted steps are registered for this scenario.')}
+
 ## Observed sequence
 
-Sanitized server-side evidence for the failed user actions — allowlisted
-fields only, no credentials, cookies, tokens, raw headers or raw bodies:
+Sanitized server-side evidence for the failed user actions — every stored
+upstream REST/MCP call with its allowlisted input, output and HTTP status,
+not only the assertions, and no credentials, cookies, tokens, raw headers or
+raw bodies:
 
 ```json
 {json.dumps(evidence, indent=2)}

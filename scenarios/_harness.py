@@ -15,8 +15,12 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT_ROOT = REPO_ROOT / "artifacts" / "baseline"
+# The Superset checkout under test: whatever this run was pointed at, with a
+# sibling of this repository as the only fallback — no host-specific path.
 SUPERSET_CHECKOUT = Path(
-    os.environ.get("SUPERSET_CHECKOUT", "/home/ubuntu/repos/superset")
+    os.environ.get("SUPERSET_CHECKOUT")
+    or os.environ.get("SUPERSET_DIR")
+    or REPO_ROOT.parent / "superset"
 )
 
 _REDACTED = "<redacted>"

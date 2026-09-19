@@ -31,19 +31,37 @@ through the same REST/MCP clients the scenarios use — nothing is mocked.
 
 ## Start it
 
-```bash
-# from the automation checkout — copy and edit if your paths differ
-cp stack/.env.example stack/.env        # optional; dev-only local values
-set -a; . stack/.env.example; set +a
+Two checkouts are needed — this repository and the Superset fork at the
+baseline revision:
 
-# 1. Superset + MCP sidecar (from the Superset checkout)
+```bash
+git clone https://github.com/woohyeokk-choi/devin-automation.git
+git clone https://github.com/woohyeokk-choi/superset.git
+git -C superset checkout 394bca55c792b7b3547e23f6e175a7cb0f0757e8
+```
+
+```bash
+# from the automation checkout
+cp stack/.env.example stack/.env        # then edit: checkout paths, ports,
+$EDITOR stack/.env                      # SUPERSET_NETWORK for your namespace
+set -a; . stack/.env; set +a            # the edited file, never the example
+
+# 1. Superset + MCP sidecar (from the Superset checkout).
+#    In an isolated Compose namespace also set COMPOSE_PROJECT_NAME and
+#    SUPERSET_LIGHT_IMAGE=<project>-superset-light, because Compose names the
+#    image it builds after the project.
 cd "$SUPERSET_DIR"
 docker compose -f docker-compose-light.yml \
   -f "$AUTOMATION_DIR/stack/docker-compose.ports.yml" \
   up -d superset-light superset-mcp-light
+curl -fsS "$SUPERSET_BASE_URL/health"   # the HOST view: loopback, not a service name
 
-# 2. synthetic fixture (idempotent; only touches disposable fixture records)
+# 2. host prerequisites, then the synthetic fixture (idempotent; it only
+#    touches disposable fixture records). The seed, the provenance capture and
+#    the scenarios all run on the host and use the loopback URLs above; the
+#    SUPERSET_CONTAINER_* URLs in the same file are the portal container's view.
 cd "$AUTOMATION_DIR"
+python3 -m pip install -r requirements.txt
 python3 scripts/seed_synthetic.py
 
 # 3. measured provenance for the running containers
@@ -156,6 +174,22 @@ repository/fixture setup and the exact same-tab steps, not just a localhost URL.
 Events pass the Phase 2 sanitizer a second time on the way in, because the
 bundle leaves the portal.
 
+## Repair controller
+
+An eligible incident is considered the moment it is recorded. With
+`AUTO_REPAIR_ENABLED=false` the controller stops one step short of the wire:
+it persists the exact issue body and the exact Devin v3 request body and shows
+both in protected incident detail. Nothing is sent, and no credential is read.
+
+| Rule | Behaviour |
+| --- | --- |
+| One repair at a time | A one-row `repair_slot` table is the claim. `INSERT OR IGNORE` picks the winner, so two connections, two workers or a restarted process contend in the database, not in one process's head. The claim is taken before the first remote write and spans creation, dispatch, candidate and verification. |
+| Unknown outcomes | An ambiguous create, an unreadable session or a termination that may not have landed keeps the claim and leaves `needs_attention` on the record. Nothing is retried blindly and no second job can start under it. |
+| Budget | ACU and wall-clock are checked before anything is sent, follow-up messages included. The deadline starts at activation, not when a disabled proposal was written. At most two follow-ups, counted durably. A candidate is never terminated before verification can answer it. |
+| Candidate | GitHub, not the agent, must report the allowed repository, base `runtime-repair/baseline`, a head branch in `woohyeokk-choi/superset`, a full 40-character head SHA and an open, unmerged pull request. `candidate` is not success; only Phase 5 verification produces `verified_in_preview`. |
+| Live providers | `AUTO_REPAIR_ENABLED=true` builds the real clients from `GITHUB_TOKEN`, `DEVIN_API_KEY` and `DEVIN_ORG_ID`; missing or malformed values stop start-up. There is no simulated fallback, and simulated runs use their own database and `simulated-` ids. |
+| Off the request path | `RepairPoller` polls the claimed repair and settles creation claims whose worker died. Poll failures (401/403/429 included) become persisted state, never an exception in a customer request. |
+
 ### Provenance
 
 `scripts/capture_provenance.py` measures the running container: Compose
@@ -178,6 +212,9 @@ presented as proof of what is running.
 - `artifacts/phase3/handoff/<fingerprint>/` — the four-file handoff bundles as
   the console wrote them.
 - `artifacts/phase3/screenshots/` — incident console and browser demonstration.
+- `artifacts/phase4/bootstrap/` — the clean-checkout bootstrap in an isolated
+  Compose namespace: measured provenance and the S2 reproduction it produced,
+  plus the MCP health caveat.
 
 ### Not covered
 
@@ -187,3 +224,8 @@ presented as proof of what is running.
   not weakened to manufacture coverage.
 - No public preview exists. Everything is loopback-only by design, so the URLs
   above are reachable only on the host running the stack.
+- No GitHub issue, Devin session or message has been created. Every controller
+  result recorded here comes from the labelled fakes in `portal/simulation.py`
+  against an isolated simulation database.
+- Verification does not exist yet: a repair can reach `candidate`, never
+  `verified_in_preview`.

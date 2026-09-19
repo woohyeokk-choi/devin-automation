@@ -17,6 +17,32 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import requests
+from urllib3.exceptions import NewConnectionError
+
+try:  # urllib3 >= 2 splits DNS failures out of NewConnectionError
+    from urllib3.exceptions import NameResolutionError
+except ImportError:  # pragma: no cover - urllib3 1.x
+    NameResolutionError = NewConnectionError
+
+#: The only failures that prove the request never reached the server. A
+#: `requests.ConnectionError` is also raised for a reset or a dropped socket
+#: *after* the body was written (the HTTP adapter wraps `ProtocolError` and a
+#: bare `OSError` the same way), so the class alone cannot be read as
+#: "nothing was sent".
+_PRE_SEND = (NewConnectionError, NameResolutionError)
+
+
+def _never_sent(exc: BaseException) -> bool:
+    if isinstance(exc, requests.ConnectTimeout):
+        return True
+    cause: BaseException | None = exc
+    for _ in range(10):
+        if cause is None:
+            break
+        if isinstance(cause, _PRE_SEND):
+            return True
+        cause = cause.__cause__ or cause.__context__
+    return False
 
 
 class Ambiguous(Exception):
@@ -74,8 +100,11 @@ class HttpTransport:
                 method, url, headers=headers, json=json, params=params, timeout=self.timeout
             )
         except requests.ConnectionError as exc:
-            # Connection never established: nothing can have been applied.
-            raise Refused(type(exc).__name__) from None
+            if _never_sent(exc):
+                # The connection was never established.
+                raise Refused(type(exc).__name__) from None
+            # A reset or a drop that may have followed a complete write.
+            raise Ambiguous(f"{type(exc).__name__} (connection lost)") from None
         except requests.RequestException as exc:
             # Timeouts and mid-flight failures: the server may have acted.
             raise Ambiguous(type(exc).__name__) from None

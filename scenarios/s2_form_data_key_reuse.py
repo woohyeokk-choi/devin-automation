@@ -16,6 +16,7 @@ Run:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -66,6 +67,15 @@ FORM_DATA_B = {
 }
 
 
+# Compose names containers after its project; an isolated namespace exports
+# COMPOSE_PROJECT_NAME rather than editing this file.
+DB_CONTAINER = (
+    os.environ.get("SUPERSET_COMPOSE_PROJECT")
+    or os.environ.get("COMPOSE_PROJECT_NAME")
+    or "superset"
+) + "-db-light-1"
+
+
 def key_value_rows() -> list[str]:
     """Metastore evidence: entries in the key_value table for the form-data cache."""
     out = subprocess.run(
@@ -73,7 +83,7 @@ def key_value_rows() -> list[str]:
             "docker",
             "exec",
             "-i",
-            "superset-db-light-1",
+            DB_CONTAINER,
             "psql",
             "-U",
             "superset",

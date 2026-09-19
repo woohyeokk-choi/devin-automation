@@ -7,6 +7,9 @@ controller code under test — the fakes only stand in for the wire.
 
 from __future__ import annotations
 
+import json
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -113,7 +116,15 @@ def test_an_eligible_incident_is_proposed_without_anyone_opening_the_console(
     assert brief.marker(incident, 1) in repair["issue_body"]
     request = repair["session_request"]
     assert '"max_acu_limit"' in request and '"structured_output_schema"' in request
-    assert "127.0.0.1:8090" not in request.split('"tags"')[0] or True
+    # A handoff has to stand on its own: the bootstrap may name the session's
+    # own local ports, but the evidence and the steps must be in the prompt,
+    # not behind a link to this machine's console.
+    prompt = json.loads(request)["prompt"]
+    assert "/ops/incidents" not in prompt
+    for carried in (BASELINE, "docker compose", "Reproduce this case", "row limit"):
+        assert carried in prompt, carried
+    # The deadline only starts when live work does.
+    assert repair["deadline_utc"] == ""
 
 
 def test_the_proposed_prompt_carries_the_evidence_not_just_a_local_url(
@@ -553,3 +564,278 @@ def test_sessions_are_found_through_documented_cursor_pagination(
     listed = [c for c in wiring.devin_wire.calls if c.method == "GET" and c.params]
     assert listed and listed[0].params is not None
     assert "first" in listed[0].params and "after" not in listed[0].params
+
+
+# --- single-flight ---------------------------------------------------------
+
+
+def second_incident(tmp_path: Path) -> dict[str, Any]:
+    """A distinct eligible incident: the S1 family, not another S2 delivery."""
+    store = IncidentStore(tmp_path / "incidents-s1.sqlite", target_repo=REPO)
+    store.observe(
+        event(
+            event_id="s1-1",
+            trace_id="s1-trace",
+            assertion="row_limit_survives_an_unrelated_change",
+        )
+    )
+    found = store.get(1)
+    assert found is not None
+    return found
+
+
+def test_two_distinct_incidents_cannot_both_dispatch_through_two_connections(
+    tmp_path: Path, incident: dict[str, Any]
+) -> None:
+    """The claim is the database's, not one process's read of `active()`."""
+    db = tmp_path / "shared-repairs.sqlite"
+    first, second = RepairStore(db, simulated=True), RepairStore(db, simulated=True)
+    other = second_incident(tmp_path)
+
+    one, two = Wiring(first), Wiring(second)
+    # One shared GitHub and one shared Devin behind two clients: a second
+    # session appearing here is a second paid repair.
+    two.devin_wire.handler = one.devin_api
+    two.github_wire.handler = one.github_api
+    two.devin_api, two.github_api = one.devin_api, one.github_api
+    two.pulls = one.pulls
+
+    start = threading.Barrier(2)
+    creating = threading.Event()
+    serve = one.devin_api
+
+    def hold(call: Any) -> Any:
+        if call.method == "POST" and call.url.endswith("/sessions"):
+            # Hold the winner inside create_session so the loser races
+            # against a claim that is taken but not yet dispatched.
+            creating.set()
+            time.sleep(0.2)
+        return serve(call)
+
+    one.devin_wire.handler = hold
+    two.devin_wire.handler = hold
+
+    results: list[Any] = []
+
+    def run(wire: Wiring, case: dict[str, Any]) -> None:
+        start.wait(timeout=5)
+        results.append(wire.controller.consider(case))
+
+    threads = [
+        threading.Thread(target=run, args=(w, i))
+        for w, i in ((one, incident), (two, other))
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    actions = sorted(d.action for d in results)
+    assert actions == ["deferred", "dispatched"], actions
+    assert creating.is_set()
+    assert len(one.devin_api.sessions) == 1
+    assert first.slot_holder() is not None
+    second.close()
+    first.close()
+
+
+def test_the_claim_survives_a_restart(tmp_path: Path, incident: dict[str, Any]) -> None:
+    db = tmp_path / "restart-repairs.sqlite"
+    store = RepairStore(db, simulated=True)
+    Wiring(store).controller.consider(incident)
+    holder = store.slot_holder()
+    store.close()
+
+    reopened = RepairStore(db, simulated=True)
+    assert reopened.slot_holder() == holder
+    # A different incident arriving after the restart still waits.
+    fresh = Wiring(reopened)
+    decision = fresh.controller.consider(second_incident(tmp_path))
+    assert decision.action == "deferred"
+    assert not fresh.devin_api.sessions
+    reopened.close()
+
+
+def test_an_unknown_termination_outcome_keeps_the_claim(
+    wiring: Wiring, incident: dict[str, Any]
+) -> None:
+    wiring.controller.consider(incident)
+    repair_id = wiring.controller.store.active()["id"]
+    # The terminate call answers with a server error: whether the session was
+    # stopped is unknown.
+    wiring.devin_api.status = 500
+    wiring.controller._stop(int(repair_id), "budget spent")
+
+    repair = wiring.controller.store.get(int(repair_id))
+    assert repair is not None and repair["state"] == TERMINAL
+    assert "may still be running" in (repair["attention"] or "")
+    assert wiring.controller.store.slot_holder() == int(repair_id)
+
+
+def test_a_finished_classification_releases_the_claim(
+    wiring: Wiring, incident: dict[str, Any]
+) -> None:
+    wiring.controller.consider(incident)
+    repair_id = int(wiring.controller.store.active()["id"])
+    wiring.devin_api.finish(
+        wiring.session_id(),
+        {**GOOD_OUTPUT, "classification": "configuration", "pr_url": ""},
+    )
+    assert wiring.controller.poll(repair_id).action == "classified"
+    assert wiring.controller.store.slot_holder() is None
+
+
+# --- budget ----------------------------------------------------------------
+
+
+def test_a_follow_up_is_refused_once_the_deadline_has_passed(
+    repairs: RepairStore, incident: dict[str, Any]
+) -> None:
+    wiring = Wiring(repairs, budget=Budget(acu_limit=5, wall_clock_minutes=1))
+    wiring.controller.consider(incident)
+    repair_id = int(repairs.active()["id"])
+    wiring.devin_api.finish(wiring.session_id(), GOOD_OUTPUT)
+    assert wiring.controller.poll(repair_id).action == "candidate"
+
+    wiring.clock += timedelta(minutes=2)
+    decision = wiring.controller.feedback(repair_id, ["still reuses the key"])
+
+    assert decision.action == "stopped"
+    assert not wiring.devin_api.messages
+    repair = repairs.get(repair_id)
+    assert repair is not None and repair["state"] == TERMINAL
+    assert "deadline" in (repair["terminal_reason"] or "")
+
+
+def test_a_follow_up_is_refused_once_the_acu_limit_is_spent(
+    repairs: RepairStore, incident: dict[str, Any]
+) -> None:
+    wiring = Wiring(repairs, budget=Budget(acu_limit=2, wall_clock_minutes=600))
+    wiring.controller.consider(incident)
+    repair_id = int(repairs.active()["id"])
+    wiring.devin_api.finish(wiring.session_id(), GOOD_OUTPUT, acus=2.0)
+    assert wiring.controller.poll(repair_id).action == "candidate"
+
+    decision = wiring.controller.feedback(repair_id, ["still reuses the key"])
+
+    assert decision.action == "stopped"
+    assert not wiring.devin_api.messages
+    assert "ACU" in decision.detail
+
+
+def test_the_deadline_starts_when_the_session_does_not_when_it_is_proposed(
+    repairs: RepairStore, incident: dict[str, Any]
+) -> None:
+    disabled = Controller(
+        repairs, target_repo=REPO, versions=VERSIONS, dispatch_enabled=False
+    )
+    disabled.consider(incident)
+    assert repairs.by_fingerprint(incident["fingerprint"])["deadline_utc"] == ""
+
+    wiring = Wiring(repairs, budget=Budget(acu_limit=5, wall_clock_minutes=30))
+    wiring.clock += timedelta(hours=6)
+    wiring.controller.consider(incident)
+    repair = repairs.by_fingerprint(incident["fingerprint"])
+    assert repair is not None
+    started = datetime.fromisoformat(str(repair["deadline_utc"]))
+    assert started == wiring.clock + timedelta(minutes=30)
+
+
+# --- pull request validation -----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "head, reason",
+    [
+        ({"repo": {"full_name": "untrusted-owner/untrusted-fork"}}, "untrusted-fork"),
+        ({"sha": "f" * 7}, "full commit id"),
+        ({"sha": ""}, "full commit id"),
+    ],
+)
+def test_an_unusable_pull_request_never_becomes_a_candidate(
+    wiring: Wiring, incident: dict[str, Any], head: dict[str, Any], reason: str
+) -> None:
+    wiring.controller.consider(incident)
+    wiring.pulls[7]["head"].update(head)
+    wiring.devin_api.finish(wiring.session_id(), GOOD_OUTPUT)
+
+    decision = wiring.controller.poll(int(wiring.controller.store.active()["id"]))
+
+    assert decision.action == "parked"
+    assert reason in decision.detail
+    repair = wiring.controller.store.get(decision.repair_id or 0)
+    assert repair is not None and repair["state"] == NEEDS_ATTENTION
+    assert repair["pr_head_sha"] is None
+
+
+@pytest.mark.parametrize(
+    "pull, reason",
+    [({"state": "closed"}, "closed"), ({"merged": True}, "already merged")],
+)
+def test_a_closed_or_merged_pull_request_is_not_verifiable(
+    wiring: Wiring, incident: dict[str, Any], pull: dict[str, Any], reason: str
+) -> None:
+    wiring.controller.consider(incident)
+    wiring.pulls[7].update(pull)
+    wiring.devin_api.finish(wiring.session_id(), GOOD_OUTPUT)
+
+    decision = wiring.controller.poll(int(wiring.controller.store.active()["id"]))
+
+    assert decision.action == "parked" and reason in decision.detail
+
+
+# --- reconciliation --------------------------------------------------------
+
+
+def test_a_session_without_this_attempts_tag_is_never_adopted(
+    wiring: Wiring, incident: dict[str, Any]
+) -> None:
+    mark = brief.marker(incident, 1)
+    wiring.devin_api.sessions["devin-unrelated"] = {
+        "session_id": "devin-unrelated",
+        "url": "",
+        "status": "running",
+        "status_detail": "working",
+        "acus_consumed": 0,
+        "pull_requests": [],
+        "structured_output": None,
+        "tags": ["runtime-repair"],
+    }
+    devin = Devin(wiring.devin_wire, api_key="cog_simulated", org_id="org-simulated")
+    assert devin.find_tagged(mark) is None
+
+
+def test_a_pull_request_is_not_reused_as_the_tracking_issue(
+    wiring: Wiring, incident: dict[str, Any]
+) -> None:
+    mark = brief.marker(incident, 1)
+    wiring.github_api.issues.append(
+        {
+            "number": 41,
+            "html_url": f"https://github.com/{REPO}/pull/41",
+            "state": "open",
+            "body": f"<!-- {mark} -->",
+            "pull_request": {"url": "..."},
+        }
+    )
+    github = GitHub(wiring.github_wire, token="simulated-token", repo=REPO)
+    assert github.find_issue(mark, brief.LABELS) is None
+
+
+# --- a stalled creation claim ----------------------------------------------
+
+
+def test_a_creation_claim_whose_worker_died_becomes_visible_work(
+    wiring: Wiring, incident: dict[str, Any]
+) -> None:
+    repair = wiring.controller._propose(incident)
+    wiring.controller.store.intend(int(repair["id"]), "issue", brief.marker(incident, 1))
+
+    # Intents are stamped with the real clock, so age this one against it.
+    wiring.clock = datetime.now(timezone.utc) + timedelta(hours=1)
+    decisions = wiring.controller.recover()
+
+    assert [d.action for d in decisions] == ["parked"]
+    stalled = wiring.controller.store.get(int(repair["id"]))
+    assert stalled is not None and stalled["state"] == NEEDS_ATTENTION
+    assert "never confirmed" in (stalled["attention"] or "")

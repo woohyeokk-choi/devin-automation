@@ -21,7 +21,8 @@ from .config import settings
 from .domain import DIMENSIONS, SORTS, Denied, ExplorationSpec, FixtureMissing, Portal
 from .events import EventStore
 from .handoff import FILES as BUNDLE_FILES, write_bundle
-from .controller import Controller, RepairStore
+from .controller import RepairStore
+from .worker import RepairPoller, build_controller
 from .incidents import IncidentStore
 from .provenance import summary as provenance_summary
 from .security import (
@@ -71,15 +72,20 @@ def handoff_versions() -> dict[str, Any]:
 
 
 repairs = RepairStore(settings.db_path.with_name("repairs.sqlite"))
-# Dispatch is off, so no live provider is configured and none is faked: the
-# controller records the exact issue and session bodies instead of sending
-# them. Observation and proposal do not wait for anyone to open the console.
-controller = Controller(
+# With AUTO_REPAIR_ENABLED=false no provider is configured and none is faked:
+# the controller records the exact issue and session bodies instead of sending
+# them. With it true the live clients are built from the configured
+# credentials, and their absence stops the process rather than degrading to a
+# simulated success. Observation and proposal never wait for the console.
+controller = build_controller(
     repairs,
     target_repo=settings.target_repo,
     versions=handoff_versions(),
     dispatch_enabled=settings.auto_repair_enabled,
 )
+# Network work belongs off the request path: polling a session, and resolving
+# a creation claim whose worker died, happen on this timer.
+poller = RepairPoller(controller)
 
 
 def observe_and_consider(event: dict[str, Any]) -> dict[str, Any]:
@@ -101,6 +107,8 @@ for pending in incidents.eligible():
     # never been seen by a live observer.
     controller.consider(pending)
 app = FastAPI(title="Synthetic Analytics portal", docs_url=None, redoc_url=None)
+app.add_event_handler("startup", poller.start)
+app.add_event_handler("shutdown", poller.stop)
 
 # Every route below the demo gate. `/healthz` stays open so a container health
 # check needs no credential; nothing else does, because an anonymous client

@@ -78,6 +78,16 @@ CREATE TABLE IF NOT EXISTS repair_intents (
     updated_at TEXT NOT NULL,
     UNIQUE (repair_id, kind, marker)
 );
+
+-- The single-flight claim. One row can exist, so the database — not a
+-- read-then-act check inside one process — decides which repair may create,
+-- dispatch and be verified. It is taken before the first remote write and
+-- released only when nothing can still be running under it.
+CREATE TABLE IF NOT EXISTS repair_slot (
+    slot       INTEGER PRIMARY KEY CHECK (slot = 1),
+    repair_id  INTEGER NOT NULL,
+    claimed_at TEXT NOT NULL
+);
 """
 
 #: Repair states. `candidate` means a PR exists and verification has not run;
@@ -198,12 +208,48 @@ class RepairStore:
         ]
 
     def active(self) -> dict[str, Any] | None:
-        """The one repair allowed to be in flight."""
+        """The repair holding the single-flight claim, if any."""
         row = self._conn.execute(
-            "SELECT * FROM repairs WHERE state IN (?, ?) ORDER BY id LIMIT 1",
-            (DISPATCHED, CANDIDATE),
+            "SELECT r.* FROM repair_slot s JOIN repairs r ON r.id = s.repair_id"
         ).fetchone()
         return dict(row) if row else None
+
+    # --- single-flight claim -----------------------------------------------
+
+    def claim_slot(self, repair_id: int) -> bool:
+        """Take the one slot, or lose to whoever holds it.
+
+        `INSERT OR IGNORE` against a single-row primary key is the whole of
+        the mutual exclusion: two connections, two workers, or one process
+        restarted all contend on the same row and exactly one wins. The claim
+        spans creation, dispatch and verification, so a repair that is still
+        `proposed` but already creating an issue blocks the next one.
+        """
+        with self._lock, self._conn:
+            # The insert takes the write lock; a second connection waits on
+            # it and then reads the winner it just lost to.
+            self._conn.execute(
+                "INSERT OR IGNORE INTO repair_slot (slot, repair_id, claimed_at) "
+                "VALUES (1, ?, ?)",
+                (repair_id, utcnow()),
+            )
+            row = self._conn.execute(
+                "SELECT repair_id FROM repair_slot WHERE slot = 1"
+            ).fetchone()
+        return row is not None and int(row["repair_id"]) == repair_id
+
+    def slot_holder(self) -> int | None:
+        row = self._conn.execute(
+            "SELECT repair_id FROM repair_slot WHERE slot = 1"
+        ).fetchone()
+        return int(row["repair_id"]) if row else None
+
+    def release_slot(self, repair_id: int) -> None:
+        """Give the slot back. Only for a repair with nothing left running."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "DELETE FROM repair_slot WHERE slot = 1 AND repair_id = ?", (repair_id,)
+            )
 
     # --- creation intent ---------------------------------------------------
 
@@ -236,6 +282,16 @@ class RepairStore:
                 "UPDATE repair_intents SET state = ?, detail = ?, updated_at = ? WHERE id = ?",
                 (state, detail, utcnow(), intent_id),
             )
+
+    def stale_intents(self, before_utc: str) -> list[dict[str, Any]]:
+        """Creation claims nobody settled: their creator is gone."""
+        return [
+            dict(r)
+            for r in self._conn.execute(
+                "SELECT * FROM repair_intents WHERE state = ? AND updated_at < ?",
+                (INTENDED, before_utc),
+            ).fetchall()
+        ]
 
     def intents(self, repair_id: int) -> list[dict[str, Any]]:
         return [
@@ -296,11 +352,11 @@ class Controller:
             return Decision("skipped", repair["terminal_reason"] or repair["attention"] or "", int(repair["id"]))
         if repair["state"] in (DISPATCHED, CANDIDATE):
             return Decision("in_flight", "", int(repair["id"]))
-        active = self.store.active()
-        if active is not None and int(active["id"]) != int(repair["id"]):
+        if not self.store.claim_slot(int(repair["id"])):
             return Decision(
                 "deferred",
-                f"repair {active['id']} is already in flight; one at a time",
+                f"repair {self.store.slot_holder()} holds the single-flight "
+                "claim; one at a time",
                 int(repair["id"]),
             )
         return self.dispatch(int(repair["id"]), incident)
@@ -311,7 +367,8 @@ class Controller:
         request = brief.session_request(
             incident, attempt, self.versions, issue_url="", acu_limit=self.budget.acu_limit
         )
-        deadline = self._now() + timedelta(minutes=self.budget.wall_clock_minutes)
+        # The clock starts when paid work does, not when a disabled proposal
+        # is written: an empty deadline means "never activated".
         return self.store.upsert(
             incident["fingerprint"],
             {
@@ -322,7 +379,7 @@ class Controller:
                 "issue_body": body,
                 "session_request": json.dumps(request, indent=2),
                 "acu_limit": self.budget.acu_limit,
-                "deadline_utc": deadline.isoformat(),
+                "deadline_utc": "",
             },
         )
 
@@ -343,11 +400,15 @@ class Controller:
         except Claimed as exc:
             return Decision("deferred", str(exc), repair_id)
         except Parked as exc:
+            # The claim stays held: an unknown remote write may have started a
+            # job, and releasing it would let a second one begin.
             self.store.update(repair_id, state=NEEDS_ATTENTION, attention=str(exc))
             return Decision("parked", str(exc), repair_id)
+        deadline = self._now() + timedelta(minutes=self.budget.wall_clock_minutes)
         self.store.update(
             repair_id,
             state=DISPATCHED,
+            deadline_utc=repair["deadline_utc"] or deadline.isoformat(),
             session_id=session.session_id,
             session_url=session.url,
             agent_status=session.status,
@@ -428,7 +489,17 @@ class Controller:
         repair = self.store.get(repair_id)
         if repair is None or not repair["session_id"] or self.devin is None:
             return Decision("skipped", "nothing in flight", repair_id)
-        session = self.devin.get_session(str(repair["session_id"]))
+        try:
+            session = self.devin.get_session(str(repair["session_id"]))
+        except (RuntimeError, Ambiguous, Refused) as exc:
+            # A 401/403/429 or a lost connection leaves the job running: make
+            # it visible instead of raising into the caller, and keep the claim.
+            self.store.update(
+                repair_id,
+                state=NEEDS_ATTENTION,
+                attention=f"session state could not be read: {exc}",
+            )
+            return Decision("parked", f"poll failed: {exc}", repair_id)
         self.store.update(
             repair_id,
             agent_status=session.status,
@@ -455,7 +526,7 @@ class Controller:
         if session.agent_finished:
             return self._candidate(repair_id, session)
 
-        exceeded = self._exceeded(repair, session)
+        exceeded = self._exceeded(repair, session.acus_consumed)
         if exceeded:
             # Only here, and only with nothing to verify: terminating a
             # candidate would destroy the session verification must talk to.
@@ -463,26 +534,39 @@ class Controller:
             return Decision("stopped", exceeded, repair_id)
         return Decision("running", str(session.status_detail or ""), repair_id)
 
-    def _exceeded(self, repair: dict[str, Any], session: Session) -> str:
-        if session.acus_consumed >= float(repair["acu_limit"]):
-            return (
-                f"ACU budget exhausted: {session.acus_consumed} of "
-                f"{repair['acu_limit']} consumed"
-            )
-        if self._now() > datetime.fromisoformat(str(repair["deadline_utc"])):
-            return f"wall-clock deadline {repair['deadline_utc']} passed"
+    def _exceeded(self, repair: dict[str, Any], acus: float) -> str:
+        if acus >= float(repair["acu_limit"]):
+            return f"ACU budget exhausted: {acus} of {repair['acu_limit']} consumed"
+        deadline = str(repair["deadline_utc"] or "")
+        if deadline and self._now() > datetime.fromisoformat(deadline):
+            return f"wall-clock deadline {deadline} passed"
         return ""
 
     def _stop(self, repair_id: int, reason: str) -> None:
         repair = self.store.get(repair_id)
         if repair is None:
             return
+        stopped = True
         if self.devin is not None and repair["session_id"]:
             try:
                 self.devin.terminate_session(str(repair["session_id"]))
-            except (RuntimeError, Ambiguous, Refused) as exc:
-                reason = f"{reason}; termination failed ({exc})"
+            except Refused as exc:
+                stopped = False
+                reason = f"{reason}; termination refused ({exc})"
+            except (RuntimeError, Ambiguous) as exc:
+                stopped = False
+                reason = f"{reason}; termination outcome unknown ({exc})"
         self.store.update(repair_id, state=TERMINAL, terminal_reason=reason)
+        if stopped:
+            self.store.release_slot(repair_id)
+        else:
+            # The session may still be burning ACUs: hold the claim so no
+            # second repair starts while this one is unresolved.
+            self.store.update(
+                repair_id,
+                attention="session may still be running; the claim is held "
+                "until someone resolves it",
+            )
 
     def _candidate(self, repair_id: int, session: Session) -> Decision:
         """Agent-finished: record what it claims, verify nothing."""
@@ -512,6 +596,9 @@ class Controller:
                 state=TERMINAL,
                 terminal_reason=f"classified as {output.get('classification')}, no code change",
             )
+            # The agent finished and there is no candidate to verify: nothing
+            # can still be running under this claim.
+            self.store.release_slot(repair_id)
             return Decision("classified", str(output.get("classification")), repair_id)
 
         pr_url = str(output.get("pr_url") or "") or (
@@ -529,14 +616,15 @@ class Controller:
                 attention=f"pull request not usable: {exc}",
             )
             return Decision("parked", str(exc), repair_id)
-        if head["base_ref"] != brief.BASE_BRANCH:
+        problem = self._pr_problem(head)
+        if problem:
             self.store.update(
                 repair_id,
                 state=NEEDS_ATTENTION,
                 agent_pr_url=pr_url,
-                attention=f"pull request targets {head['base_ref']}, not {brief.BASE_BRANCH}",
+                attention=f"pull request not usable: {problem}",
             )
-            return Decision("parked", "wrong base branch", repair_id)
+            return Decision("parked", problem, repair_id)
         self.store.update(
             repair_id,
             state=CANDIDATE,
@@ -544,6 +632,54 @@ class Controller:
             pr_head_sha=head["head_sha"],
         )
         return Decision("candidate", pr_url, repair_id)
+
+    def _pr_problem(self, head: dict[str, str]) -> str:
+        """Why this pull request cannot be verified, or an empty string.
+
+        GitHub is the source of truth here, not the agent's own report: the
+        branch must live in the target fork, target the agreed base, and name
+        one full commit that still exists on an open pull request. Phase 5
+        adds the path and diff checks on top of this.
+        """
+        if head["base_ref"] != brief.BASE_BRANCH:
+            return f"targets {head['base_ref'] or 'an unknown branch'}, not {brief.BASE_BRANCH}"
+        if head["head_repo"] != self.target_repo:
+            return (
+                "the head branch lives in "
+                f"{head['head_repo'] or 'an unknown repository'}, not {self.target_repo}"
+            )
+        sha = head["head_sha"].lower()
+        if len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha):
+            return "the head SHA is not a full commit id"
+        if head["merged"] == "true":
+            return "the pull request is already merged"
+        if head["state"] != "open":
+            return f"the pull request is {head['state'] or 'in an unreported state'}"
+        return ""
+
+    # --- recovery ----------------------------------------------------------
+
+    def recover(self, stale_after_minutes: int = 15) -> list[Decision]:
+        """Settle creation claims whose worker never came back.
+
+        An `intended` row that nobody confirmed means a remote object may or
+        may not exist. It is parked for a human, never retried blindly, and
+        the single-flight claim stays where it is.
+        """
+        cutoff = (self._now() - timedelta(minutes=stale_after_minutes)).isoformat()
+        decisions: list[Decision] = []
+        for intent in self.store.stale_intents(cutoff):
+            repair_id = int(intent["repair_id"])
+            self.store.settle(
+                int(intent["id"]), AMBIGUOUS, "the worker stopped before settling this"
+            )
+            reason = (
+                f"a {intent['kind']} may have been created for marker "
+                f"{intent['marker']} but was never confirmed; resolve it by hand"
+            )
+            self.store.update(repair_id, state=NEEDS_ATTENTION, attention=reason)
+            decisions.append(Decision("parked", reason, repair_id))
+        return decisions
 
     # --- feedback ----------------------------------------------------------
 
@@ -554,6 +690,12 @@ class Controller:
             return Decision("skipped", "nothing to talk to", repair_id)
         if repair["state"] != CANDIDATE:
             return Decision("skipped", f"repair is {repair['state']}", repair_id)
+        # Preserving a candidate for verification does not buy it more paid
+        # work: the budget is checked before anything is sent.
+        exceeded = self._exceeded(repair, float(repair["agent_acus"] or 0.0))
+        if exceeded:
+            self._stop(repair_id, exceeded)
+            return Decision("stopped", exceeded, repair_id)
         if int(repair["follow_ups"]) >= MAX_FOLLOW_UPS:
             self._stop(
                 repair_id,

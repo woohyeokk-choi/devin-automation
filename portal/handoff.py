@@ -30,7 +30,7 @@ ANTECEDENT = {
     ),
 }
 
-_STEPS = {
+STEPS = {
     "S2": """1. Sign in to the portal with the demo credentials and stay in the
    same workspace for the whole scenario. The defect is about one workspace's
    own links, so pressing "Start another exploration" (which rotates the
@@ -194,7 +194,7 @@ fingerprint `{incident['fingerprint']}`
 
 ## Reproduce the user action
 
-{_STEPS.get(incident['scenario'], 'No scripted steps are registered for this scenario.')}
+{STEPS.get(incident['scenario'], 'No scripted steps are registered for this scenario.')}
 
 ## Contract assertions recorded
 

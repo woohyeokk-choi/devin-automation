@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -21,9 +22,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scenarios"))
 
 from _harness import ARTIFACT_ROOT, source_revision  # noqa: E402
 
-WEB_CONTAINER = "superset-superset-light-1"
-MCP_CONTAINER = "superset-superset-mcp-light-1"
-DB_CONTAINER = "superset-db-light-1"
+# Compose names containers after its project, so an isolated namespace is
+# reached by exporting COMPOSE_PROJECT_NAME, never by editing this file.
+COMPOSE_PROJECT = (
+    os.environ.get("SUPERSET_COMPOSE_PROJECT")
+    or os.environ.get("COMPOSE_PROJECT_NAME")
+    or "superset"
+)
+SUPERSET_DIR = os.environ.get("SUPERSET_DIR", "<SUPERSET_DIR>")
+AUTOMATION_DIR = os.environ.get(
+    "AUTOMATION_DIR", str(Path(__file__).resolve().parents[1])
+)
+WEB_CONTAINER = f"{COMPOSE_PROJECT}-superset-light-1"
+MCP_CONTAINER = f"{COMPOSE_PROJECT}-superset-mcp-light-1"
+DB_CONTAINER = f"{COMPOSE_PROJECT}-db-light-1"
 
 PROBE = """
 import json, os
@@ -73,16 +85,22 @@ def main() -> int:
     manifest = {
         "stack": {
             "compose_files": [
-                "/home/ubuntu/repos/superset/docker-compose-light.yml",
-                "/home/ubuntu/repos/devin-automation/stack/docker-compose.ports.yml",
+                f"{SUPERSET_DIR}/docker-compose-light.yml",
+                f"{AUTOMATION_DIR}/stack/docker-compose.ports.yml",
             ],
+            "compose_project": COMPOSE_PROJECT,
             "services": ["db-light", "superset-light", "superset-mcp-light"],
             "build_target": "dev (SUPERSET_BUILD_TARGET default)",
-            "image": "superset-superset-light:latest",
+            "image": f"{COMPOSE_PROJECT}-superset-light:latest",
             "frontend_build_started": False,
             "redis": "not used by the light stack",
-            "superset_url": "http://localhost:8088",
-            "mcp_url": "http://localhost:5008/mcp",
+            # the host's view; the portal container uses the service names
+            "superset_url": os.environ.get(
+                "SUPERSET_BASE_URL", "http://127.0.0.1:8088"
+            ),
+            "mcp_url": os.environ.get(
+                "SUPERSET_MCP_URL", "http://127.0.0.1:5008/mcp"
+            ),
         },
         "runtime": {
             "container_python": docker(WEB_CONTAINER, "python", "-V"),
@@ -108,12 +126,15 @@ def main() -> int:
         },
         "commands": {
             "start_stack": (
-                "cd /home/ubuntu/repos/superset && docker compose "
+                f'cd "{SUPERSET_DIR}" && docker compose '
                 "-f docker-compose-light.yml "
-                "-f /home/ubuntu/repos/devin-automation/stack/docker-compose.ports.yml "
+                f'-f "{AUTOMATION_DIR}/stack/docker-compose.ports.yml" '
                 "up -d superset-light superset-mcp-light"
             ),
-            "seed": "cd /home/ubuntu/repos/devin-automation && python3 scripts/seed_synthetic.py --reset",
+            "seed": (
+                f'cd "{AUTOMATION_DIR}" && '
+                "python3 scripts/seed_synthetic.py --reset"
+            ),
             "s2": "python3 scenarios/s2_form_data_key_reuse.py",
             "s1": "python3 scenarios/s1_mcp_update_resets_fields.py",
             "n1": "python3 scenarios/n1_permission_denied_control.py",

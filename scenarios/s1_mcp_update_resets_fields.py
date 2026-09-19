@@ -12,7 +12,7 @@ instead of assuming both reset.
 
 Requires the MCP sidecar:
     docker compose -f docker-compose-light.yml \
-      -f /home/ubuntu/repos/devin-automation/stack/docker-compose.ports.yml \
+      -f "$AUTOMATION_DIR/stack/docker-compose.ports.yml" \
       up -d superset-mcp-light
 
 Run:

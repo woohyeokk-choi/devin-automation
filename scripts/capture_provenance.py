@@ -32,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.seed_synthetic import (  # noqa: E402
+    COMPOSE_PROJECT,
     DB_CONTAINER,
     DB_NAME,
     DB_USER,
@@ -40,7 +41,9 @@ from scripts.seed_synthetic import (  # noqa: E402
     fixture_revision,
 )
 
-CONTAINER = os.environ.get("SUPERSET_CONTAINER", "superset-superset-light-1")
+CONTAINER = os.environ.get(
+    "SUPERSET_CONTAINER", f"{COMPOSE_PROJECT}-superset-light-1"
+)
 AUTOMATION_DIR = Path(
     os.environ.get("AUTOMATION_DIR") or Path(__file__).resolve().parents[1]
 )

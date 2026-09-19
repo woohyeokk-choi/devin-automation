@@ -22,12 +22,17 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from clients.superset_client import SupersetClient  # noqa: E402
 
-COMPOSE_PROJECT = os.environ.get("SUPERSET_COMPOSE_PROJECT", "superset")
+COMPOSE_PROJECT = (
+    os.environ.get("SUPERSET_COMPOSE_PROJECT")
+    or os.environ.get("COMPOSE_PROJECT_NAME")
+    or "superset"
+)
 DB_CONTAINER = os.environ.get("SUPERSET_DB_CONTAINER", f"{COMPOSE_PROJECT}-db-light-1")
 DB_NAME = os.environ.get("SUPERSET_DB_NAME", "superset_light")
 DB_USER = os.environ.get("SUPERSET_DB_USER", "superset")
@@ -77,6 +82,60 @@ def fixture_revision(row_count: int) -> str:
     return "sha256:" + digest.hexdigest()[:16]
 
 
+def check_target() -> None:
+    """Refuse to seed a stack other than the one this run is pointed at.
+
+    The container name is derived from the Compose project, so a run in an
+    isolated namespace that forgets to set it would otherwise write into a
+    neighbouring stack and read its row count back as if it were its own.
+    """
+    probe = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            "-f",
+            '{{index .Config.Labels "com.docker.compose.project"}}',
+            DB_CONTAINER,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0:
+        raise SystemExit(
+            f"no container {DB_CONTAINER}: start the stack, or set "
+            "COMPOSE_PROJECT_NAME/SUPERSET_DB_CONTAINER for this namespace"
+        )
+    project = probe.stdout.strip()
+    if project != COMPOSE_PROJECT:
+        raise SystemExit(
+            f"{DB_CONTAINER} belongs to Compose project {project!r}, not "
+            f"{COMPOSE_PROJECT!r}"
+        )
+
+    # The database and the Superset that registers the dataset must be the
+    # same stack: seeding one namespace's Postgres while talking to another
+    # namespace's API would register a dataset over a table that is not there.
+    published = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            "-f",
+            "{{range $p, $conf := .NetworkSettings.Ports}}"
+            "{{range $conf}}{{.HostPort}} {{end}}{{end}}",
+            f"{COMPOSE_PROJECT}-superset-light-1",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    wanted = str(urlparse(os.environ.get("SUPERSET_BASE_URL", "")).port or 8088)
+    if published.returncode == 0 and wanted not in published.stdout.split():
+        raise SystemExit(
+            f"SUPERSET_BASE_URL port {wanted} is not published by "
+            f"{COMPOSE_PROJECT}-superset-light-1 "
+            f"(it publishes: {published.stdout.strip() or 'nothing'})"
+        )
+
+
 def run_sql(sql: str) -> str:
     return subprocess.run(
         ["docker", "exec", "-i", DB_CONTAINER, "psql", "-U", DB_USER, "-d", DB_NAME],
@@ -92,6 +151,7 @@ def main() -> int:
     parser.add_argument("--reset", action="store_true", help="recreate table rows")
     args = parser.parse_args()
 
+    check_target()
     table_exists = "t" in run_sql(TABLE_EXISTS_SQL).splitlines()[2]
     if args.reset or not table_exists:
         run_sql(DDL)

@@ -25,7 +25,21 @@ services:
       - "${SUPERSET_PORT_BIND:-127.0.0.1}:${SUPERSET_PORT_HOST:-8088}:8088"
 
   superset-mcp-light:
-    image: superset-superset-light
+    # the same image as `superset-light`, which Compose names after the project,
+    # so an isolated namespace has to say so. The build stanza repeats
+    # `x-common-build` from docker-compose-light.yml (YAML anchors do not cross
+    # files) so a fresh host can start this service without pulling.
+    build:
+      context: .
+      target: ${SUPERSET_BUILD_TARGET:-dev}
+      cache_from:
+        - apache/superset-cache:3.11-slim-trixie
+      args:
+        DEV_MODE: "true"
+        INCLUDE_CHROMIUM: ${INCLUDE_CHROMIUM:-false}
+        INCLUDE_FIREFOX: ${INCLUDE_FIREFOX:-false}
+        BUILD_TRANSLATIONS: ${BUILD_TRANSLATIONS:-false}
+    image: ${SUPERSET_LIGHT_IMAGE:-superset-superset-light}
     command: ["superset", "mcp", "run", "--host", "0.0.0.0", "--port", "5008"]
     restart: unless-stopped
     user: root
