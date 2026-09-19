@@ -81,9 +81,10 @@ class FakeBot:
     def __init__(self, *answers: Any) -> None:
         self.channel = APPROVED_CHANNEL
         self.answers = list(answers) or ["1789900000.000100"]
-        self.posts: list[dict[str, str]] = []
+        self.posts: list[dict[str, Any]] = []
+        self.authors: dict[str, dict[str, str]] = {}
         self.uploads: list[dict[str, str]] = []
-        self.edits: list[dict[str, str]] = []
+        self.edits: list[dict[str, Any]] = []
         self.edit_answers: list[Any] = []
 
     def _answer(self, calls: int) -> Any:
@@ -92,17 +93,30 @@ class FakeBot:
             raise answer
         return answer
 
-    def post(self, text: str, *, thread_ts: str = "") -> str:
-        self.posts.append({"text": text, "thread_ts": thread_ts})
+    def post(
+        self,
+        text: str,
+        *,
+        thread_ts: str = "",
+        blocks: list[dict[str, Any]] | None = None,
+    ) -> str:
+        self.posts.append(
+            {"text": text, "thread_ts": thread_ts, "blocks": blocks or []}
+        )
         return str(self._answer(len(self.posts)))
 
-    def amend(self, ts: str, text: str) -> str:
-        self.edits.append({"ts": ts, "text": text})
+    def amend(
+        self, ts: str, text: str, blocks: list[dict[str, Any]] | None = None
+    ) -> str:
+        self.edits.append({"ts": ts, "text": text, "blocks": blocks or []})
         answers = self.edit_answers or self.answers
         answer = answers[min(len(self.edits) - 1, len(answers) - 1)]
         if isinstance(answer, Exception):
             raise answer
         return str(answer)
+
+    def author_of(self, ts: str) -> dict[str, str]:
+        return self.authors.get(ts, {"readable": "", "detail": "not scripted"})
 
     def upload(
         self, path: Path, *, title: str, comment: str, thread_ts: str = ""
@@ -665,6 +679,38 @@ def test_the_sdk_client_does_not_retry_behind_the_ledger() -> None:
     # The ledger owns retrying; the SDK's own handlers would multiply it.
     assert bot.client.retry_handlers == []
     assert bot.client.timeout == 15
+
+
+def test_the_sdk_client_sends_blocks_without_unfurling_what_they_link_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = WebClientBot(token="xoxb-not-a-real-token")
+    seen: dict[str, Any] = {}
+
+    class Answer:
+        def __init__(self, ts: str) -> None:
+            self.data = {"ok": True, "ts": ts}
+
+    def post(**kwargs: Any) -> Answer:
+        seen.update(kwargs)
+        return Answer("1789900000.000100")
+
+    def update(**kwargs: Any) -> Answer:
+        seen.update(kwargs)
+        return Answer(str(kwargs["ts"]))
+
+    monkeypatch.setattr(bot.client, "chat_postMessage", post)
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "hi"}}]
+
+    assert bot.post("fallback", blocks=blocks) == "1789900000.000100"
+    assert seen["blocks"] == blocks and seen["text"] == "fallback"
+    # A status card links to a pull request and a session: neither belongs in
+    # the channel as an unrolled preview.
+    assert seen["unfurl_links"] is False and seen["unfurl_media"] is False
+
+    monkeypatch.setattr(bot.client, "chat_update", update)
+    assert bot.amend("1789900000.000100", "fallback", blocks) == "1789900000.000100"
+    assert seen["blocks"] == blocks and seen["link_names"] is False
 
 
 def test_a_refusal_and_an_ambiguous_failure_are_told_apart(

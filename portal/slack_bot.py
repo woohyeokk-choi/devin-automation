@@ -65,9 +65,19 @@ class SlackBot(Protocol):
     simulated: bool
     channel: str
 
-    def post(self, text: str, *, thread_ts: str = "") -> str: ...
+    def post(
+        self,
+        text: str,
+        *,
+        thread_ts: str = "",
+        blocks: list[dict[str, Any]] | None = None,
+    ) -> str: ...
 
-    def amend(self, ts: str, text: str) -> str: ...
+    def amend(
+        self, ts: str, text: str, blocks: list[dict[str, Any]] | None = None
+    ) -> str: ...
+
+    def author_of(self, ts: str) -> dict[str, str]: ...
 
     def upload(
         self, path: Path, *, title: str, comment: str, thread_ts: str = ""
@@ -92,12 +102,23 @@ class WebClientBot:
             token=self.token, timeout=int(self.timeout), retry_handlers=[]
         )
 
-    def post(self, text: str, *, thread_ts: str = "") -> str:
-        """Post to the approved channel and return the message's `ts`."""
+    def post(
+        self,
+        text: str,
+        *,
+        thread_ts: str = "",
+        blocks: list[dict[str, Any]] | None = None,
+    ) -> str:
+        """Post to the approved channel and return the message's `ts`.
+
+        `text` is what a notification and a screen reader get; `blocks`, when
+        given, is what the channel shows.
+        """
         response = self._answer(
             lambda: self.client.chat_postMessage(
                 channel=self.channel,
                 text=text,
+                blocks=blocks or None,
                 thread_ts=thread_ts or None,
                 unfurl_links=False,
                 unfurl_media=False,
@@ -105,7 +126,36 @@ class WebClientBot:
         )
         return str(response.get("ts") or "")
 
-    def amend(self, ts: str, text: str) -> str:
+    def author_of(self, ts: str) -> dict[str, str]:
+        """Who Slack says posted this message, as far as the scopes allow.
+
+        An edit is only safe on a message this app posted, and the ledger's
+        word for that is one side of the answer. Reading the message needs
+        history scopes this app may not hold, so a refusal is reported as an
+        unreadable author rather than raised: the caller decides what to do
+        without that evidence.
+        """
+        try:
+            data = self._answer(
+                lambda: self.client.conversations_replies(
+                    channel=self.channel, ts=ts, limit=1, inclusive=True
+                )
+            )
+        except (SlackRejected, Ambiguous) as exc:
+            return {"readable": "", "detail": str(exc)}
+        messages = data.get("messages") or []
+        first = messages[0] if messages else {}
+        return {
+            "readable": "yes" if first else "",
+            "bot_id": str(first.get("bot_id") or ""),
+            "app_id": str(first.get("app_id") or ""),
+            "user": str(first.get("user") or ""),
+            "detail": "" if first else "no message at that timestamp",
+        }
+
+    def amend(
+        self, ts: str, text: str, blocks: list[dict[str, Any]] | None = None
+    ) -> str:
         """Rewrite one message this deployment already posted.
 
         `chat_update` replaces a message in place, so the caller decides
@@ -117,6 +167,7 @@ class WebClientBot:
                 channel=self.channel,
                 ts=ts,
                 text=text,
+                blocks=blocks or None,
                 link_names=False,
             )
         )

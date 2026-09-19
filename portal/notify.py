@@ -50,7 +50,7 @@ import os
 import sqlite3
 import sys
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -111,6 +111,8 @@ CREATE TABLE IF NOT EXISTS notifications (
     repair_id   INTEGER,
     kind        TEXT NOT NULL,
     text        TEXT NOT NULL,
+    blocks      TEXT NOT NULL DEFAULT '',
+    fallback    TEXT NOT NULL DEFAULT '',
     state       TEXT NOT NULL,
     attempts    INTEGER NOT NULL DEFAULT 0,
     detail      TEXT,
@@ -218,6 +220,15 @@ def escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _payload(row: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """The Block Kit payload a ledger row carries, or None for prose."""
+    try:
+        blocks = json.loads(str(row.get("blocks") or ""))
+    except ValueError:
+        return None
+    return blocks if isinstance(blocks, list) and blocks else None
+
+
 def clip_upload_id(repair_id: int, recording: Recording, path: Path) -> str:
     """A stable id for one clip of one repair, from its bytes and its commit.
 
@@ -252,6 +263,14 @@ class NotificationLog:
             self._conn.execute(
                 "ALTER TABLE notifications ADD COLUMN ts TEXT NOT NULL DEFAULT ''"
             )
+        # A ledger written before cards existed holds prose rows; an empty
+        # payload is how such a row says it was sent as plain text.
+        for column in ("blocks", "fallback"):
+            if column not in columns:
+                self._conn.execute(
+                    f"ALTER TABLE notifications ADD COLUMN {column} "
+                    "TEXT NOT NULL DEFAULT ''"
+                )
         self._conn.commit()
         self._lock = threading.RLock()
 
@@ -425,18 +444,33 @@ class NotificationLog:
             ).fetchone()
         return dict(row) if row else None
 
-    def replace_text(self, notification_id: int, text: str) -> None:
+    def replace_text(
+        self, notification_id: int, text: str, card: Card | None = None
+    ) -> None:
+        """Record what a message says after an edit, payload included."""
         with self._lock, self._conn:
             self._conn.execute(
-                "UPDATE notifications SET text = ?, updated_at = ? WHERE id = ?",
-                (text, utcnow(), notification_id),
+                "UPDATE notifications SET text = ?, blocks = ?, fallback = ?, "
+                "updated_at = ? WHERE id = ?",
+                (
+                    text,
+                    json.dumps(card.blocks()) if card else "",
+                    card.fallback if card else "",
+                    utcnow(),
+                    notification_id,
+                ),
             )
 
     def close(self) -> None:
         self._conn.close()
 
     def enqueue(
-        self, event_id: str, kind: str, text: str, repair_id: int | None = None
+        self,
+        event_id: str,
+        kind: str,
+        text: str,
+        repair_id: int | None = None,
+        card: Card | None = None,
     ) -> dict[str, Any] | None:
         """Record a message to send, or return None if it is already known.
 
@@ -448,9 +482,21 @@ class NotificationLog:
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 "INSERT OR IGNORE INTO notifications "
-                "(event_id, repair_id, kind, text, state, next_try_at, "
-                " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (event_id, repair_id, kind, text, PENDING, now, now, now),
+                "(event_id, repair_id, kind, text, blocks, fallback, state, "
+                " next_try_at, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    event_id,
+                    repair_id,
+                    kind,
+                    text,
+                    json.dumps(card.blocks()) if card else "",
+                    card.fallback if card else "",
+                    PENDING,
+                    now,
+                    now,
+                    now,
+                ),
             )
             if cursor.rowcount != 1:
                 return None
@@ -605,8 +651,12 @@ class Notifier:
         repair_id: int | None = None,
         *,
         simulated_record: bool = False,
+        card: Card | None = None,
     ) -> str:
         """Record a message and try to deliver it. Returns its ledger state.
+
+        `card`, when given, is what the channel shows; `text` remains the
+        ledger's own full-detail record of the same transition.
 
         `simulated_record` is the stored row's own verdict on itself. A live
         notifier reading a scripted repair out of the database is the same
@@ -615,7 +665,10 @@ class Notifier:
         """
         if self.simulated or simulated_record:
             text = f"[SIMULATED] {text}"
-        row = self.log.enqueue(event_id, kind, text, repair_id)
+            card = (
+                replace(card, headline=f"[SIMULATED] {card.headline}") if card else None
+            )
+        row = self.log.enqueue(event_id, kind, text, repair_id, card)
         if row is None:
             existing = self.log.get(event_id)
             return str(existing["state"]) if existing else SENT
@@ -651,7 +704,8 @@ class Notifier:
                 self.webhook,
                 headers={"Content-Type": "application/json"},
                 json={
-                    "text": row["text"],
+                    "text": str(row.get("fallback") or row["text"]),
+                    **({"blocks": _payload(row)} if _payload(row) else {}),
                     # A status feed must not ping anyone or paste previews of
                     # every pull request it mentions.
                     "unfurl_links": False,
@@ -692,8 +746,16 @@ class Notifier:
             if repair_id is not None
             else ""
         )
+        blocks = _payload(row)
+        # A card carries the source label in its own context footer; a prose
+        # row still has it appended to the text.
+        spoken = (
+            str(row.get("fallback") or row["text"])
+            if blocks
+            else _labelled(str(row["text"]))
+        )
         try:
-            ts = bot.post(_labelled(str(row["text"])), thread_ts=thread_ts)
+            ts = bot.post(spoken, thread_ts=thread_ts, blocks=blocks)
         except Ambiguous as exc:
             self.log.settle(
                 notification_id,
@@ -804,7 +866,9 @@ class Notifier:
         self.log.settle_upload(upload_id, SENT, "", file_id)
         return {"state": SENT, "detail": "", "file_id": file_id}
 
-    def amend(self, ts: str, text: str, reason: str) -> dict[str, str]:
+    def amend(
+        self, ts: str, text: str, reason: str, card: Card | None = None
+    ) -> dict[str, str]:
         """Correct one message this ledger recorded posting, in place.
 
         Only a `ts` this deployment stored for a message it sent can be
@@ -832,9 +896,10 @@ class Notifier:
         if not self.enabled:
             return {"state": DISABLED, "detail": self.problem}
         previous = str(row["text"])
-        labelled = _labelled(text)
+        labelled = text if card else _labelled(text)
+        blocks = card.blocks() if card else None
         try:
-            self.bot.amend(ts, labelled)
+            self.bot.amend(ts, card.fallback if card else labelled, blocks)
         except Ambiguous as exc:
             detail = redact_webhook(f"edit outcome unknown ({exc})", self.webhook)
             self.log.record_amendment(
@@ -850,7 +915,7 @@ class Notifier:
         self.log.record_amendment(
             ts, self.channel, previous, labelled, reason, SENT, ""
         )
-        self.log.replace_text(int(row["id"]), labelled)
+        self.log.replace_text(int(row["id"]), labelled, card)
         return {"state": SENT, "detail": ""}
 
     def _retry(self, notification_id: int, attempts: int, detail: str) -> str:
@@ -1165,20 +1230,336 @@ def reconcile(
         try:
             if str(repair.get("updated_at") or "") < watermark:
                 continue
-            message = message_for_state(
-                repair, incident_of(int(repair["incident_id"]))
-            )
+            incident = incident_of(int(repair["incident_id"]))
+            message = message_for_state(repair, incident)
             if message is None or notifier.log.get(message[0]) is not None:
                 continue
+            action = STATE_ACTIONS.get(str(repair.get("state") or ""), "")
             notifier.publish(
                 *message,
                 repair_id=int(repair["id"]),
                 simulated_record=bool(repair.get("simulated")),
+                card=card_for(action, repair, incident) if action else None,
             )
             announced.append(message[0])
         except Exception:  # noqa: BLE001 - a status message may not break a repair
             log.exception("could not reconcile notifications for a repair")
     return announced
+
+
+# -------------------------------------------------------------------- cards
+#: Slack's own limits on the two blocks used here, minus room for an ellipsis.
+HEADER_LIMIT = 148
+SECTION_LIMIT = 600
+
+#: What a person recognises the failing scenario by. A case with no entry is
+#: described by its own contract rather than by a phrase invented for it.
+CASE_TITLES = {
+    "S1": "Chart settings changed unexpectedly",
+    "S2": "A chart setting was not saved",
+}
+
+#: How the broken contract reads in a sentence, with the recorded values put
+#: back in. Nothing here states a number of its own.
+CASE_STORIES = {
+    "S1": "Changing the sort order reset the saved row limit from {expected} to {observed}.",
+}
+
+
+@dataclass(frozen=True)
+class Card:
+    """One readable message: a headline, two short lines, labelled links.
+
+    The whole technical record — full ids, whole SHAs, assertion payloads,
+    ACU figures, attempt numbers — stays in the ledger, the console and the
+    evidence directory. A card carries what someone scrolling the channel
+    has to read, and `fallback` is what a notification and a screen reader
+    get instead of the blocks.
+    """
+
+    headline: str
+    what: str = ""
+    next_step: str = ""
+    links: tuple[tuple[str, str], ...] = ()
+    context: tuple[str, ...] = ()
+
+    @property
+    def fallback(self) -> str:
+        return _trim(f"{self.headline} — {self.what}" if self.what else self.headline, 180)
+
+    def blocks(self) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": _trim(self.headline, HEADER_LIMIT),
+                    "emoji": False,
+                },
+            }
+        ]
+        for body in (self.what, self.next_step):
+            if body:
+                blocks.append(
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": _trim(body, SECTION_LIMIT)},
+                    }
+                )
+        labelled = [
+            f"<{url}|{escape(label)}>" for label, url in self.links if _linkable(url)
+        ]
+        if labelled:
+            blocks.append(
+                {"type": "section", "text": {"type": "mrkdwn", "text": " · ".join(labelled)}}
+            )
+        footer = " · ".join([*(item for item in self.context if item), SOURCE_LABEL])
+        blocks.append(
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": footer}]}
+        )
+        return blocks
+
+
+def _trim(text: str, limit: int) -> str:
+    """One line, no longer than Slack allows. Never cut mid-explanation twice."""
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _linkable(url: str) -> bool:
+    """Whether this value may be put inside `<…|label>` as it stands."""
+    return (
+        url.startswith(("https://", "http://"))
+        and not any(character in url for character in "<>|")
+        and " " not in url
+    )
+
+
+def _card_links(repair: dict[str, Any], *order: str) -> tuple[tuple[str, str], ...]:
+    """Labelled links, in the order the card wants them, skipping absent ones."""
+    pr_url = str(repair.get("agent_pr_url") or "")
+    number = pr_url.rstrip("/").rsplit("/", 1)[-1] if pr_url else ""
+    available = {
+        "pr": (f"Review PR #{number}" if number.isdigit() else "Review the pull request", pr_url),
+        "session": ("Open Devin", str(repair.get("session_url") or "")),
+        "issue": ("View issue", str(repair.get("issue_url") or "")),
+    }
+    return tuple(
+        (label, url) for label, url in (available[key] for key in order) if url
+    )
+
+
+def _when(value: Any) -> str:
+    """`Sep 20, 01:17 UTC` from a stored timestamp, or the value unchanged."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        moment = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return escape(_trim(raw, 40))
+    return moment.astimezone(timezone.utc).strftime("%b %-d, %H:%M UTC")
+
+
+def _story(repair: dict[str, Any], incident: dict[str, Any] | None) -> str:
+    """What broke, in one sentence, from the assertion that failed."""
+    case = _case(repair, incident)
+    for event in (incident or {}).get("events") or []:
+        assertion = event.get("assertion") or {}
+        if assertion and not assertion.get("holds"):
+            expected = _value(assertion.get("expected"))
+            observed = _value(assertion.get("observed"))
+            template = CASE_STORIES.get(case)
+            if template:
+                return template.format(expected=expected, observed=observed)
+            return (
+                f"`{escape(str(assertion.get('name', '')))}` expected {expected}, "
+                f"observed {observed}."
+            )
+    return "A registered check on a supported case failed."
+
+
+def _value(value: Any) -> str:
+    """One recorded value as a reader sees it: `1,000`, or its quoted text."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return _short(json.dumps(value), 60)
+    return f"{value:,}"
+
+
+def _reproduced(repair: dict[str, Any]) -> bool:
+    """Whether the session itself claims it reproduced the failure."""
+    try:
+        output = json.loads(str(repair.get("agent_output") or "{}"))
+    except ValueError:
+        return False
+    return bool(isinstance(output, dict) and output.get("reproduced"))
+
+
+def _passed_checks(repair: dict[str, Any], field: str = "verification") -> str:
+    """`13 registered checks` if the attempt recorded a count, else nothing.
+
+    Read from the stored verification record, so a card never invents a
+    number that no replay produced.
+    """
+    try:
+        record = json.loads(str(repair.get(field) or "{}"))
+    except ValueError:
+        return ""
+    count = record.get("checks") if isinstance(record, dict) else None
+    return f"{int(count)} registered checks" if isinstance(count, int) and count else ""
+
+
+def card_for(  # noqa: C901 - one branch per lifecycle state, each of them flat
+    action: str, repair: dict[str, Any], incident: dict[str, Any] | None = None
+) -> Card | None:
+    """The card a decision deserves, or None where prose is all there is.
+
+    Each lifecycle state reads differently on purpose: a suspected defect is
+    not a confirmed one, a pull request is not an accepted one, a preview
+    pass is not a merge, and a requested recording is not a delivered one.
+    """
+    case = _case(repair, incident)
+    head = str(repair.get("pr_head_sha") or "")[:8]
+    trace = _trace(incident)[:8]
+    baseline = str((incident or {}).get("baseline_sha") or "")[:8]
+
+    if action == "dispatched":
+        return Card(
+            headline=f"Investigating · {CASE_TITLES.get(case, 'A saved setting misbehaved')}",
+            what=f"*What happened:* {_story(repair, incident)}",
+            next_step=(
+                "*Next:* Devin will reproduce the issue and prepare a fix. "
+                "No merge without approval."
+            ),
+            links=_card_links(repair, "issue", "session"),
+            context=(
+                case,
+                trace,
+                f"Baseline {baseline}" if baseline else "",
+                f"Requested limit {repair.get('acu_limit')} ACUs",
+                f"Deadline {_when(repair.get('deadline_utc'))}",
+            ),
+        )
+    if action == "candidate":
+        opened = (
+            "Devin reproduced the failure and opened a fix."
+            if _reproduced(repair)
+            else "Devin opened a fix; it has not reported a reproduction."
+        )
+        return Card(
+            headline="Fix proposed · Independent checks running",
+            what=opened,
+            next_step=(
+                "*Next:* replay the original scenario against this pull request. "
+                "Not yet accepted."
+            ),
+            links=_card_links(repair, "pr", "session", "issue"),
+            context=(case, f"Candidate {head}", f"Attempt {repair.get('attempt') or 1}"),
+        )
+    if action in ("verified", "awaiting_merge"):
+        gated = action == "awaiting_merge"
+        checks = _passed_checks(repair)
+        return Card(
+            headline=(
+                "Preview passed · Awaiting your merge"
+                if gated
+                else "Preview passed · Not merged"
+            ),
+            what=(
+                "The original scenario and the required controls passed on the "
+                f"pull request commit{f' ({checks})' if checks else ''}."
+            ),
+            next_step=(
+                "*Next:* review and merge the pull request when ready. The merged "
+                "version is then rebuilt and verified."
+                if gated
+                else "*Next:* a person decides what happens to this pull request."
+            ),
+            links=_card_links(repair, "pr", "session", "issue"),
+            context=(
+                "Not merged or deployed.",
+                f"Candidate {head}",
+                f"Verified {_when(_verified_at(repair))}",
+            ),
+        )
+    if action == "merge_verified":
+        merge = str(repair.get("merge_commit_sha") or "")[:8]
+        delivered = str(repair.get("media_state") or "") == "delivered"
+        return Card(
+            headline=(
+                "Merged code verified · Recording posted"
+                if delivered
+                else "Merged code verified · Recording pending"
+            ),
+            what=(
+                "The isolated demo deployment was rebuilt from the merge commit "
+                "and the same registered cases passed against it"
+                + (
+                    f" ({_passed_checks(repair, 'merge_verification')})."
+                    if _passed_checks(repair, "merge_verification")
+                    else "."
+                )
+            ),
+            next_step=(
+                "The recording of the merged code is in this thread."
+                if delivered
+                else "*Next:* the session's recording of the merged code follows here."
+            ),
+            links=_card_links(repair, "pr", "session", "issue"),
+            context=(case, f"Merged {merge}", "Isolated demo deployment, not public"),
+        )
+    if action == "merge_failed":
+        return Card(
+            headline="Merged code did not pass · Needs you",
+            what=f"The merged commit failed its replay: {_short(repair.get('attention'), 160)}",
+            next_step="*Next:* a person decides whether to revert or to fix forward.",
+            links=_card_links(repair, "pr", "session", "issue"),
+            context=(case, f"Merged {str(repair.get('merge_commit_sha') or '')[:8]}"),
+        )
+    if action == "blocked":
+        return Card(
+            headline="Checks blocked · No verdict",
+            what=f"The replay could not finish: {_short(repair.get('attention'), 160)}",
+            next_step=f"*Next:* {_next_after_block(repair)}.",
+            links=_card_links(repair, "pr", "session"),
+            context=(case, f"Candidate {head}" if head else ""),
+        )
+    if action == "followed_up":
+        return Card(
+            headline="Checks failed · Devin is retrying",
+            what="The replay of the pull request commit did not pass.",
+            next_step=(
+                f"*Next:* follow-up {repair.get('follow_ups')} of 2 went back to the "
+                "same session with the failing checks. No new session, no extra budget."
+            ),
+            links=_card_links(repair, "pr", "session", "issue"),
+            context=(case, f"Candidate {head}" if head else ""),
+        )
+    if action in ("parked", "waiting"):
+        return Card(
+            headline="Needs you · Repair paused",
+            what=_short(repair.get("attention"), 200),
+            next_step="*Next:* nothing moves until a person looks at it.",
+            links=_card_links(repair, "issue", "session", "pr"),
+            context=(case,),
+        )
+    if action == "stopped":
+        return Card(
+            headline="Repair stopped",
+            what=_short(repair.get("terminal_reason"), 200),
+            next_step="",
+            links=_card_links(repair, "issue", "session", "pr"),
+            context=(case,),
+        )
+    return None
+
+
+def _verified_at(repair: dict[str, Any]) -> str:
+    try:
+        record = json.loads(str(repair.get("verification") or "{}"))
+    except ValueError:
+        return ""
+    return str(record.get("at") or "") if isinstance(record, dict) else ""
 
 
 def _checks(repair: dict[str, Any]) -> str:

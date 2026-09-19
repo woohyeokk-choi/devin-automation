@@ -356,7 +356,7 @@ def test_the_worker_announces_a_dispatch_and_says_nothing_about_polling(
     controller.consider(incident)
     assert [d.action for d in worker.tick()] == ["dispatched"]
     assert len(wire.calls) == 1
-    assert "Suspected defect — investigation started" in wire.calls[0]["json"]["text"]
+    assert "Investigating ·" in wire.calls[0]["json"]["text"]
 
     # The next pass only polls a running session: nothing new to say.
     assert [d.action for d in worker.tick()] == ["running"]
@@ -412,7 +412,7 @@ def test_a_dispatch_whose_process_died_before_speaking_is_announced_on_restart(
     recovered = restarted.catch_up()
 
     assert len(recovered) == 1 and len(wire.calls) == 1
-    assert "Suspected defect — investigation started" in wire.calls[0]["json"]["text"]
+    assert "Investigating ·" in wire.calls[0]["json"]["text"]
     # Neither a further restart nor the live pass repeats it: the event id
     # is the same either way, and the ledger already holds it.
     assert restarted.catch_up() == []
@@ -420,6 +420,6 @@ def test_a_dispatch_whose_process_died_before_speaking_is_announced_on_restart(
     started = [
         call
         for call in wire.calls
-        if "investigation started" in call["json"]["text"]
+        if "Investigating ·" in call["json"]["text"]
     ]
     assert len(started) == 1

@@ -559,8 +559,10 @@ def test_a_restart_announces_an_outcome_whose_message_died_with_the_process(
     announced = reconcile([REPAIR], notifier, lambda _id: INCIDENT)
 
     assert announced == [f"2:verified:{'f' * 40}"]
-    assert "Verification passed" in wire.calls[0]["json"]["text"]
-    assert PREVIEW_ONLY in wire.calls[0]["json"]["text"]
+    # The channel gets the card; the ledger keeps the detailed line.
+    assert "Preview passed" in wire.calls[0]["json"]["text"]
+    stored = notifier.log.get(f"2:verified:{'f' * 40}")
+    assert stored is not None and PREVIEW_ONLY in str(stored["text"])
     # A second restart owes the channel nothing.
     assert reconcile([REPAIR], notifier, lambda _id: INCIDENT) == []
     assert len(wire.calls) == 1
