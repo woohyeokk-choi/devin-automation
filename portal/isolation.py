@@ -95,23 +95,34 @@ class IsolatedStack:
         project = f"candidate{head_sha[:12]}"
         checkout = self.workspace / project
         commands: list[str] = []
-        self._checkout(head_sha, checkout, commands)
-        self._compose(project, checkout, ["up", "-d", WEB_SERVICE, MCP_SERVICE], commands)
         base_url = f"http://127.0.0.1:{self.web_port}"
         mcp_url = f"http://127.0.0.1:{self.mcp_port}/mcp"
-        self._wait(f"{base_url}/health", commands)
-        self._seed(base_url, mcp_url, commands)
-        provenance = measure(
-            project=project,
-            web_service=WEB_SERVICE,
-            mcp_service=MCP_SERVICE,
-            base_url=base_url,
-            dataset_table="synthetic_orders",
-            username="admin",
-            password="admin",
-            automation_ref=self.automation_ref,
-            config_files=[self.automation_dir / "stack" / "superset_config_mcp.py"],
-        )
+        try:
+            self._checkout(head_sha, checkout, commands)
+            self._compose(
+                project, checkout, ["up", "-d", WEB_SERVICE, MCP_SERVICE], commands
+            )
+            self._wait(f"{base_url}/health", commands)
+            self._seed(project, base_url, mcp_url, commands)
+            provenance = measure(
+                project=project,
+                web_service=WEB_SERVICE,
+                mcp_service=MCP_SERVICE,
+                base_url=base_url,
+                dataset_table="synthetic_orders",
+                username="admin",
+                password="admin",
+                automation_ref=self.automation_ref,
+                checkout=checkout,
+                config_files=[self.automation_dir / "stack" / "superset_config_mcp.py"],
+            )
+        except RunnerError:
+            # Only this attempt's namespace and checkout are removed. The
+            # baseline environment is a different Compose project and is not
+            # touched; leaving the candidate's volumes behind would let the
+            # next attempt inherit a half-seeded database.
+            self._discard(project, checkout)
+            raise
         return Environment(
             project=project,
             base_url=base_url,
@@ -121,6 +132,14 @@ class IsolatedStack:
             provenance=provenance,
             commands=commands,
         )
+
+    def _discard(self, project: str, checkout: Path) -> None:
+        if checkout.exists():
+            try:
+                self._compose(project, checkout, ["down", "-v", "--remove-orphans"], [])
+            except RunnerError:
+                pass
+            shutil.rmtree(checkout, ignore_errors=True)
 
     def teardown(self, environment: Environment) -> None:
         checkout = Path(environment.checkout)
@@ -164,7 +183,16 @@ class IsolatedStack:
         )
         self._run(argv, checkout, commands, env=env, timeout=self.timeout_seconds)
 
-    def _seed(self, base_url: str, mcp_url: str, commands: list[str]) -> None:
+    def _seed(
+        self, project: str, base_url: str, mcp_url: str, commands: list[str]
+    ) -> None:
+        """Seed the candidate's own stack, including the restricted N1 role.
+
+        The Compose project has to travel with the call: the seed derives its
+        database and web container names from it, and its guard refuses to run
+        when they belong to another namespace — which is what saves the
+        baseline stack from being written to by a candidate run.
+        """
         env = safe_environment(
             {},
             {
@@ -172,6 +200,10 @@ class IsolatedStack:
                 "SUPERSET_MCP_URL": mcp_url,
                 "SUPERSET_USERNAME": "admin",
                 "SUPERSET_PASSWORD": "admin",
+                "SUPERSET_COMPOSE_PROJECT": project,
+                "COMPOSE_PROJECT_NAME": project,
+                "SUPERSET_DB_CONTAINER": f"{project}-db-light-1",
+                "SUPERSET_WEB_CONTAINER": f"{project}-{WEB_SERVICE}-1",
             },
         )
         self._run(

@@ -14,8 +14,6 @@ Run:
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -24,54 +22,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scenarios._harness import Transcript, write_artifacts  # noqa: E402
 from clients.superset_client import SupersetClient  # noqa: E402
 
+# The Gamma user is part of the seeded fixture, so the scenario and a freshly
+# prepared candidate stack get the same one.
+from scripts.seed_synthetic import (  # noqa: E402
+    RESTRICTED_PASSWORD,
+    RESTRICTED_USER,
+    ensure_restricted_user,
+)
+
 SCENARIO_ID = "N1"
-RESTRICTED_USER = "restricted_analyst"
-# Throwaway credential for a Gamma user that exists only inside the local
-# light stack; override with RESTRICTED_PASSWORD for any shared environment.
-RESTRICTED_PASSWORD = os.environ.get("RESTRICTED_PASSWORD", "restricted-analyst-local")
 TAB_ID = "552266"
-# Which web container holds the metadata database: an isolated Compose
-# project names it after that project, so it cannot be assumed.
-WEB_CONTAINER = os.environ.get("SUPERSET_WEB_CONTAINER", "superset-superset-light-1")
-
-
-def _fab(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["docker", "exec", "-i", WEB_CONTAINER, "superset", "fab", *args],
-        capture_output=True,
-        text=True,
-    )
-
-
-def ensure_restricted_user() -> str:
-    """Create the Gamma user in the light stack, or realign its password."""
-    proc = _fab(
-        "create-user",
-        "--role",
-        "Gamma",
-        "--username",
-        RESTRICTED_USER,
-        "--firstname",
-        "Restricted",
-        "--lastname",
-        "Analyst",
-        "--email",
-        f"{RESTRICTED_USER}@example.invalid",
-        "--password",
-        RESTRICTED_PASSWORD,
-    )
-    output = proc.stdout + proc.stderr
-    if "already exists" in output or proc.returncode != 0:
-        proc = _fab(
-            "reset-password",
-            "--username",
-            RESTRICTED_USER,
-            "--password",
-            RESTRICTED_PASSWORD,
-        )
-        output = proc.stdout + proc.stderr
-    tail = output.strip().splitlines()[-1:] or [""]
-    return tail[0]
 
 
 def main() -> int:
@@ -125,7 +85,7 @@ def main() -> int:
         "observed": f"HTTP {status} on the restricted explore write",
         "authorization_disabled": False,
         "csrf_disabled": False,
-        "user_creation_output": create_output,
+        "restricted_user_fixture": create_output,
     }
 
     markdown = f"""# N1 (control) — expected permission denial

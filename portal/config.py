@@ -105,6 +105,15 @@ class Settings:
     verification_artifacts: str = field(
         default_factory=lambda: _env("PORTAL_VERIFICATION_ARTIFACTS", "")
     )
+    #: Loopback ports a candidate stack publishes. Configurable so a
+    #: verification never collides with a stack that already holds them, and
+    #: so no existing environment has to be torn down to make room.
+    verification_web_port: int = field(
+        default_factory=lambda: int(_env("PORTAL_VERIFICATION_WEB_PORT", "8288"))
+    )
+    verification_mcp_port: int = field(
+        default_factory=lambda: int(_env("PORTAL_VERIFICATION_MCP_PORT", "5208"))
+    )
     #: The product SHA this deployment is supposed to be running. When set,
     #: evidence measured against any other SHA is recorded but never becomes
     #: dispatchable: we cannot ask for a repair of code we cannot pin.

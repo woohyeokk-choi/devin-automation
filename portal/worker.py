@@ -55,6 +55,8 @@ def live_verifier(
     automation_ref: str,
     artifacts: Path,
     automation_dirty: bool = False,
+    web_port: int = 8288,
+    mcp_port: int = 5208,
 ) -> Verifier:
     """The real verifier: an isolated candidate stack graded by the pinned validator.
 
@@ -72,6 +74,8 @@ def live_verifier(
             automation_dir=automation_dir,
             workspace=workspace,
             automation_ref=automation_ref,
+            web_port=web_port,
+            mcp_port=mcp_port,
         ),
         store=verifications,
         target_repo=target_repo,
@@ -94,6 +98,8 @@ def build_controller(
     automation_dir: Path | None = None,
     workspace: Path | None = None,
     artifacts: Path | None = None,
+    web_port: int = 8288,
+    mcp_port: int = 5208,
     **kwargs: Any,
 ) -> Controller:
     """A controller wired for the mode it is actually in.
@@ -122,6 +128,8 @@ def build_controller(
             automation_ref=str(versions.get("automation_sha") or ""),
             automation_dirty=bool(versions.get("automation_dirty")),
             artifacts=artifacts,
+            web_port=web_port,
+            mcp_port=mcp_port,
         )
     return Controller(
         store,

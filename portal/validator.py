@@ -60,6 +60,37 @@ CASES_BY_FAMILY: dict[str, tuple[str, ...]] = {
 }
 
 
+#: The graded assertions each case must actually execute. Verification grades
+#: a report against this: a run that skipped a check, renamed one or invented
+#: one did not answer the question, whatever its summary says. Setup checks
+#: are deliberately absent — they block rather than grade, and which ones run
+#: depends on how far the case got.
+REQUIRED_CHECKS: dict[str, tuple[str, ...]] = {
+    "S2": (
+        "new_exploration_does_not_reuse_a_discarded_key",
+        "discarded_link_stays_dead_after_a_new_exploration",
+        "the_new_exploration_reads_back_exactly_what_was_saved",
+        "control_a_second_workspace_gets_its_own_key",
+        "control_a_second_workspace_reads_its_own_state",
+        "control_same_context_save_without_discarding_updates_in_place",
+        "control_same_context_reuse_serves_the_latest_state",
+    ),
+    "S1": (
+        "the_requested_sort_change_persists",
+        "an_omitted_row_limit_keeps_the_saved_value",
+        "an_omitted_palette_keeps_the_saved_value",
+        "control_an_explicit_row_limit_is_applied",
+        "control_an_explicit_schema_default_row_limit_is_applied",
+        "control_a_new_chart_keeps_the_schema_default_row_limit",
+    ),
+    "N1": (
+        "control_the_restricted_role_can_list_charts",
+        "the_restricted_role_is_denied_a_write",
+        "the_restricted_role_is_denied_chart_data",
+    ),
+}
+
+
 class Blocked(Exception):
     """Setup, environment or authentication failure. Never a verdict."""
 

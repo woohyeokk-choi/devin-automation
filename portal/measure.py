@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,26 @@ from .events import utcnow
 
 SOURCE_MOUNT = "/app/superset"
 CONFIG_ENV = "SUPERSET_CONFIG_PATH"
+
+#: Hashes the Python sources of a tree. Run unchanged on the host checkout and
+#: inside each container, so the two digests are comparable: if a container
+#: serves anything other than the checked-out commit — an older image layer, a
+#: mount that silently did not apply, an edited file — the digests differ.
+_DIGEST_SCRIPT = """
+import hashlib, os, sys
+root = sys.argv[1]
+digest = hashlib.sha256()
+for base, dirs, files in os.walk(root):
+    dirs[:] = sorted(d for d in dirs if d != '__pycache__')
+    for name in sorted(files):
+        if not name.endswith('.py'):
+            continue
+        path = os.path.join(base, name)
+        digest.update(os.path.relpath(path, root).encode())
+        with open(path, 'rb') as handle:
+            digest.update(hashlib.sha256(handle.read()).digest())
+print(digest.hexdigest()[:32])
+"""
 
 
 def _run(*args: str) -> str:
@@ -84,6 +105,7 @@ def service_identity(project: str, service: str) -> dict[str, Any]:
         "source_mount": source,
         "config_path": env.get(CONFIG_ENV, ""),
     }
+    identity["code_hash"] = container_tree_digest(container)
     if source and Path(source).exists():
         identity["source_sha"] = _git(source, "rev-parse", "HEAD")
         identity["clean"] = not _git(source, "status", "--porcelain")
@@ -92,6 +114,23 @@ def service_identity(project: str, service: str) -> dict[str, Any]:
         identity["clean"] = None
         identity["note"] = "the source mount is not a path on this host"
     return identity
+
+
+def tree_digest(root: Path) -> str:
+    """The digest of a source tree on this host."""
+    if not root.exists():
+        return ""
+    return _run(sys.executable, "-c", _DIGEST_SCRIPT, str(root))
+
+
+def container_tree_digest(container: str, path: str = SOURCE_MOUNT) -> str:
+    """The digest of the source tree as seen from inside the container."""
+    if not container:
+        return ""
+    lines = _run(
+        "docker", "exec", container, "python3", "-c", _DIGEST_SCRIPT, path
+    ).splitlines()
+    return lines[-1].strip() if lines else ""
 
 
 def config_revision(paths: list[Path]) -> str:
@@ -164,13 +203,26 @@ def measure(
     username: str,
     password: str,
     automation_ref: str,
+    checkout: Path | None = None,
     config_files: list[Path] | None = None,
 ) -> dict[str, Any]:
-    """One provenance document, measured per service at this moment."""
+    """One provenance document, measured per service at this moment.
+
+    `checkout` is the trusted tree the verifier itself checked out. Its digest
+    is what each container's digest has to equal; without it there is nothing
+    to compare a container against.
+    """
+    source = (checkout / "superset") if checkout else None
     return {
         "measured_at": utcnow(),
         "automation_ref": automation_ref,
         "compose_project": project,
+        "checkout": {
+            "path": str(checkout.resolve()) if checkout else "",
+            "source_sha": _git(str(checkout), "rev-parse", "HEAD") if checkout else "",
+            "clean": (not _git(str(checkout), "status", "--porcelain")) if checkout else None,
+            "code_hash": tree_digest(source) if source else "",
+        },
         "config_revision": config_revision(config_files or []),
         "fixture": fixture_digest(base_url, dataset_table, username, password),
         "web": service_identity(project, web_service),
@@ -192,6 +244,8 @@ def agrees(measured: dict[str, Any]) -> bool:
 __all__ = [
     "agrees",
     "config_revision",
+    "container_tree_digest",
+    "tree_digest",
     "fixture_digest",
     "measure",
     "service_identity",

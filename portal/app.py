@@ -102,6 +102,8 @@ controller = build_controller(
         if settings.verification_artifacts
         else None
     ),
+    web_port=settings.verification_web_port,
+    mcp_port=settings.verification_mcp_port,
     # The worker rebuilds the brief from stored evidence when it claims a
     # queued proposal, rather than carrying it from the request that observed
     # the failure.

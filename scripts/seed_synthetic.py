@@ -34,6 +34,9 @@ COMPOSE_PROJECT = (
     or "superset"
 )
 DB_CONTAINER = os.environ.get("SUPERSET_DB_CONTAINER", f"{COMPOSE_PROJECT}-db-light-1")
+WEB_CONTAINER = os.environ.get(
+    "SUPERSET_WEB_CONTAINER", f"{COMPOSE_PROJECT}-superset-light-1"
+)
 DB_NAME = os.environ.get("SUPERSET_DB_NAME", "superset_light")
 DB_USER = os.environ.get("SUPERSET_DB_USER", "superset")
 DB_PASSWORD = os.environ.get("SUPERSET_DB_PASSWORD", "superset")
@@ -46,6 +49,14 @@ TABLE_NAME = "synthetic_orders"
 SCHEMA = "public"
 
 ROW_COUNT = 600
+
+#: The N1 control needs a role that legitimately cannot reach the dataset.
+#: It is part of the fixture, not a rescue step someone remembers to run: a
+#: freshly prepared stack without it reports the denial control as blocked.
+RESTRICTED_USER = os.environ.get("SUPERSET_RESTRICTED_USERNAME", "restricted_analyst")
+#: Throwaway credential for a Gamma user that exists only inside a local
+#: light stack; override for any shared environment.
+RESTRICTED_PASSWORD = os.environ.get("RESTRICTED_PASSWORD", "restricted-analyst-local")
 
 DDL = f"""
 DROP TABLE IF EXISTS {SCHEMA}.{TABLE_NAME};
@@ -136,6 +147,40 @@ def check_target() -> None:
         )
 
 
+def ensure_restricted_user() -> str:
+    """Create the Gamma user in this stack, or realign its password."""
+    def fab(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["docker", "exec", "-i", WEB_CONTAINER, "superset", "fab", *args],
+            capture_output=True,
+            text=True,
+        )
+
+    proc = fab(
+        "create-user",
+        "--role", "Gamma",
+        "--username", RESTRICTED_USER,
+        "--firstname", "Restricted",
+        "--lastname", "Analyst",
+        "--email", f"{RESTRICTED_USER}@example.invalid",
+        "--password", RESTRICTED_PASSWORD,
+    )
+    output = proc.stdout + proc.stderr
+    if "already exists" not in output and proc.returncode == 0:
+        return "created"
+    reset = fab(
+        "reset-password",
+        "--username", RESTRICTED_USER,
+        "--password", RESTRICTED_PASSWORD,
+    )
+    if reset.returncode != 0:
+        raise SystemExit(
+            f"could not provide the restricted {RESTRICTED_USER} fixture: "
+            f"{(reset.stderr or output).strip()[-300:]}"
+        )
+    return "reused"
+
+
 def run_sql(sql: str) -> str:
     return subprocess.run(
         ["docker", "exec", "-i", DB_CONTAINER, "psql", "-U", DB_USER, "-d", DB_NAME],
@@ -170,6 +215,8 @@ def main() -> int:
     if dataset_id is None:
         dataset_id = client.create_dataset(database_id, SCHEMA, TABLE_NAME)
 
+    restricted = ensure_restricted_user()
+
     print(
         json.dumps(
             {
@@ -178,6 +225,7 @@ def main() -> int:
                 "dataset_id": dataset_id,
                 "table": f"{SCHEMA}.{TABLE_NAME}",
                 "fixture_revision": fixture_revision(int(row_count)),
+                "restricted_user": {"username": RESTRICTED_USER, "state": restricted},
             },
             indent=2,
         )

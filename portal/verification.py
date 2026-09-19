@@ -30,16 +30,45 @@ import json
 import sqlite3
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
 from .events import utcnow
 from .providers import GitHub
-from .validator import BLOCKED, CASES_BY_FAMILY, FAILED, PASSED
+from .validator import BLOCKED, CASES_BY_FAMILY, FAILED, PASSED, REQUIRED_CHECKS
 
-#: Where a repair is allowed to change code. A repair for one runtime defect
-#: touches product code and its tests; nothing else.
-ALLOWED_PREFIXES: tuple[str, ...] = ("superset/", "tests/")
+GRADED_KINDS = ("target", "control")
+KNOWN_KINDS = GRADED_KINDS + ("setup",)
+
+#: Where a repair is allowed to change code, per failure family. A repair for
+#: one runtime defect touches the product code that defect lives in and the
+#: tests for it; ``superset/`` as a whole is far wider than one defect, and
+#: includes files such as ``superset/config.py`` that set authentication and
+#: CSRF for the entire application.
+SCOPE_BY_FAMILY: dict[str, tuple[str, ...]] = {
+    "discarded_form_data_key_is_reused": (
+        "superset/explore/form_data/",
+        "superset/commands/explore/form_data/",
+        "superset/key_value/",
+        "superset/commands/key_value/",
+        "tests/unit_tests/explore/",
+        "tests/unit_tests/key_value/",
+        "tests/integration_tests/explore/",
+    ),
+    "omitted_row_limit_is_reset": (
+        "superset/commands/chart/",
+        "superset/charts/",
+        "superset/mcp_service/",
+        "tests/unit_tests/charts/",
+        "tests/unit_tests/commands/chart/",
+        "tests/unit_tests/mcp_service/",
+        "tests/integration_tests/charts/",
+    ),
+}
+
+#: Product prefixes: a diff of tests alone repairs nothing.
+PRODUCT_PREFIX = "superset/"
 
 #: Checked first. Some of these are unreachable from the product repository
 #: anyway (the validator lives in the automation repository); they are listed
@@ -47,6 +76,9 @@ ALLOWED_PREFIXES: tuple[str, ...] = ("superset/", "tests/")
 #: repository layout to enforce it.
 FORBIDDEN_PREFIXES: tuple[str, ...] = (
     ".github/",
+    "superset/config.py",
+    "superset/app.py",
+    "superset/initialization/",
     "docker/",
     "docker-compose",
     "Dockerfile",
@@ -79,21 +111,138 @@ class ScopeVerdict:
     reasons: tuple[str, ...] = ()
 
 
-def check_scope(paths: list[str]) -> ScopeVerdict:
-    """Whether this diff is a repair of one product defect, and nothing else."""
+def check_scope(paths: list[str], family: str) -> ScopeVerdict:
+    """Whether this diff repairs *this* defect, and nothing else.
+
+    Path policy does not prove a change is semantically safe — only review and
+    the replay can say that. What it does prove is that the diff stays inside
+    the code the registered defect lives in, so global configuration, the
+    fixtures, the grader or the build cannot ride along into a run whose
+    verdict is about something else. An unregistered family has no scope and
+    goes to review rather than defaulting to the whole product tree.
+    """
     if not paths:
         return ScopeVerdict(False, ("the pull request changes no files",))
     if len(paths) > MAX_CHANGED_FILES:
         return ScopeVerdict(
             False, (f"{len(paths)} files changed; a single-defect repair is smaller",)
         )
+    allowed = SCOPE_BY_FAMILY.get(family)
+    if not allowed:
+        return ScopeVerdict(
+            False,
+            (
+                f"no change scope is registered for {family or 'an unnamed family'}; "
+                "this candidate needs review",
+            ),
+        )
     reasons: list[str] = []
     for path in paths:
         if any(path.startswith(prefix) for prefix in FORBIDDEN_PREFIXES):
             reasons.append(f"{path} is outside what a repair may change")
-        elif not any(path.startswith(prefix) for prefix in ALLOWED_PREFIXES):
-            reasons.append(f"{path} is not product code or a product test")
+        elif not any(path.startswith(prefix) for prefix in allowed):
+            reasons.append(f"{path} is not in the registered scope for {family}")
+    if not reasons and not any(path.startswith(PRODUCT_PREFIX) for path in paths):
+        reasons.append("the candidate changes no product code")
     return ScopeVerdict(not reasons, tuple(reasons))
+
+
+# ------------------------------------------------------------------ grading
+def grade(report: dict[str, Any], cases: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
+    """The verdict the *checks* support, ignoring what the report claims.
+
+    A replay hands back a summary and a list of results. The summary is the
+    easiest thing in the system to get wrong and the easiest to forge, so it
+    is not consulted: the verdict is rebuilt from the graded assertions and
+    the report only has to agree.
+
+    Every requested case must appear exactly once, carrying exactly the
+    assertions registered for it in :data:`portal.validator.REQUIRED_CHECKS`,
+    each with a usable kind and a boolean outcome. A missing, duplicated,
+    renamed or foreign assertion means the question was not answered:
+    ``blocked``, not ``failed`` — there is no product evidence to send back,
+    and a session asked to fix something on that basis would be paid to chase
+    nothing.
+    """
+    results = report.get("cases")
+    if not isinstance(results, list) or not results:
+        return BLOCKED, ("the replay produced no case results",)
+
+    seen: list[str] = []
+    failures: list[str] = []
+    blocked: list[str] = []
+    for result in results:
+        if not isinstance(result, dict):
+            return BLOCKED, ("a case result is not a record",)
+        name = str(result.get("case") or "")
+        if name in seen:
+            return BLOCKED, (f"case {name} was reported more than once",)
+        seen.append(name)
+        if name not in cases:
+            return BLOCKED, (
+                f"the replay reported case {name or '<unnamed>'}, which was not requested",
+            )
+        if str(result.get("verdict") or "") == BLOCKED or result.get("blocked_reason"):
+            blocked.append(
+                f"{name}: blocked — {result.get('blocked_reason') or 'no reason given'}"
+            )
+            continue
+        problem, case_failures = _grade_case(name, result)
+        if problem:
+            return BLOCKED, (problem,)
+        failures.extend(case_failures)
+
+    missing = [case for case in cases if case not in seen]
+    if missing:
+        return BLOCKED, tuple(f"case {case} never ran" for case in missing)
+    if blocked:
+        return BLOCKED, tuple(blocked)
+    if failures:
+        return FAILED, tuple(failures)
+    return PASSED, ()
+
+
+def _grade_case(name: str, result: dict[str, Any]) -> tuple[str, list[str]]:
+    """``(problem, failure lines)`` for one case that claims to have run."""
+    required = REQUIRED_CHECKS.get(name)
+    if not required:
+        return f"no registered assertions exist for case {name}", []
+    checks = result.get("checks")
+    if not isinstance(checks, list):
+        return f"case {name} reported no assertions", []
+
+    graded: dict[str, bool] = {}
+    for check in checks:
+        if not isinstance(check, dict):
+            return f"case {name} reported an assertion that is not a record", []
+        check_name = str(check.get("name") or "")
+        kind = str(check.get("kind") or "")
+        if kind not in KNOWN_KINDS:
+            return f"{name}.{check_name or '<unnamed>'} has no usable kind", []
+        if kind not in GRADED_KINDS:
+            continue
+        if check_name not in required:
+            return f"{name}.{check_name or '<unnamed>'} is not a registered assertion", []
+        if check_name in graded:
+            return f"{name}.{check_name} was reported twice", []
+        holds = check.get("holds")
+        if not isinstance(holds, bool):
+            return f"{name}.{check_name} did not record whether it held", []
+        graded[check_name] = holds
+
+    absent = [check for check in required if check not in graded]
+    if absent:
+        return f"case {name} never executed {', '.join(absent)}", []
+
+    return "", [
+        f"{name}.{check['name']}: expected {check.get('expected')!r}, "
+        f"observed {check.get('observed')!r}"
+        + (f" ({check['note']})" if check.get("note") else "")
+        for check in checks
+        if isinstance(check, dict)
+        and check.get("kind") in GRADED_KINDS
+        and check.get("holds") is False
+    ]
 
 
 # ------------------------------------------------------------------ running
@@ -122,36 +271,139 @@ class Runner(Protocol):
     def teardown(self, environment: Environment) -> None: ...
 
 
-def provenance_problem(environment: Environment, head_sha: str) -> str:
+#: How old a measurement may be and still describe the run it belongs to.
+MAX_PROVENANCE_AGE_MINUTES = 360
+
+
+def _inside(mount: str, checkout: str) -> bool:
+    """Whether `mount` is the checkout or lives under it, by resolved path.
+
+    String containment is not enough: ``/tmp/candidate-other/superset`` starts
+    with ``/tmp/candidate`` and is a different tree.
+    """
+    try:
+        resolved = Path(mount).resolve()
+        root = Path(checkout).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return resolved == root or root in resolved.parents
+
+
+def provenance_problem(
+    environment: Environment,
+    head_sha: str,
+    *,
+    now: datetime | None = None,
+) -> str:
     """Why the measured stack cannot stand for this commit, or ``""``.
 
-    The point of the check: a provenance file that merely *says* a SHA proves
-    nothing. The recorded source path has to be the candidate checkout, the
-    tree has to be clean, and the SHA the containers mounted has to be the one
-    under verification.
+    A provenance file that merely *says* a SHA proves nothing, so nothing here
+    is optional and nothing absent counts as true. Each service must name the
+    container and image that served it, be running, mount a path that resolves
+    inside the candidate checkout, sit on the commit under verification with a
+    clean tree, and — the part a stale or mis-built image fails — hold source
+    whose digest, measured *inside* that container, equals the digest of the
+    tree the verifier itself checked out.
     """
     measured = environment.provenance or {}
     if not measured:
         return "no provenance was measured for the candidate stack"
-    if not measured.get("measured_at"):
-        return "the candidate provenance carries no measurement time"
+
+    stamp = str(measured.get("measured_at") or "")
+    try:
+        measured_at = datetime.fromisoformat(stamp)
+    except ValueError:
+        return f"the candidate provenance carries no readable measurement time ({stamp!r})"
+    if measured_at.tzinfo is None:
+        measured_at = measured_at.replace(tzinfo=timezone.utc)
+    reference = now or datetime.now(timezone.utc)
+    age = (reference - measured_at).total_seconds() / 60
+    if age > MAX_PROVENANCE_AGE_MINUTES:
+        return f"the candidate provenance was measured {int(age)} minutes ago"
+    if age < -5:
+        return "the candidate provenance is stamped in the future"
+
+    if str(measured.get("compose_project") or "") != environment.project:
+        return (
+            f"the provenance describes Compose project "
+            f"{measured.get('compose_project') or 'nothing'}, not {environment.project}"
+        )
+
+    checkout = measured.get("checkout") or {}
+    expected_hash = str(checkout.get("code_hash") or "")
+    if not expected_hash:
+        return "the candidate checkout was never hashed, so no container can be compared to it"
+    if not _inside(str(checkout.get("path") or ""), environment.checkout):
+        return (
+            f"the hashed tree {checkout.get('path') or 'an unknown path'} is not the "
+            f"candidate checkout {environment.checkout}"
+        )
+    if str(checkout.get("source_sha") or "").lower() != head_sha.lower():
+        return (
+            f"the candidate checkout is at "
+            f"{checkout.get('source_sha') or 'an unknown commit'}, not {head_sha}"
+        )
+    if checkout.get("clean") is not True:
+        return "the candidate checkout is not a clean tree"
+
     for service in ("web", "mcp"):
-        service_data = measured.get(service) or {}
-        if not service_data:
-            return f"nothing was measured for the {service} service"
-        if str(service_data.get("source_sha") or "").lower() != head_sha.lower():
-            return (
-                f"the {service} service is running "
-                f"{service_data.get('source_sha') or 'an unknown commit'}, not {head_sha}"
-            )
-        mount = str(service_data.get("source_mount") or "")
-        if not mount or not mount.startswith(environment.checkout):
-            return (
-                f"the {service} service mounts {mount or 'an unknown path'}, "
-                f"not the candidate checkout {environment.checkout}"
-            )
-        if service_data.get("clean") is False:
-            return f"the {service} checkout has uncommitted changes"
+        problem = _service_problem(
+            service, measured.get(service) or {}, environment, head_sha, expected_hash
+        )
+        if problem:
+            return problem
+
+    fixture = measured.get("fixture") or {}
+    if fixture.get("error") or not fixture.get("digest"):
+        return (
+            "the fixture the run would read was not measured"
+            + (f": {fixture['error']}" if fixture.get("error") else "")
+        )
+    if not measured.get("automation_ref"):
+        return "the provenance does not say which automation revision graded the run"
+    if not measured.get("config_revision"):
+        return "the provenance does not say which configuration the stack was started with"
+    return ""
+
+
+def _service_problem(
+    service: str,
+    data: dict[str, Any],
+    environment: Environment,
+    head_sha: str,
+    expected_hash: str,
+) -> str:
+    """Why one measured service cannot stand for the candidate commit."""
+    if not data or data.get("error"):
+        return (
+            f"nothing usable was measured for the {service} service"
+            + (f": {data['error']}" if data.get("error") else "")
+        )
+    for field_name in ("container_id", "image_id"):
+        if not data.get(field_name):
+            return f"the {service} service reports no {field_name.replace('_', ' ')}"
+    if str(data.get("state") or "") != "running":
+        return f"the {service} container is {data.get('state') or 'in an unreported state'}"
+    if str(data.get("health") or "none") == "unhealthy":
+        return f"the {service} container is unhealthy"
+    mount = str(data.get("source_mount") or "")
+    if not mount or not _inside(mount, environment.checkout):
+        return (
+            f"the {service} service mounts {mount or 'an unknown path'}, "
+            f"not the candidate checkout {environment.checkout}"
+        )
+    if str(data.get("source_sha") or "").lower() != head_sha.lower():
+        return (
+            f"the {service} service is running "
+            f"{data.get('source_sha') or 'an unknown commit'}, not {head_sha}"
+        )
+    if data.get("clean") is not True:
+        return f"the {service} checkout is not a clean tree"
+    if str(data.get("code_hash") or "") != expected_hash:
+        return (
+            f"the source inside the {service} container hashes to "
+            f"{data.get('code_hash') or 'nothing'}, not {expected_hash}"
+        )
     return ""
 
 
@@ -300,7 +552,7 @@ class Verifier:
         head_sha = ""
         try:
             head_sha, files = self._read_candidate(pr_url)
-            scope = check_scope(files)
+            scope = check_scope(files, str(incident.get("family") or ""))
             if not scope.allowed:
                 # A diff outside the registered scope is a policy stop, not
                 # evidence about the product: nothing was executed, so there
@@ -347,13 +599,16 @@ class Verifier:
                 except (RunnerError, OSError):
                     pass
 
-        verdict = str(report.get("verdict") or BLOCKED)
-        failures = tuple(report.get("failures") or ())
-        if verdict not in (PASSED, FAILED, BLOCKED):
-            verdict, failures = BLOCKED, (f"unreadable verdict {verdict!r}",)
-        if verdict == PASSED and not self._has_evidence(report, cases):
+        verdict, failures = grade(report, cases)
+        claimed = str(report.get("verdict") or "")
+        if verdict != BLOCKED and claimed != verdict:
+            # Whichever of the two is wrong, this run cannot promote a
+            # candidate or bill a session for a fix.
+            failures = (
+                f"the replay reported {claimed or 'no verdict'} while its "
+                f"assertions show {verdict}",
+            )
             verdict = BLOCKED
-            failures = ("the replay produced no executed assertion",)
         return self._finish(
             repair, incident, started, verdict, head_sha, pr_url, cases,
             reason="" if verdict == PASSED else "; ".join(failures[:3]),
@@ -396,17 +651,6 @@ class Verifier:
                 f"{head_sha} was being verified"
             )
         return self._head_problem(head)
-
-    @staticmethod
-    def _has_evidence(report: dict[str, Any], cases: tuple[str, ...]) -> bool:
-        results = report.get("cases") or []
-        if len(results) != len(cases):
-            return False
-        for result in results:
-            checks = result.get("checks") or []
-            if not any(check.get("kind") in ("target", "control") for check in checks):
-                return False
-        return True
 
     def _finish(
         self,
@@ -472,7 +716,7 @@ def _number_of(pr_url: str, repo: str) -> int:
 
 
 __all__ = [
-    "ALLOWED_PREFIXES",
+    "SCOPE_BY_FAMILY",
     "BLOCKED",
     "Environment",
     "FAILED",
@@ -485,5 +729,6 @@ __all__ = [
     "VerificationStore",
     "Verifier",
     "check_scope",
+    "grade",
     "provenance_problem",
 ]
