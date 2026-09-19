@@ -635,9 +635,40 @@ chart kept the schema default; and the authenticated Gamma user listed charts
 (200) while being refused both the exploration-state write and chart data
 with 403.
 
+### Verifier acceptance gaps closed after review of `c7ba960`
+
+| Gap | Resolution |
+| --- | --- |
+| `Verifier.verify` returned `passed` for a report of two duplicated `WRONG_CASE` entries whose only check was an unregistered failing control | The verdict is derived, never read. `portal/verification.py` grades each requested case against `REQUIRED_CHECKS`: exact registered identities, no duplicates, no foreign cases, every required assertion present exactly once, a known `kind`, a boolean `holds` on every graded check. A report whose own summary disagrees with the derived result is `blocked`, as is a malformed or empty `failed` report — which therefore cannot buy paid feedback either. The regressions drive `Verifier.verify()` itself, not `Recorder.result`. |
+| `provenance_problem` accepted `source_mount="/tmp/candidate-other/superset"` for `checkout="/tmp/candidate"`, `clean` omitted, `measured_at="not-a-time"` and no container measurements at all | Fail-closed throughout: mounts are compared by resolved path ancestry (a lookalike sibling is rejected), `clean` must be exactly `True`, `measured_at` must parse, be no older than 6 hours and not be in the future, both web and MCP must report container id, image id, `running` state, a non-`unhealthy` health, a mount inside the candidate checkout, a source SHA equal to the tested head, and a `code_hash` equal to the trusted checkout's. Automation ref, config revision and fixture content must be present. An absent measurement is never a true one. |
+| `check_scope(["superset/config.py"])` was allowed, since every `superset/` and `tests/` path was | Scope is per failure family (`SCOPE_BY_FAMILY`): the form-data/key-value tree for the discarded-key defect, the chart/MCP tree for the row-limit defect. Global configuration, app startup, initialization and authentication, CI, Docker bootstrap, dependencies, fixtures, the validator and the automation repository are rejected outright, and an unregistered family falls back to review-required. A test-only diff is rejected too. This is a path boundary and nothing more: it does not prove the change is semantically safe. |
+| `IsolatedStack._seed` omitted the Compose namespace, so `seed_synthetic.py` defaulted to the baseline `superset` project | `_seed` passes `SUPERSET_COMPOSE_PROJECT`, `COMPOSE_PROJECT_NAME` and the derived `-db-light-1` / `-superset-light-1` container names. The restricted Gamma user is created idempotently by the published seed (`ensure_restricted_user`), which N1 imports rather than duplicating; no manual rescue command is involved. A failed preparation takes down only that candidate project and removes only its checkout. |
+| The Dockerized portal has no git or Docker CLI, yet the in-app worker builds `IsolatedStack` from host subprocesses | `portal/coordinator.py` documents and implements the split: the portal container observes, records incidents and writes proposals with `AUTO_REPAIR_ENABLED=false` and no git, Docker or repair credential; a trusted **host coordinator** with `AUTO_REPAIR_ENABLED=true` owns git, Docker, the candidate workspace and the controller credentials, and drains the same durable SQLite state. `python3 -m portal.coordinator capability` reports what the hosting process can actually do (`can_verify`), so the portal's honest answer is `false` rather than a runtime crash. Candidate containers still get no socket and no credential. |
+
+### Integrated baseline run through `IsolatedStack.prepare()`
+
+`artifacts/phase5/integrated/` — the coordinator ran the real preparation path
+against the immutable baseline and then the real validator through it, from a
+fresh clean checkout of published automation `58ab5be`:
+
+- Compose project `candidate394bca55c792`, ports 8388/5308, its own checkout,
+  database, cache and volumes; the baseline stack was untouched.
+- `provenance_problem` empty: clean checkout at the tested commit, equal
+  `code_hash` on the host and inside both containers, MCP `healthy`, fixture
+  measured as 60 rows read back through the chart-data API.
+- Exit code 1 — a product-contract failure, not a blocked run: the same three
+  baseline defects, with every setup and control check holding and N1 passing.
+- Cleanup left no candidate container, volume or workspace directory.
+
+Two real automation defects surfaced only because this path was actually run:
+`find_dataset` read one page of `/api/v1/dataset/` and missed the fixture in a
+stack that also carries the example datasets (provenance correctly blocked
+rather than validating an unmeasured fixture), and teardown could not delete a
+checkout whose bytecode the container had written as root. Both are fixed.
+
 ### Tests
 
-`python3 -m pytest -q` → **188 passed**; flake8 and compileall clean over
+`python3 -m pytest -q` → **229 passed**; flake8 and compileall clean over
 `portal scenarios scripts tests`.
 
 Beyond the Phase 4 set: a customer request that returns while the provider is
@@ -653,10 +684,13 @@ and the 401 vs 403 split.
 
 ### Not covered in Phase 5
 
-- **No candidate stack has ever actually been built**, because no repair PR
-  exists. `portal/isolation.py` is exercised through injected fakes and
-  through the same Compose overlay that the Phase 5 bootstrap ran for real,
-  but an end-to-end candidate run is Phase 6.
+- **No candidate stack has been built from repaired code**, because no repair
+  PR exists. `IsolatedStack.prepare()` itself has now been run for real, but
+  against the baseline commit; the pull-request read that normally precedes it
+  is still exercised only through fakes.
+- The verification runner has only ever been driven by the host coordinator.
+  The Dockerized portal reports `can_verify=false` by design, and a deployed
+  container that verifies is not claimed.
 - No repaired code, therefore no passing target contract anywhere. The first
   genuine pass must come from an API-created repair PR.
 - No live GitHub issue, Devin session or message; no credential read;

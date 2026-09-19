@@ -1,0 +1,466 @@
+{
+  "started_at": "2026-09-19T17:35:13.217+00:00",
+  "finished_at": "2026-09-19T17:40:11.368+00:00",
+  "head_sha": "394bca55c792b7b3547e23f6e175a7cb0f0757e8",
+  "cases": [
+    "S2",
+    "S1",
+    "N1"
+  ],
+  "automation_ref": "58ab5be503be453f02eb3a9506c63759e1106202",
+  "automation_dirty": false,
+  "provenance_problem": "",
+  "provenance": {
+    "measured_at": "2026-09-19T17:39:55.257+00:00",
+    "automation_ref": "58ab5be503be453f02eb3a9506c63759e1106202",
+    "compose_project": "candidate394bca55c792",
+    "checkout": {
+      "path": "/home/ubuntu/phase5-integrated/work/candidate394bca55c792",
+      "source_sha": "394bca55c792b7b3547e23f6e175a7cb0f0757e8",
+      "clean": true,
+      "code_hash": "dc85b6c0089201d1fa89b7549f4154fa"
+    },
+    "config_revision": "491043576833080a",
+    "fixture": {
+      "kind": "content",
+      "rows": 60,
+      "digest": "47bea47eb499e2b929604bd1a5863a58",
+      "description": "sha256 of the fixture rows read back through the chart-data API"
+    },
+    "web": {
+      "service": "superset-light",
+      "container_id": "69d34aaf4c00",
+      "image_id": "sha256:8d9c80b7393f667eda5cff80c267ea8f6e34fbfffdac07bd8009216178fd9481",
+      "state": "running",
+      "health": "starting",
+      "source_mount": "/home/ubuntu/phase5-integrated/work/candidate394bca55c792/superset",
+      "config_path": "/app/docker/pythonpath_dev/superset_config_docker_light.py",
+      "code_hash": "dc85b6c0089201d1fa89b7549f4154fa",
+      "source_sha": "394bca55c792b7b3547e23f6e175a7cb0f0757e8",
+      "clean": true
+    },
+    "mcp": {
+      "service": "superset-mcp-light",
+      "container_id": "43c9450b6984",
+      "image_id": "sha256:8d9c80b7393f667eda5cff80c267ea8f6e34fbfffdac07bd8009216178fd9481",
+      "state": "running",
+      "health": "healthy",
+      "source_mount": "/home/ubuntu/phase5-integrated/work/candidate394bca55c792/superset",
+      "config_path": "/app/automation_stack/superset_config_mcp.py",
+      "code_hash": "dc85b6c0089201d1fa89b7549f4154fa",
+      "source_sha": "394bca55c792b7b3547e23f6e175a7cb0f0757e8",
+      "clean": true
+    }
+  },
+  "commands": [
+    "git init --quiet /home/ubuntu/phase5-integrated/work/candidate394bca55c792",
+    "git remote add origin https://github.com/woohyeokk-choi/superset.git",
+    "git fetch --depth 1 origin 394bca55c792b7b3547e23f6e175a7cb0f0757e8",
+    "git checkout --quiet FETCH_HEAD",
+    "docker compose --project-name candidate394bca55c792 -f docker-compose-light.yml -f /home/ubuntu/phase5-integrated/devin-automation/stack/docker-compose.ports.yml up -d superset-light superset-mcp-light",
+    "wait for http://127.0.0.1:8388/health",
+    "python3 scripts/seed_synthetic.py"
+  ],
+  "report": {
+    "ran_at": "2026-09-19T17:39:59.110254+00:00",
+    "verdict": "failed",
+    "cases": [
+      {
+        "case": "S2",
+        "verdict": "failed",
+        "checks": [
+          {
+            "name": "create_a_succeeds",
+            "kind": "setup",
+            "expected": 201,
+            "observed": 201,
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "read_a_succeeds",
+            "kind": "setup",
+            "expected": 200,
+            "observed": 200,
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "read_a_returns_exactly_a",
+            "kind": "setup",
+            "expected": {
+              "datasource": "22__table",
+              "viz_type": "table",
+              "groupby": [
+                "region"
+              ],
+              "metrics": [
+                "count"
+              ],
+              "row_limit": 100
+            },
+            "observed": {
+              "datasource": "22__table",
+              "viz_type": "table",
+              "groupby": [
+                "region"
+              ],
+              "metrics": [
+                "count"
+              ],
+              "row_limit": 100
+            },
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "discard_succeeds",
+            "kind": "setup",
+            "expected": 200,
+            "observed": 200,
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "discarded_key_is_immediately_gone",
+            "kind": "setup",
+            "expected": 404,
+            "observed": 404,
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "create_b_succeeds",
+            "kind": "setup",
+            "expected": 201,
+            "observed": 201,
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "new_exploration_does_not_reuse_a_discarded_key",
+            "kind": "target",
+            "expected": false,
+            "observed": true,
+            "holds": false,
+            "note": "the key handed to the next exploration must not be the discarded one"
+          },
+          {
+            "name": "discarded_link_stays_dead_after_a_new_exploration",
+            "kind": "target",
+            "expected": 404,
+            "observed": 200,
+            "holds": false,
+            "note": "the old link must not resolve again, and must not show the new state"
+          },
+          {
+            "name": "the_new_exploration_reads_back_exactly_what_was_saved",
+            "kind": "target",
+            "expected": {
+              "datasource": "22__table",
+              "viz_type": "table",
+              "groupby": [
+                "product"
+              ],
+              "metrics": [
+                "count"
+              ],
+              "row_limit": 250
+            },
+            "observed": {
+              "datasource": "22__table",
+              "viz_type": "table",
+              "groupby": [
+                "product"
+              ],
+              "metrics": [
+                "count"
+              ],
+              "row_limit": 250
+            },
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "control_create_in_another_tab_succeeds",
+            "kind": "setup",
+            "expected": 201,
+            "observed": 201,
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "control_a_second_workspace_gets_its_own_key",
+            "kind": "control",
+            "expected": false,
+            "observed": false,
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "control_a_second_workspace_reads_its_own_state",
+            "kind": "control",
+            "expected": {
+              "datasource": "22__table",
+              "viz_type": "table",
+              "groupby": [
+                "channel"
+              ],
+              "metrics": [
+                "count"
+              ],
+              "row_limit": 75
+            },
+            "observed": {
+              "datasource": "22__table",
+              "viz_type": "table",
+              "groupby": [
+                "channel"
+              ],
+              "metrics": [
+                "count"
+              ],
+              "row_limit": 75
+            },
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "control_first_save_succeeds",
+            "kind": "setup",
+            "expected": 201,
+            "observed": 201,
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "control_second_save_succeeds",
+            "kind": "setup",
+            "expected": 201,
+            "observed": 201,
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "control_same_context_save_without_discarding_updates_in_place",
+            "kind": "control",
+            "expected": true,
+            "observed": true,
+            "holds": true,
+            "note": "unchanged source behaviour: same tab and datasource, no discard"
+          },
+          {
+            "name": "control_same_context_reuse_serves_the_latest_state",
+            "kind": "control",
+            "expected": {
+              "datasource": "22__table",
+              "viz_type": "table",
+              "groupby": [
+                "region"
+              ],
+              "metrics": [
+                "count"
+              ],
+              "row_limit": 22
+            },
+            "observed": {
+              "datasource": "22__table",
+              "viz_type": "table",
+              "groupby": [
+                "region"
+              ],
+              "metrics": [
+                "count"
+              ],
+              "row_limit": 22
+            },
+            "holds": true,
+            "note": ""
+          }
+        ],
+        "blocked_reason": "",
+        "facts": {
+          "tab_id": "552755",
+          "k1": "VNAoYQCPC0gzpnqxFCr4cQ",
+          "k2": "VNAoYQCPC0gzpnqxFCr4cQ",
+          "dataset_id": 22
+        }
+      },
+      {
+        "case": "S1",
+        "verdict": "failed",
+        "checks": [
+          {
+            "name": "chart_is_created",
+            "kind": "setup",
+            "expected": true,
+            "observed": true,
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "chart_starts_at_the_saved_row_limit",
+            "kind": "setup",
+            "expected": 137,
+            "observed": 137,
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "chart_starts_with_the_saved_palette",
+            "kind": "setup",
+            "expected": "googleCategory10c",
+            "observed": "googleCategory10c",
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "the_requested_sort_change_persists",
+            "kind": "target",
+            "expected": false,
+            "observed": false,
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "an_omitted_row_limit_keeps_the_saved_value",
+            "kind": "target",
+            "expected": 137,
+            "observed": 1000,
+            "holds": false,
+            "note": "the caller never mentioned row_limit; it must not fall back to the schema default"
+          },
+          {
+            "name": "an_omitted_palette_keeps_the_saved_value",
+            "kind": "control",
+            "expected": "googleCategory10c",
+            "observed": "googleCategory10c",
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "control_an_explicit_row_limit_is_applied",
+            "kind": "control",
+            "expected": 275,
+            "observed": 275,
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "control_an_explicit_schema_default_row_limit_is_applied",
+            "kind": "control",
+            "expected": 1000,
+            "observed": 1000,
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "control_plain_chart_is_created",
+            "kind": "setup",
+            "expected": true,
+            "observed": true,
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "control_a_new_chart_keeps_the_schema_default_row_limit",
+            "kind": "control",
+            "expected": 1000,
+            "observed": 1000,
+            "holds": true,
+            "note": ""
+          }
+        ],
+        "blocked_reason": "",
+        "facts": {
+          "mcp_tools": [
+            "get_instance_info",
+            "health_check",
+            "search_tools",
+            "call_tool"
+          ],
+          "mcp_server": {
+            "name": "Superset MCP Server",
+            "version": "3.4.7"
+          },
+          "chart_id": 104,
+          "dataset_id": 22
+        }
+      },
+      {
+        "case": "N1",
+        "verdict": "passed",
+        "checks": [
+          {
+            "name": "control_the_restricted_role_can_list_charts",
+            "kind": "control",
+            "expected": 200,
+            "observed": 200,
+            "holds": true,
+            "note": ""
+          },
+          {
+            "name": "the_restricted_role_is_denied_a_write",
+            "kind": "target",
+            "expected": 403,
+            "observed": 403,
+            "holds": true,
+            "note": "an authenticated permission denial, not an authentication failure"
+          },
+          {
+            "name": "the_restricted_role_is_denied_chart_data",
+            "kind": "target",
+            "expected": 403,
+            "observed": 403,
+            "holds": true,
+            "note": ""
+          }
+        ],
+        "blocked_reason": "",
+        "facts": {}
+      }
+    ],
+    "mcp_readiness": {
+      "ready": true,
+      "reason": "",
+      "tools": [
+        "get_instance_info",
+        "health_check",
+        "search_tools",
+        "call_tool"
+      ],
+      "server": {
+        "name": "Superset MCP Server",
+        "version": "3.4.7"
+      },
+      "protocol_version": "2025-06-18"
+    },
+    "unknown_cases": [],
+    "target": {
+      "base_url": "http://127.0.0.1:8388",
+      "mcp_url": "http://127.0.0.1:5308/mcp"
+    },
+    "failures": [
+      "S2.new_exploration_does_not_reuse_a_discarded_key: expected False, observed True (the key handed to the next exploration must not be the discarded one)",
+      "S2.discarded_link_stays_dead_after_a_new_exploration: expected 404, observed 200 (the old link must not resolve again, and must not show the new state)",
+      "S1.an_omitted_row_limit_keeps_the_saved_value: expected 137, observed 1000 (the caller never mentioned row_limit; it must not fall back to the schema default)"
+    ]
+  },
+  "capability": {
+    "checked_at": "2026-09-19T17:35:13.138+00:00",
+    "in_container": false,
+    "git": "git version 2.34.1",
+    "docker": "Docker version 29.7.2, build a7dcaa6",
+    "docker_compose": "Docker Compose version v5.4.0",
+    "docker_daemon": true,
+    "data_dir": "/home/ubuntu/phase5-integrated/state",
+    "data_dir_writable": true,
+    "automation_dir": "/home/ubuntu/phase5-integrated/devin-automation",
+    "automation_dir_present": true,
+    "workspace": "/home/ubuntu/phase5-integrated/work",
+    "workspace_writable": true,
+    "dispatch_enabled": false,
+    "can_verify": true,
+    "missing": []
+  }
+}

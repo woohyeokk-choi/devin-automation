@@ -206,6 +206,33 @@ influence the answer.
 | Outcome | A pass is `verified_in_preview`. Not deployed, not merged, not production-ready. Simulated attempts are stored separately and excluded from the verified count. |
 | Feedback | Failures return the precise expected/observed lines to the same session, once per candidate SHA, at most twice, and only after the ACU and deadline checks. |
 
+### Who runs it
+
+The portal container deliberately cannot verify: it has no git, no Docker CLI
+and no repair credential, and it only observes events, records incidents and
+writes proposals. A trusted **host coordinator** owns git, Docker, the
+candidate workspace and the controller credentials, and drains the same
+durable SQLite state the portal writes to. Candidate containers get neither
+the Docker socket nor any credential.
+
+```bash
+python3 -m portal.coordinator capability     # what this process can do
+python3 -m portal.coordinator baseline <superset-sha> --out result.json
+python3 -m portal.coordinator run            # drain proposals, poll, verify
+```
+
+`baseline` is the live verification path with the baseline commit in place of
+a candidate: it calls `IsolatedStack.prepare()`, checks provenance, replays
+the validator through the prepared stack and tears the stack down. Point it at
+free ports if the demo stack is up:
+
+```bash
+PORTAL_VERIFICATION_WEB_PORT=8388 PORTAL_VERIFICATION_MCP_PORT=5308 \
+PORTAL_VERIFICATION_WORKSPACE=/tmp/candidates \
+python3 -m portal.coordinator baseline 394bca55c792b7b3547e23f6e175a7cb0f0757e8 \
+  --out baseline-result.json   # exit 0 passed, 1 product failure, 2 blocked
+```
+
 The validator also runs standalone, which is how it is proved to catch the
 defects it claims to:
 
@@ -250,6 +277,11 @@ presented as proof of what is running.
 - `artifacts/phase5/negative-control/` — the real validator against the
   immutable baseline: S2 and S1 fail their target contracts, every control and
   N1 pass, and three unreachable/unauthenticated variants block.
+- `artifacts/phase5/integrated/` — the same negative control, but produced by
+  the code path live verification uses: the coordinator called
+  `IsolatedStack.prepare()`, which built its own candidate stack
+  (`candidate394bca55c792`, ports 8388/5308), measured provenance and ran the
+  pinned validator through it, then removed everything it created.
 
 ### Not covered
 
@@ -262,9 +294,12 @@ presented as proof of what is running.
 - No GitHub issue, Devin session or message has been created. Every controller
   result recorded here comes from the labelled fakes in `portal/simulation.py`
   against an isolated simulation database.
-- No candidate stack has been built for real, because no repair pull request
-  exists yet. The verifier is exercised through injected fakes and the same
-  Compose overlay the Phase 5 bootstrap ran; an end-to-end candidate run needs
-  a live repair.
+- No candidate stack has been built from **repaired** code, because no repair
+  pull request exists yet. `IsolatedStack.prepare()` has been run for real
+  against the baseline commit; the GitHub pull-request read that precedes it
+  is still exercised only through fakes.
+- Verification runs from the trusted host coordinator, never from inside the
+  portal container, which has no git or Docker CLI and reports
+  `can_verify=false`.
 - No repaired code, so nothing has reached `verified_in_preview` and no
   passing target contract is recorded anywhere.
