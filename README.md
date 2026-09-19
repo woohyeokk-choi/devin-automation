@@ -221,6 +221,14 @@ python3 -m portal.coordinator baseline <superset-sha> --out result.json
 python3 -m portal.coordinator run            # drain proposals, poll, verify
 ```
 
+Exactly one coordinator may own a state directory. `run` takes an advisory
+lock on `$PORTAL_DATA_DIR/coordinator.lock` and exits if another process
+holds it: the repair slot in SQLite keeps two workers off one repair, but a
+verification is a checkout and a Compose project named after the candidate
+commit, and a second loop would delete and recreate the first one's candidate
+mid-run — which surfaces as a checkout or init failure rather than as the
+deployment mistake it is. The kernel releases the lock when the process dies.
+
 Two things have to exist on the target fork before dispatch is enabled, and
 the controller creates neither at run time: **Issues** enabled, and a
 `runtime-repair` label for the issues it opens or reuses. Both are in place on

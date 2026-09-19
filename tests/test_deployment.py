@@ -16,7 +16,7 @@ import pytest
 
 from portal.config import Settings
 from portal.controller import DISPATCHED, PROPOSED, RepairStore
-from portal.coordinator import build_worker, open_state
+from portal.coordinator import build_worker, open_state, single_instance
 from portal.events import EventStore
 from portal.incidents import IncidentStore
 from portal.providers import Devin, GitHub
@@ -201,3 +201,28 @@ def test_a_coordinator_pointed_elsewhere_finds_nothing(
     elsewhere = open_state(deployment(tmp_path / "other", dispatch=True))
     assert elsewhere.repairs.list() == []
     assert elsewhere.incidents.list() == []
+
+
+def test_a_second_coordinator_over_one_state_directory_is_refused(
+    state_dir: Path,
+) -> None:
+    """Two loops would delete each other's candidate checkout mid-verification.
+
+    The repair slot in SQLite does not cover this: a verification is a
+    checkout and a Compose project named after the candidate commit, which
+    `IsolatedStack.prepare` removes and recreates.
+    """
+    with single_instance(state_dir):
+        with pytest.raises(SystemExit) as refused:
+            with single_instance(state_dir):
+                pass
+
+    assert str(state_dir) in str(refused.value)
+
+
+def test_the_lock_is_free_once_the_coordinator_leaves(state_dir: Path) -> None:
+    with single_instance(state_dir):
+        pass
+
+    with single_instance(state_dir):
+        pass

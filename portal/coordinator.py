@@ -44,11 +44,15 @@ the coordinator, and the Docker socket is never mounted into a candidate.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
+import os
 import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -255,24 +259,56 @@ def baseline_check(head_sha: str, cases: tuple[str, ...]) -> dict[str, Any]:
     }
 
 
+@contextmanager
+def single_instance(data_dir: Path) -> Iterator[None]:
+    """One coordinator per state directory, enforced by the operating system.
+
+    The repair slot in SQLite keeps two workers off the same *repair*, but a
+    verification is not a database row: it is a checkout and a Compose
+    project named after the candidate commit, and `IsolatedStack.prepare`
+    removes and recreates both. Two loops over one state directory therefore
+    delete each other's live candidate mid-run, which reads as a checkout or
+    an init failure rather than as the deployment mistake it is. An advisory
+    lock on a file in that directory is released by the kernel when the
+    process dies, so a crashed coordinator does not lock its successor out.
+    """
+    data_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = data_dir / "coordinator.lock"
+    handle = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            held = os.read(handle, 64).decode("utf-8", "replace").strip()
+            raise SystemExit(
+                f"another coordinator (pid {held or 'unknown'}) owns {data_dir}"
+            )
+        os.truncate(handle, 0)
+        os.write(handle, f"{os.getpid()}\n".encode())
+        yield
+    finally:
+        os.close(handle)
+
+
 def run() -> int:
     """The worker loop, in the foreground, on the host."""
     report = capability_report()
     if not report["can_verify"]:
         print(json.dumps(report, indent=2), file=sys.stderr)
         raise SystemExit("this process cannot host the runner; see the report above")
-    worker, _state = build_worker(settings)
-    print(json.dumps({"coordinator": "running", **report}, indent=2), flush=True)
-    try:
-        while True:
-            try:
-                for decision in worker.tick():
-                    print(json.dumps(asdict(decision)), flush=True)
-            except Exception as exc:  # noqa: BLE001 - the loop may not die
-                print(json.dumps({"tick_failed": type(exc).__name__}), flush=True)
-            time.sleep(worker.interval)
-    except KeyboardInterrupt:
-        return 0
+    with single_instance(settings.data_dir):
+        worker, _state = build_worker(settings)
+        print(json.dumps({"coordinator": "running", **report}, indent=2), flush=True)
+        try:
+            while True:
+                try:
+                    for decision in worker.tick():
+                        print(json.dumps(asdict(decision)), flush=True)
+                except Exception as exc:  # noqa: BLE001 - the loop may not die
+                    print(json.dumps({"tick_failed": type(exc).__name__}), flush=True)
+                time.sleep(worker.interval)
+        except KeyboardInterrupt:
+            return 0
 
 
 def main(argv: list[str] | None = None) -> int:
