@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -66,6 +67,25 @@ def safe_environment(ports: dict[str, str], extra: dict[str, str]) -> dict[str, 
     return {name: value for name, value in env.items() if value != ""}
 
 
+def free_port(preferred: int) -> int:
+    """`preferred` when the host will bind it, another free port otherwise.
+
+    Candidate stacks publish on the loopback interface, and an earlier stack
+    that is still up — an evidence run, a previous candidate — owns whatever
+    it published. Failing the whole verification over that would report a
+    blocked product question for a host bookkeeping detail.
+    """
+    for candidate in (preferred, 0):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind(("127.0.0.1", candidate))
+            except OSError:
+                continue
+            return int(probe.getsockname()[1])
+    raise RunnerError("no loopback port is available for a candidate stack")
+
+
 class IsolatedStack:
     """Checks out one commit and brings up a private stack for it."""
 
@@ -95,6 +115,8 @@ class IsolatedStack:
         project = f"candidate{head_sha[:12]}"
         checkout = self.workspace / project
         commands: list[str] = []
+        self.web_port = free_port(self.web_port)
+        self.mcp_port = free_port(self.mcp_port)
         base_url = f"http://127.0.0.1:{self.web_port}"
         mcp_url = f"http://127.0.0.1:{self.mcp_port}/mcp"
         try:

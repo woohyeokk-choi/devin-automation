@@ -12,6 +12,7 @@ produced by any test in this file.
 from __future__ import annotations
 
 import json
+import socket
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,7 @@ from portal.controller import (
     RepairStore,
     VERIFIED,
 )
-from portal.isolation import IsolatedStack, SECRET_NAMES, safe_environment
+from portal.isolation import IsolatedStack, SECRET_NAMES, free_port, safe_environment
 from portal.providers import GitHub
 from portal.validator import BLOCKED, FAILED, PASSED, REQUIRED_CHECKS
 from portal.verification import (
@@ -259,6 +260,18 @@ def test_no_controller_credential_can_travel_into_a_candidate_stack(
 def test_a_secret_passed_in_explicitly_is_still_refused() -> None:
     with pytest.raises(RunnerError):
         safe_environment({}, {"GITHUB_TOKEN": "canary-token"})
+
+
+def test_a_port_another_stack_already_holds_is_stepped_around() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as held:
+        held.bind(("127.0.0.1", 0))
+        held.listen(1)
+        taken = int(held.getsockname()[1])
+
+        chosen = free_port(taken)
+
+    assert chosen != taken
+    assert free_port(chosen) == chosen
 
 
 class RecordingStack(IsolatedStack):
