@@ -263,5 +263,19 @@ session, product edit, merge or public exposure was involved.
   one attempt, captured 2026-09-19T22:53:07+00:00 against `fe266eac51a9`. The
   baseline clip stays in the repository only: it runs at `394bca55`, and a file
   under the accepted head's result would read as footage of the fix.
+- The fresh run's three messages were re-rendered in place as Block Kit
+  cards on 2026-09-20 (`portal.notify restyle`, one `chat.update` each,
+  `sent`): the parent `1789859861.249849`, the provisional pull request
+  `1789860756.261739` and the preview pass `1789861185.416379`, all in
+  `C0C3X4BJ97S`. Presentation only: the lifecycle states, links and
+  timestamps are unchanged, the superseded prose is kept verbatim in
+  `notification_amendments`, and the before/after payloads were archived
+  locally without tokens. The bot token holds no history scope, so Slack's
+  own author could not be read (`missing_scope`); ownership rested on the
+  operator's read-only confirmation (user `U0C33JQ0Y3U`, bot `B0C2NAG01RD`,
+  app `A0C35KD8H8R`), this ledger's record of sending each `ts`, and Slack
+  refusing `chat.update` on another app's message. The card copy is derived
+  from the stored records — full ids, assertion names, ACU figures and exact
+  timestamps stay in the ledger, the reports and this document.
 - Two defects, two repairs, one repository, on a fork with a synthetic
   fixture. Nothing here establishes a rate on real customer incidents.
