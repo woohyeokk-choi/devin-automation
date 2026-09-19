@@ -22,11 +22,19 @@ import pytest
 
 from portal.controller import (
     AWAITING_MERGE,
+    MAX_MEDIA_POLLS,
+    MEDIA_CAPTURED,
+    MEDIA_DELIVERED,
+    MEDIA_FAILED,
+    MEDIA_PENDING,
+    MEDIA_REQUESTED,
     MERGED,
     NEEDS_ATTENTION,
     RepairStore,
+    TERMINAL,
     VERIFIED,
 )
+from portal.simulation import Ambiguous, Refused
 from portal.notify import POST_MERGE_ONLY, PREVIEW_ONLY, Recording, message_for, result_message, result_problem
 from portal.providers import GitHub
 from portal.validator import BLOCKED, PASSED
@@ -246,9 +254,11 @@ def test_the_merge_commit_is_rebuilt_and_replayed_before_anything_is_claimed(
     preview, after = store.for_repair(repair_id)
     assert (preview["stage"], preview["candidate_sha"]) == (PREVIEW, CANDIDATE_SHA)
     assert (after["stage"], after["candidate_sha"]) == (POST_MERGE, MERGE_SHA)
-    # The session is left alive for the post-merge recording work.
+    # The session is left alive for the post-merge recording work, and the
+    # claim is held until that recording is settled.
     assert not wiring.devin_api.terminated
-    assert repairs.slot_holder() is None
+    assert repair["media_state"] == MEDIA_PENDING
+    assert repairs.slot_holder() == repair_id
 
 
 def test_a_deployment_running_another_commit_cannot_stand_for_the_merge(
@@ -386,8 +396,11 @@ def test_an_expired_gate_stops_waiting_instead_of_running_the_merged_commit(
     assert runner.prepared == []
     assert not wiring.devin_api.messages
     repair = repairs.get(repair_id)
-    assert repair is not None and repair["state"] == NEEDS_ATTENTION
-    assert "stopped waiting" in repair["attention"]
+    assert repair is not None and repair["state"] == TERMINAL
+    # A retained session does not keep working unobserved past the deadline.
+    assert wiring.devin_api.terminated == [wiring.session_id()]
+    assert repairs.slot_holder() is None
+    assert "stopped waiting" in repair["terminal_reason"]
     # The deadline itself is left exactly where dispatch set it.
     assert str(repair["deadline_utc"]) == deadline
 
@@ -406,15 +419,18 @@ def test_the_same_session_is_asked_once_to_record_the_merged_commit(
     merge(wiring)
 
     assert wiring.controller.check_merge(repair_id).action == "merge_verified"
+    # The request belongs to the media step, not to the verdict.
+    assert not wiring.devin_api.messages
 
+    assert wiring.controller.check_media(repair_id).action == "awaiting_media"
     assert len(wiring.devin_api.messages) == 1
     session, text = wiring.devin_api.messages[0]
     assert session == wiring.session_id()
-    assert MERGE_SHA in text and f"post-merge-{MERGE_SHA[:12]}.mp4" in text
+    assert MERGE_SHA in text and "post-merge-" in text
     assert not wiring.devin_api.terminated
 
-    # Polling the same merge again neither re-asks nor re-runs anything.
-    assert wiring.controller.check_merge(repair_id).action in ("skipped", "merge_verified")
+    # Polling again neither re-asks nor re-runs anything.
+    assert wiring.controller.check_media(repair_id).action == "awaiting_media"
     assert len(wiring.devin_api.messages) == 1
 
 
@@ -427,10 +443,218 @@ def test_a_spent_budget_does_not_buy_the_recording_request(
         wiring, store, runner=FakeRunner(build=lambda: env_at(MERGE_SHA))
     )
     merge(wiring)
-    repairs.update(repair_id, agent_acus=99.0)
+    # Spent on the session's own account, which is what a refresh reads.
+    wiring.devin_api.set_state(wiring.session_id(), acus_consumed=99.0)
 
     assert wiring.controller.check_merge(repair_id).action == "stopped"
     assert not wiring.devin_api.messages
+
+
+def test_a_stale_budget_is_re_read_from_the_session_at_the_gate(
+    repairs: RepairStore, incident: dict[str, Any], store: VerificationStore
+) -> None:
+    """A gate can wait for hours; the numbers from before the wait are old."""
+    wiring = gated(repairs)
+    repair_id = previewed(wiring, incident, store)
+    wiring.controller.verifier = verifier_for(
+        wiring, store, runner=FakeRunner(build=lambda: env_at(MERGE_SHA))
+    )
+    merge(wiring)
+    # The store still believes almost nothing was spent.
+    repairs.update(repair_id, agent_acus=1.0)
+    wiring.devin_api.set_state(wiring.session_id(), acus_consumed=40.0)
+
+    decision = wiring.controller.check_merge(repair_id)
+
+    assert decision.action == "stopped"
+    repair = repairs.get(repair_id)
+    assert repair is not None and repair["agent_acus"] == 40.0
+
+
+def test_a_session_that_cannot_be_read_at_the_gate_waits(
+    repairs: RepairStore, incident: dict[str, Any], store: VerificationStore
+) -> None:
+    wiring = gated(repairs)
+    repair_id = previewed(wiring, incident, store)
+    merge(wiring)
+    wiring.devin_api.status = 500
+
+    decision = wiring.controller.check_merge(repair_id)
+
+    assert decision.action == "deferred"
+    repair = repairs.get(repair_id)
+    assert repair is not None and repair["state"] == AWAITING_MERGE
+
+
+def test_a_refused_termination_keeps_the_claim_rather_than_losing_it(
+    repairs: RepairStore, incident: dict[str, Any], store: VerificationStore
+) -> None:
+    """If the session may still be running, the slot is not handed on."""
+    wiring = gated(repairs)
+    repair_id = previewed(wiring, incident, store)
+    merge(wiring)
+    wiring.clock += timedelta(hours=6)
+
+    def refuse(session_id: str) -> None:
+        raise Refused("this session may not be terminated")
+
+    assert wiring.controller.devin is not None
+    wiring.controller.devin.terminate_session = refuse  # type: ignore[method-assign]
+
+    assert wiring.controller.check_merge(repair_id).action == "stopped"
+
+    repair = repairs.get(repair_id)
+    assert repair is not None and repair["state"] == TERMINAL
+    assert repairs.slot_holder() == repair_id
+
+
+# --- the merged commit's recording -----------------------------------------
+
+
+def capture_name(sha: str = MERGE_SHA, case: str = "S1") -> str:
+    return f"post-merge-{sha}-20260920T001500Z-{case}.mp4"
+
+
+def merged_and_asked(
+    wiring: Wiring, incident: dict[str, Any], store: VerificationStore, tmp_path: Path
+) -> int:
+    """A repair past the merge whose recording has been asked for."""
+    repair_id = previewed(wiring, incident, store)
+    wiring.controller.verifier = verifier_for(
+        wiring, store, runner=FakeRunner(build=lambda: env_at(MERGE_SHA))
+    )
+    wiring.controller.media_dir = tmp_path / "media"
+    merge(wiring)
+    assert wiring.controller.check_merge(repair_id).action == "merge_verified"
+    assert wiring.controller.check_media(repair_id).action == "awaiting_media"
+    return repair_id
+
+
+def test_only_the_sessions_own_capture_of_the_merged_commit_counts(
+    repairs: RepairStore,
+    incident: dict[str, Any],
+    store: VerificationStore,
+    tmp_path: Path,
+) -> None:
+    wiring = gated(repairs)
+    repair_id = merged_and_asked(wiring, incident, store, tmp_path)
+    session = wiring.session_id()
+    # Something a person uploaded, a capture of the preview, another case.
+    wiring.devin_api.add_attachment(session, capture_name(), source="user")
+    wiring.devin_api.add_attachment(session, capture_name(sha=CANDIDATE_SHA))
+    wiring.devin_api.add_attachment(session, capture_name(case="N1"))
+    wiring.devin_api.add_attachment(session, "notes.txt", content_type="text/plain")
+
+    decision = wiring.controller.check_media(repair_id)
+
+    assert decision.action == "awaiting_media"
+    repair = repairs.get(repair_id)
+    assert repair is not None and repair["media_state"] == MEDIA_REQUESTED
+    assert not repair["media_path"]
+
+
+def test_a_capture_of_the_merged_commit_is_downloaded_and_held_for_slack(
+    repairs: RepairStore,
+    incident: dict[str, Any],
+    store: VerificationStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wiring = gated(repairs)
+    repair_id = merged_and_asked(wiring, incident, store, tmp_path)
+    wiring.devin_api.add_attachment(wiring.session_id(), capture_name())
+    fetched: list[str] = []
+
+    def fake_download(url: str, destination: Path, **kwargs: Any) -> Path:
+        fetched.append(url)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"simulated capture")
+        return destination
+
+    monkeypatch.setattr("portal.media.download", fake_download)
+
+    decision = wiring.controller.check_media(repair_id)
+
+    assert decision.action == "media_captured"
+    repair = repairs.get(repair_id)
+    assert repair is not None and repair["media_state"] == MEDIA_CAPTURED
+    assert Path(str(repair["media_path"])).is_file()
+    # Still held: nothing has been delivered yet.
+    assert repairs.slot_holder() == repair_id
+    assert not repair["media_file_id"]
+
+    # A second pass does not fetch it again.
+    assert wiring.controller.check_media(repair_id).action == "media_captured"
+    assert len(fetched) == 1
+
+    # Only Slack's own answer closes it.
+    wiring.controller.media_delivered(repair_id, "F0CSIMULATED", "stored by Slack")
+    settled = repairs.get(repair_id)
+    assert settled is not None
+    assert settled["media_state"] == MEDIA_DELIVERED
+    assert settled["media_file_id"] == "F0CSIMULATED"
+    assert repairs.slot_holder() is None
+
+
+def test_a_recording_is_not_waited_for_forever(
+    repairs: RepairStore,
+    incident: dict[str, Any],
+    store: VerificationStore,
+    tmp_path: Path,
+) -> None:
+    """An unanswered request fails visibly instead of holding the slot."""
+    wiring = gated(repairs)
+    repair_id = merged_and_asked(wiring, incident, store, tmp_path)
+
+    for _ in range(MAX_MEDIA_POLLS + 2):
+        decision = wiring.controller.check_media(repair_id)
+        if decision.action != "awaiting_media":
+            break
+
+    repair = repairs.get(repair_id)
+    assert repair is not None and repair["media_state"] == MEDIA_FAILED
+    assert repair["state"] == MERGED  # the verdict itself still stands
+    assert repairs.slot_holder() is None
+
+
+def test_an_ambiguous_request_is_not_sent_a_second_time(
+    repairs: RepairStore,
+    incident: dict[str, Any],
+    store: VerificationStore,
+    tmp_path: Path,
+) -> None:
+    wiring = gated(repairs)
+    repair_id = previewed(wiring, incident, store)
+    wiring.controller.verifier = verifier_for(
+        wiring, store, runner=FakeRunner(build=lambda: env_at(MERGE_SHA))
+    )
+    wiring.controller.media_dir = tmp_path / "media"
+    merge(wiring)
+    assert wiring.controller.check_merge(repair_id).action == "merge_verified"
+    wiring.devin_api.fail_create_with = Ambiguous("the send may have landed")
+    wiring.devin_api.write_lands = True
+
+    assert wiring.controller.check_media(repair_id).action == "awaiting_media"
+    repair = repairs.get(repair_id)
+    assert repair is not None and repair["media_state"] == MEDIA_REQUESTED
+
+    # The next pass reconciles rather than asking again.
+    assert wiring.controller.check_media(repair_id).action == "awaiting_media"
+    assert len(wiring.devin_api.messages) == 1
+
+
+def test_unresolved_media_keeps_a_merged_repair_being_walked(
+    repairs: RepairStore,
+    incident: dict[str, Any],
+    store: VerificationStore,
+    tmp_path: Path,
+) -> None:
+    wiring = gated(repairs)
+    merged_and_asked(wiring, incident, store, tmp_path)
+
+    actions = [d.action for d in wiring.controller.advance()]
+
+    assert actions == ["awaiting_media"]
 
 
 def test_a_passing_post_merge_stack_is_left_running_for_the_demo(
@@ -547,3 +771,123 @@ def test_post_merge_footage_has_to_be_of_the_merged_commit() -> None:
     _, _, text = result_message(merged, None, attempt, recording=fresh)
     assert MERGE_SHA[:12] in text and "recording pending" not in text
     assert POST_MERGE_ONLY in text
+
+
+# --- the capture reaches Slack, or visibly does not ------------------------
+
+
+def captured(
+    wiring: Wiring,
+    incident: dict[str, Any],
+    store: VerificationStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> int:
+    """A merged repair whose recording is downloaded and awaiting Slack."""
+    repair_id = merged_and_asked(wiring, incident, store, tmp_path)
+    wiring.devin_api.add_attachment(wiring.session_id(), capture_name())
+    monkeypatch.setattr("portal.media.download", _write_capture)
+    assert wiring.controller.check_media(repair_id).action == "media_captured"
+    # What is under test here is how an upload's outcome is read, not the
+    # refusal of scripted evidence, which `test_slack_bot` covers: this
+    # lifecycle is marked real so the offer is actually made.
+    _mark_real(wiring, repair_id, store)
+    return repair_id
+
+
+def _mark_real(wiring: Wiring, repair_id: int, store: VerificationStore) -> None:
+    wiring.controller.store.simulated = False
+    wiring.controller.store.update(repair_id, simulated=0)
+    with store._conn as db:  # noqa: SLF001 - a fixture's own database
+        db.execute(
+            "UPDATE verifications SET simulated = 0 WHERE repair_id = ?", (repair_id,)
+        )
+
+
+def _write_capture(url: str, destination: Path, **kwargs: Any) -> Path:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(b"simulated capture")
+    return destination
+
+
+def worker_over(wiring: Wiring, tmp_path: Path, bot: Any) -> Any:
+    from portal.notify import NotificationLog, Notifier
+    from portal.worker import RepairWorker
+
+    return RepairWorker(
+        wiring.controller,
+        notifier=Notifier(log=NotificationLog(tmp_path / "notifications.sqlite"), bot=bot),
+    )
+
+
+def test_a_captured_recording_is_offered_to_slack_and_closed_by_its_file_id(
+    repairs: RepairStore,
+    incident: dict[str, Any],
+    store: VerificationStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from test_slack_bot import FakeBot
+
+    wiring = gated(repairs)
+    repair_id = captured(wiring, incident, store, tmp_path, monkeypatch)
+    bot = FakeBot("F0CSIMULATED")
+    worker = worker_over(wiring, tmp_path, bot)
+
+    worker._publish_capture(repair_id)
+
+    assert len(bot.uploads) == 1
+    repair = repairs.get(repair_id)
+    assert repair is not None
+    assert repair["media_state"] == MEDIA_DELIVERED
+    assert repair["media_file_id"] == "F0CSIMULATED"
+    assert repairs.slot_holder() is None
+
+    # The ledger, not the caller, is what stops a second upload.
+    worker._publish_capture(repair_id)
+    assert len(bot.uploads) == 1
+
+
+def test_an_upload_whose_outcome_is_unknown_is_not_called_delivered(
+    repairs: RepairStore,
+    incident: dict[str, Any],
+    store: VerificationStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from portal.transport import Ambiguous as SlackAmbiguous
+    from test_slack_bot import FakeBot
+
+    wiring = gated(repairs)
+    repair_id = captured(wiring, incident, store, tmp_path, monkeypatch)
+    worker = worker_over(
+        wiring, tmp_path, FakeBot(SlackAmbiguous("the upload may have landed"))
+    )
+
+    worker._publish_capture(repair_id)
+
+    repair = repairs.get(repair_id)
+    assert repair is not None
+    assert repair["media_state"] == MEDIA_CAPTURED
+    assert not repair["media_file_id"]
+    assert "unknown" in repair["media_detail"]
+
+
+def test_a_refused_upload_fails_the_recording_visibly(
+    repairs: RepairStore,
+    incident: dict[str, Any],
+    store: VerificationStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wiring = gated(repairs)
+    repair_id = captured(wiring, incident, store, tmp_path, monkeypatch)
+    # No bot at all: a webhook cannot upload a file.
+    worker = worker_over(wiring, tmp_path, None)
+
+    worker._publish_capture(repair_id)
+
+    repair = repairs.get(repair_id)
+    assert repair is not None and repair["media_state"] == MEDIA_FAILED
+    assert repair["state"] == MERGED
+    assert repairs.slot_holder() is None

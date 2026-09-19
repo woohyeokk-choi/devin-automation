@@ -139,6 +139,9 @@ class FakeDevin:
     sessions: dict[str, dict[str, Any]] = field(default_factory=dict)
     messages: list[tuple[str, str]] = field(default_factory=list)
     terminated: list[str] = field(default_factory=list)
+    #: Files a session holds, keyed by session id, as the attachments
+    #: endpoint lists them.
+    attachments: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     fail_create_with: Exception | None = None
     write_lands: bool = False
     status: int = 0
@@ -177,6 +180,26 @@ class FakeDevin:
     def set_state(self, session_id: str, **values: Any) -> None:
         self.sessions[session_id].update(values)
 
+    def add_attachment(
+        self,
+        session_id: str,
+        name: str,
+        *,
+        source: str = "devin",
+        url: str = "",
+        content_type: str = "video/mp4",
+    ) -> None:
+        """A file the session holds. `source` says who put it there."""
+        self.attachments.setdefault(session_id, []).append(
+            {
+                "attachment_id": f"att-{len(self.attachments.get(session_id, [])) + 1}",
+                "name": name,
+                "source": source,
+                "content_type": content_type,
+                "url": url or f"https://storage.invalid/{name}?signature=simulated",
+            }
+        )
+
     def __call__(self, call: Recorded) -> Response:
         if self.status:
             return Response(self.status, {"detail": "simulated failure"})
@@ -209,6 +232,11 @@ class FakeDevin:
                     "end_cursor": json.dumps({"offset": end}) if end < len(matched) else None,
                 },
             )
+        if call.method == "GET" and tail.endswith("/attachments"):
+            session_id = tail.split("sessions/", 1)[1].rsplit("/attachments", 1)[0]
+            if session_id not in self.sessions:
+                return Response(404, {"detail": "not found"})
+            return Response(200, {"items": self.attachments.get(session_id, [])})
         if call.method == "GET":
             session = self.sessions.get(tail.split("sessions/", 1)[1])
             return Response(200, session) if session else Response(404, {"detail": "not found"})

@@ -8,6 +8,7 @@ on api.github.com.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -15,10 +16,20 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
+from . import media
 from .brief import BASE_BRANCH
 from .controller import Controller, Decision, RepairStore
 from .isolation import IsolatedStack, replay_through_validator
-from .notify import Notifier, message_for, reconcile
+from .notify import (
+    IN_THREAD,
+    SENT,
+    UNKNOWN,
+    Notifier,
+    Recording,
+    card_for,
+    message_for,
+    reconcile,
+)
 from .providers import Devin, GitHub, NotConfigured
 from .transport import HttpTransport, Transport
 from .verification import VerificationStore, Verifier
@@ -210,7 +221,82 @@ class RepairWorker:
     def tick(self) -> list[Decision]:
         decisions = self.controller.advance()
         self._announce(decisions)
+        for decision in decisions:
+            if decision.action == "media_captured" and decision.repair_id is not None:
+                self._publish_capture(decision.repair_id)
         return decisions
+
+    def _publish_capture(self, repair_id: int) -> None:
+        """Offer a downloaded post-merge capture to Slack, once.
+
+        The controller has the capture on disk and knows what it claims to
+        be; only Slack can say whether it was published, so the file id it
+        returns is what closes the promise. An upload whose outcome is
+        unknown leaves the repair where it is rather than being called
+        delivered, and the ledger is what stops it being offered twice.
+        """
+        if self.notifier is None:
+            return
+        repair = self.controller.store.get(repair_id)
+        if repair is None:
+            return
+        path = Path(str(repair["media_path"] or ""))
+        capture = media.capture_of(path.name)
+        if capture is None:
+            self.controller.media_failed(
+                repair_id, "the downloaded capture does not name what it recorded"
+            )
+            return
+        try:
+            outcome = self.notifier.attach(
+                f"{repair['fingerprint']}:{capture.sha}:post-merge",
+                path,
+                Recording(
+                    url=IN_THREAD,
+                    case=capture.case,
+                    sha=capture.sha,
+                    recorded_at=capture.recorded_at,
+                    scope=(
+                        "the repair session's own build of the merged commit, "
+                        "recorded on its machine — not the verifier host"
+                    ),
+                ),
+                dict(repair),
+                self._merge_attempt(repair),
+                simulated_record=bool(repair["simulated"]),
+            )
+        except Exception as exc:  # noqa: BLE001 - an upload may not break a repair
+            log.exception("post-merge capture upload failed")
+            self.controller.media_failed(
+                repair_id, f"the capture could not be offered ({type(exc).__name__})"
+            )
+            return
+        state, file_id = outcome["state"], outcome["file_id"]
+        if state == SENT and file_id:
+            self.controller.media_delivered(
+                repair_id, file_id, f"Slack stored the capture as file {file_id}"
+            )
+        elif state == UNKNOWN:
+            # Neither delivered nor refused. Left as it is, deliberately:
+            # re-offering it could post the same file twice.
+            self.controller.store.update(
+                repair_id,
+                media_detail=f"the upload outcome is unknown: {outcome['detail']}",
+            )
+        else:
+            self.controller.media_failed(repair_id, str(outcome["detail"]))
+
+    def _merge_attempt(self, repair: dict[str, Any]) -> dict[str, Any] | None:
+        """The stored attempt that graded the merged commit, if there is one."""
+        verifier = self.controller.verifier
+        if verifier is None:
+            return None
+        try:
+            record = json.loads(str(repair["merge_verification"] or "{}"))
+            attempt_id = int(record.get("attempt_id") or 0)
+        except (ValueError, TypeError):
+            return None
+        return verifier.store.get(attempt_id) if attempt_id else None
 
     def catch_up(self) -> list[str]:
         """Announce outcomes committed while nobody was there to announce them.
@@ -253,15 +339,13 @@ class RepairWorker:
                 repair = self.controller.store.get(decision.repair_id)
                 if repair is None:
                     continue
-                message = message_for(
-                    decision.action,
-                    repair,
-                    self.controller.incident_of(int(repair["incident_id"])),
-                )
+                incident = self.controller.incident_of(int(repair["incident_id"]))
+                message = message_for(decision.action, repair, incident)
                 if message is not None:
                     self.notifier.publish(
                         *message,
                         repair_id=decision.repair_id,
+                        card=card_for(decision.action, repair, incident),
                         # A live-configured worker can be pointed at a
                         # database holding scripted repairs; the row says so.
                         simulated_record=bool(repair.get("simulated")),

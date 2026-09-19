@@ -157,6 +157,10 @@ def build_worker(
         # merge; a deployment that configures neither behaves as before.
         base_branch=config.base_branch,
         merge_gate=config.merge_gate,
+        # Where a merged commit's recording is kept once it has been fetched
+        # from the session, next to the other evidence this run produced.
+        media_dir=Path(config.verification_artifacts or config.data_dir / "artifacts")
+        / "media",
     )
     # Slack lives here and nowhere else: this process already holds the
     # credentials, and a webhook must never reach the portal container, a

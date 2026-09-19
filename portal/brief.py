@@ -285,9 +285,15 @@ def session_request(
 
 
 def post_merge_message(
-    merge_sha: str, base: str, pr_url: str, head_sha: str
+    merge_sha: str, base: str, pr_url: str, head_sha: str, case: str = "S1"
 ) -> str:
-    """Ask the session that wrote the fix to record the merged code."""
+    """Ask the session that wrote the fix to record the merged code.
+
+    The file name carries the metadata, because the host reads the capture
+    back through the attachments API and has to know what it is looking at
+    without trusting a sentence: case, full commit id and capture time are
+    all in the name, and a file that does not carry them is not accepted.
+    """
     return f"""A human merged your pull request and independent host verification
 has already replayed the scenario against the merged commit and accepted it.
 
@@ -296,12 +302,17 @@ Merge commit: `{merge_sha}` on `{base}`
 
 One last piece of work, inside your existing budget: build that exact merge
 commit, exercise the same user action through the portal UI, and record it as
-a single video attachment named `post-merge-{merge_sha[:12]}.mp4`. Reply with
-the case (S1), the full commit id you built, the capture time in UTC and the
-environment the recording shows — it is your own machine, not the verifier's.
-Do not change product code, open another pull request, merge or deploy
-anything. The recording is evidence of the merged code, not a new verdict:
-the host checks remain the source of truth."""
+a single video attachment named exactly
+
+    post-merge-{merge_sha}-<YYYYMMDDTHHMMSSZ>-{case}.mp4
+
+where the timestamp is the UTC time you captured it. The name is how the
+recording is identified, so a file named anything else is ignored. Reply with
+the full commit id you built, that capture time and the environment the
+recording shows — it is your own machine, not the verifier's, and the two
+have different loopback addresses. Do not change product code, open another
+pull request, merge or deploy anything. The recording is evidence of the
+merged code, not a new verdict: the host checks remain the source of truth."""
 
 
 def follow_up_message(failures: list[str], pr_url: str, head_sha: str) -> str:

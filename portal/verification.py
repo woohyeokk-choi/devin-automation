@@ -155,6 +155,22 @@ def check_scope(paths: list[str], family: str) -> ScopeVerdict:
 
 
 # ------------------------------------------------------------------ grading
+def graded_checks(report: dict[str, Any]) -> int:
+    """How many graded assertions a report actually carries.
+
+    Counted from the assertions themselves so that anything quoting a number
+    is quoting the evidence rather than a summary line.
+    """
+    total = 0
+    for result in report.get("cases") or []:
+        if not isinstance(result, dict):
+            continue
+        for check in result.get("checks") or []:
+            if isinstance(check, dict) and check.get("kind") in GRADED_KINDS:
+                total += 1
+    return total
+
+
 def grade(report: dict[str, Any], cases: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
     """The verdict the *checks* support, ignoring what the report claims.
 
@@ -268,6 +284,20 @@ class Environment:
     head_sha: str
     provenance: dict[str, Any] = field(default_factory=dict)
     commands: list[str] = field(default_factory=list)
+
+
+def cleanup_command(environment: Environment) -> str:
+    """How an operator takes a retained stack down again, by hand.
+
+    A retained demo outlives the run that produced it, so the command that
+    removes it belongs in the evidence rather than in somebody's memory.
+    """
+    return (
+        f"docker compose --project-name {environment.project} "
+        f"--project-directory {environment.checkout} "
+        f"-f {environment.checkout}/docker-compose-light.yml "
+        "down -v --remove-orphans"
+    )
 
 
 class Runner(Protocol):
@@ -531,6 +561,7 @@ class Outcome:
     record_id: int = 0
     candidate_sha: str = ""
     stage: str = PREVIEW
+    checks: int = 0
 
 
 class Verifier:
@@ -659,11 +690,7 @@ class Verifier:
                 verdict = BLOCKED
             if self.retain_merged and stage == POST_MERGE and verdict == PASSED:
                 keep = True
-                report["retained_environment"] = {
-                    "project": environment.project,
-                    "base_url": environment.base_url,
-                    "source_sha": environment.head_sha,
-                }
+                report["retained_environment"] = self._retain(environment)
         except (RunnerError, RuntimeError, ValueError, OSError) as exc:
             return self._finish(
                 repair, incident, started, BLOCKED, head_sha, pr_url, cases,
@@ -851,7 +878,41 @@ class Verifier:
                 "finished_at": utcnow(),
             }
         )
-        return Outcome(verdict, reason, failures, record_id, head_sha, stage)
+        return Outcome(
+            verdict,
+            reason,
+            failures,
+            record_id,
+            head_sha,
+            stage,
+            graded_checks(report or {}),
+        )
+
+    def _retain(self, environment: Environment) -> dict[str, str]:
+        """Keep the merged stack on loopback, and say where it is.
+
+        A replay that is torn down the moment it passes leaves whoever comes
+        to look at the demo in front of the old build. The record names the
+        portal to open, the commit the running containers were measured at
+        and the command that removes it again.
+        """
+        web = environment.provenance.get("web") or {}
+        record = {
+            "project": environment.project,
+            "portal_url": f"{environment.base_url}/settings",
+            "base_url": environment.base_url,
+            "checkout": environment.checkout,
+            "source_sha": environment.head_sha,
+            "measured_source_sha": str(web.get("source_sha") or ""),
+            "cleanup_command": cleanup_command(environment),
+            "retained_at": utcnow(),
+        }
+        if self.artifacts is not None:
+            self.artifacts.mkdir(parents=True, exist_ok=True)
+            (self.artifacts / "retained-demo.json").write_text(
+                json.dumps(record, indent=2) + "\n", encoding="utf-8"
+            )
+        return record
 
     def _write_artifact(
         self, repair: dict[str, Any], head_sha: str, report: dict[str, Any]
@@ -891,6 +952,7 @@ __all__ = [
     "VerificationStore",
     "Verifier",
     "check_scope",
+    "cleanup_command",
     "grade",
     "provenance_problem",
 ]
