@@ -181,6 +181,55 @@ accepted head, the same scenario ran against both, and the clip shows
 `git rev-parse HEAD` of the running checkout before each run. No Devin
 session, product edit, merge or public exposure was involved.
 
+## The fresh run's two video stages
+
+The fresh incident (`fresh-demo-20260919-2310`, issue #5, session
+`e8b63e608d5a…`, candidate PR #6) carries two separate media stages. They are
+separate because they answer different questions, and neither can stand in for
+the other.
+
+**Symptom — delivered.** The same repair session recorded its own baseline
+reproduction before touching product code, and the file was fetched through the
+official session-attachment route and posted automatically into the incident
+thread: Slack file `F0C324CM3KQ`, message `1789863673.363649` under parent
+`1789859861.249849`, 20 seconds, captioned *Symptom replay — recorded after
+detection · S1 captured 20260920T001427Z against `394bca55c792`*. It shows the
+saved row limit going 137 → 1000, on the pinned baseline. It is a reproduction
+recorded after detection, not footage of the customer's original moment, and it
+says nothing about the fix. One upload row exists for it; it is never retried.
+
+**After merge — does not exist.** PR #6 is open and unmerged, so there is no
+merged SHA to deploy, verify or film. The after-video is only produced once a
+human merges, the retained loopback deployment is rebuilt from GitHub's merge
+commit, the running source is measured to equal it, and the registered checks
+pass there. Until all of that has happened the lifecycle shows
+`awaiting_merge`, and no preview, historical or portal-settings clip may be
+relabelled as post-merge evidence.
+
+A capture that is requested is not captured, and a captured file is not
+delivered: delivery is claimed only from an upload ledger row holding a Slack
+file id. Where capture is unavailable the stage stays visibly `pending` or
+`failed` rather than being omitted.
+
+### Seeing the defect in Superset's own chart
+
+The canonical S1 assertion is a settings read-back, and its chart groups by
+`region` — four values — so the reset changes no rendered row. To show a
+customer what the bug costs them,
+`artifacts/fresh-demo-20260919-2310/visual-preview/` captures the native
+Explore UI on a separate presentation chart (`Top 10 sales segments
+(presentation)`, row limit 10, grouped `region` × `channel` × `product`): a
+sort-only update with no row limit expands a 10-row table to 60 and resets the
+limit to 1000, measured, not assumed. The frontend was compiled from the pinned
+source with the repository's own `superset-node` Docker target; no upstream
+file was changed.
+
+Those frames are **PREVIEW, on the baseline, on the builder's isolated
+loopback stack** — a different machine from the repair session's VM. The
+verdict for this scenario lives in `portal/visual.py` and is labelled a
+demonstration; it is deliberately not one of the registered cases a candidate
+is accepted on, and the canonical fixtures and validator are untouched by it.
+
 ## What this does not show
 
 - Nothing merged, nothing deployed, no production or public preview.
