@@ -337,9 +337,18 @@ video named exactly
 where the timestamp is the UTC time you captured it. The name is how the
 recording is identified, so a file named anything else is ignored, and a clip
 of anything other than the baseline failing is not this evidence. Keep
-credentials and any real data out of the frame. Then carry on with the repair
-exactly as briefed: this recording is evidence of the symptom, not a verdict,
-and the host's checks remain the source of truth."""
+credentials and any real data out of the frame.
+
+If you have already moved past reproduction, do not undo your work: check the
+baseline commit out separately and replay the same action there. The clip is
+published as a replay recorded after detection either way, never as the
+original browser session. If you cannot record at all, say so plainly in a
+reply rather than attaching something else; a missing recording is recorded as
+missing.
+
+Then carry on with the repair exactly as briefed: this recording is evidence
+of the symptom, not a verdict, and the host's checks remain the source of
+truth."""
 
 
 def follow_up_message(failures: list[str], pr_url: str, head_sha: str) -> str:
