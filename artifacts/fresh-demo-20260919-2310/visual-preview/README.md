@@ -1,12 +1,13 @@
 # PREVIEW — the defect in Superset's own chart (baseline, not merged)
 
-These two frames are a **preview of the unmerged repair** and prove nothing about
+These frames are a **preview of the unmerged repair** and prove nothing about
 candidate PR #6. They were captured against the **pinned baseline**
 `394bca55c792b7b3547e23f6e175a7cb0f0757e8`, on the builder's isolated loopback
 demo (`http://127.0.0.1:8088`, compose project `superset`), not on the repair
 session's VM and not on any deployed environment.
 
-Captured `2026-09-20T00:43Z`.
+Captured `2026-09-20T00:43Z` (aggregate attempt) and `2026-09-20T00:49Z`
+(raw-records scenario).
 
 ## Why a second chart exists
 
@@ -15,26 +16,49 @@ update) is unchanged, and so are its fixtures and the independent validator. It
 groups by `region`, which has four values, so the reset is invisible in the
 rendered table — correct as a contract check, useless as a demonstration.
 
-`Top 10 sales segments (presentation)` (chart id 7, `public.synthetic_orders`,
-dimensions `region` × `channel` × `product`, metric `SUM(revenue)`, row limit
-10) exists only in this isolated demo. It is the **same defect**, chosen so a
-viewer can see it. It is not a new product issue, no repair was dispatched for
-it, and no Superset source was modified to produce it.
+The presentation chart exists only in this isolated demo. It is the **same
+defect**, chosen so a viewer can see it. It is not a new product issue, no
+repair was dispatched for it, and no Superset source was modified to produce
+it.
 
-## Measured, not assumed
+## The scenario shown: raw records (chart id 9)
 
-| | row limit | rows rendered |
-| --- | --- | --- |
-| before | 10 | 10 |
-| after a sort-only update | 1000 | 60 |
+`Order revenue - 10-row view (presentation)` on `public.synthetic_orders`,
+`query_mode = raw`, columns `id, region, channel, product, revenue`, saved row
+limit 10, ordered by `revenue`. The user action is the same sort-only MCP
+`update_chart` call the portal uses, carrying `sort_by` and **no `row_limit`
+key at all**.
 
-The dataset yields 60 groups at limit 1000 (measured by query, not inferred).
-The update sent `sort_by` only, with no `row_limit` key, over the same MCP
-`update_chart` path the portal uses. The requested ascending sort was also not
-applied — the table still descends from 2.99k.
+Measured in Superset's Explore UI, not inferred:
 
-1. `01-native-explore-before-limit10-10rows.png`
-2. `02-native-explore-after-sort-only-limit1000-60rows.png`
+| | row limit | rows rendered | ordering |
+| --- | --- | --- | --- |
+| before | 10 | 10 | `revenue [asc]`, 10 → 19 |
+| after a sort-only update | 1000 | 600 | `revenue [desc]`, 509 → … |
+
+600 is the measured row count of the whole table, read from Superset's own
+`600 rows` badge; the demonstration never assumes it. The requested ordering
+did change, so the only thing this frame attributes to the defect is the lost
+row limit.
+
+1. `03-raw-records-before-limit10-10rows-asc.png`
+2. `04-raw-records-after-sort-only-limit1000-600rows-desc.png`
+
+## The aggregate attempt, and why it is not the scenario
+
+The first attempt (`Top 10 sales segments (presentation)`, chart id 7,
+`region × channel × product`, `SUM(revenue)`, limit 10) showed the same lost
+limit — 10 rows at limit 10 became 60 rows at limit 1000 — but the requested
+ascending sort never reached the rendered table.
+
+That is a **separate, unrepaired behaviour**, not part of this incident and not
+addressed by PR #6: in aggregate mode `plugin-chart-table`'s `buildQuery`
+rebuilds `orderby` from `timeseries_limit_metric`/`order_desc` (falling back to
+the first metric, descending), the table control panel only exposes
+`order_by_cols` in raw mode, and the MCP `map_table_config` emits `sort_by` as
+`order_by_cols`. Demonstrating the row-limit defect on top of that mismatch
+would wrongly suggest the pull request fixes rendered sort order. Frames
+`01-…` and `02-…` are kept as the record of that finding.
 
 ## Frontend provenance
 

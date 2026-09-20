@@ -301,18 +301,36 @@ Pull request: {pr_url} (previewed head `{head_sha}`)
 Merge commit: `{merge_sha}` on `{base}`
 
 One last piece of work, inside your existing budget: build that exact merge
-commit, exercise the same user action through the portal UI, and record it as
-a single video attachment named exactly
+commit and record the repaired behaviour.
+
+The recording must show Superset's own chart, not only our portal screen. A
+customer has to see the table they use:
+
+1. Build the frontend from this same merge commit's `superset-frontend` tree
+   (`docker build --target superset-node` is the supported path) and serve
+   those assets, so Explore actually renders.
+2. Open the chart in Superset's native Explore UI with the row limit control
+   visible, and show the starting state: the saved row limit and the number of
+   rows the table renders.
+3. Perform the same sort-only user action — change the ordering, send no row
+   limit at all.
+4. Reload the native chart and show three things on screen: the saved row
+   limit is unchanged, the rendered row count is unchanged, and the ordering
+   you asked for is the one displayed. Read the counts off Superset's own row
+   badge rather than describing them.
+
+Then attach it as a single video named exactly
 
     post-merge-{merge_sha}-<YYYYMMDDTHHMMSSZ>-{case}.mp4
 
 where the timestamp is the UTC time you captured it. The name is how the
 recording is identified, so a file named anything else is ignored. Reply with
-the full commit id you built, that capture time and the environment the
-recording shows — it is your own machine, not the verifier's, and the two
-have different loopback addresses. Do not change product code, open another
-pull request, merge or deploy anything. The recording is evidence of the
-merged code, not a new verdict: the host checks remain the source of truth."""
+the full commit id you built, that capture time, the row limits, row counts
+and orderings you observed, and the environment the recording shows — it is
+your own machine, not the verifier's, and the two have different loopback
+addresses. Do not change product code, open another pull request, merge or
+deploy anything. The recording is evidence of the merged code, not a new
+verdict: the host checks remain the source of truth."""
 
 
 def symptom_message(baseline_sha: str, case: str = "S1") -> str:

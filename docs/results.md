@@ -217,12 +217,19 @@ The canonical S1 assertion is a settings read-back, and its chart groups by
 `region` — four values — so the reset changes no rendered row. To show a
 customer what the bug costs them,
 `artifacts/fresh-demo-20260919-2310/visual-preview/` captures the native
-Explore UI on a separate presentation chart (`Top 10 sales segments
-(presentation)`, row limit 10, grouped `region` × `channel` × `product`): a
-sort-only update with no row limit expands a 10-row table to 60 and resets the
-limit to 1000, measured, not assumed. The frontend was compiled from the pinned
-source with the repository's own `superset-node` Docker target; no upstream
-file was changed.
+Explore UI on a separate presentation chart (`Order revenue - 10-row view
+(presentation)`, raw records over `synthetic_orders`, row limit 10, ordered by
+`revenue`): a sort-only update with no row limit resets the limit to 1000 and
+expands the 10-row table to the whole 600-row table, measured from Superset's
+row badge, not assumed. The frontend was compiled from the pinned source with
+the repository's own `superset-node` Docker target; no upstream file was
+changed.
+
+Raw records rather than an aggregate top-N deliberately. In aggregate mode the
+table plugin rebuilds `orderby` from the metric, so a requested sort never
+reaches the rendered chart — a separate behaviour PR #6 does not touch, and
+one this demonstration must not appear to claim. In raw mode the requested
+ordering does apply, leaving the lost row limit as the only thing on show.
 
 Those frames are **PREVIEW, on the baseline, on the builder's isolated
 loopback stack** — a different machine from the repair session's VM. The

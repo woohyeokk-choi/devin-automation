@@ -263,3 +263,21 @@ def test_a_download_is_bounded_in_size_and_in_total_time(
     with pytest.raises(media.MediaError, match="longer than"):
         media.download(url, tmp_path / "a.mp4", hosts=ALLOWED)
     assert not (tmp_path / "a.mp4").exists()
+
+
+def test_the_post_merge_brief_asks_for_the_native_chart_and_measured_counts() -> None:
+    """A portal screenshot is not what the customer was promised."""
+    from portal import brief
+
+    text = brief.post_merge_message(
+        "b" * 40, "runtime-repair/demo", "https://example.invalid/pr/6", "a" * 40
+    )
+    flat = " ".join(text.split())
+    assert "native Explore" in flat
+    assert "superset-frontend" in flat and "superset-node" in flat
+    assert "row limit control visible" in flat
+    assert "rendered row count is unchanged" in flat
+    assert "the ordering you asked for is the one displayed" in flat
+    assert "row badge" in flat
+    assert "your own machine, not the verifier's" in flat
+    assert f"post-merge-{'b' * 40}-" in text
