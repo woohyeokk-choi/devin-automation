@@ -23,8 +23,9 @@ When the completed S1 session is opened, say the sentence verbatim:
 | Baseline Superset | <http://127.0.0.1:8088/health> — should read `OK` |
 | Devin session (S1) | <https://app.devin.ai/sessions/e8b63e608d5a4397b114a296420695c7> |
 | Pull request (S1) | <https://github.com/woohyeokk-choi/superset/pull/6> @ `7bb8de7b136f9afdc39d31b4c6809b3de467c461` |
-| Code tab 1 | `portal/controller.py` — the API create/manage boundary: one durable intent, one session, requested budget and deadline |
-| Code tab 2 | `portal/verification.py` — the exact-SHA boundary: the candidate stack built at the PR head and hashed before any replay |
+| Code tab 1 | [`portal/controller.py` L762–798](https://github.com/woohyeokk-choi/devin-automation/blob/369c153fdc48c6289da772a55b6d52819a77c6ff/portal/controller.py#L762-L798) — the API create/manage boundary: one durable intent, one session, requested budget and deadline |
+| Code tab 2 | [`portal/verification.py` L404–481](https://github.com/woohyeokk-choi/devin-automation/blob/369c153fdc48c6289da772a55b6d52819a77c6ff/portal/verification.py#L404-L481) — the exact-SHA boundary: the candidate stack built at the PR head and hashed before any replay |
+| Product diff | [`chart_utils.py` L896–903](https://github.com/woohyeokk-choi/superset/blob/7bb8de7b136f9afdc39d31b4c6809b3de467c461/superset/mcp_service/chart/chart_utils.py#L896-L903) and [`plugins/table.py` L131–133](https://github.com/woohyeokk-choi/superset/blob/7bb8de7b136f9afdc39d31b4c6809b3de467c461/superset/mcp_service/chart/plugins/table.py#L131-L133), with [three regression tests](https://github.com/woohyeokk-choi/superset/blob/7bb8de7b136f9afdc39d31b4c6809b3de467c461/tests/unit_tests/mcp_service/chart/tool/test_update_chart.py#L146-L240) — the whole repair, 103 added lines |
 | Stored verdict | the verification report linked from `/ops/incidents/1` |
 
 Open the tabs in this order in advance, log in to each, and dismiss
