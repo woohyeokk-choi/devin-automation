@@ -200,6 +200,12 @@ def test_something_that_is_not_a_video_is_not_kept_for_slack(
         media.download(url, tmp_path / "a.mp4", hosts=ALLOWED)
     assert not (tmp_path / "a.mp4").exists()
 
+    # Too short to carry a box header is unidentifiable, not acceptable.
+    serve(monkeypatch, {url: FakeResponse(b"\x00", "video/mp4")}, [])
+    with pytest.raises(media.MediaError, match="not an MP4"):
+        media.download(url, tmp_path / "a.mp4", hosts=ALLOWED)
+    assert not (tmp_path / "a.mp4").exists()
+
 
 def test_a_download_is_bounded_in_size_and_in_total_time(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

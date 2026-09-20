@@ -520,7 +520,8 @@ def stamp(offset: timedelta = timedelta(0)) -> str:
     return (CLOCK + offset).strftime("%Y%m%dT%H%M%SZ")
 
 
-def capture_name(sha: str = MERGE_SHA, case: str = "S1", at: str = "") -> str:
+def capture_name(sha: str = MERGE_SHA, case: str = "S2", at: str = "") -> str:
+    # S2 is the defect the shared incident fixture reports; N1 is its control.
     return f"post-merge-{sha}-{at or stamp()}-{case}.mp4"
 
 

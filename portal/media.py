@@ -182,7 +182,9 @@ def _video_problem(content_type: str, head: bytes) -> str:
     kind = content_type.split(";")[0].strip().lower()
     if kind and kind not in VIDEO_TYPES:
         return f"the capture is {kind}, not a video"
-    if len(head) >= 12 and head[4:8] != b"ftyp":
+    if len(head) < 12 or head[4:8] != b"ftyp":
+        # Too short to carry the box header is not "close enough": a file
+        # nobody can identify is not the recording that was asked for.
         return "the capture is not an MP4 file"
     return ""
 

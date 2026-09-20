@@ -38,6 +38,7 @@ from . import brief, media
 from .events import utcnow
 from .providers import Attachment, Devin, GitHub, Session
 from .transport import Ambiguous, Refused
+from .validator import CASES_BY_FAMILY, CONTROL_CASES
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS repairs (
@@ -575,7 +576,7 @@ class Controller:
         decisions: list[Decision] = list(self.recover(self.stale_after_minutes))
         active = self.store.active()
         if active is not None:
-            decisions.append(self._walk(active))
+            decisions.extend(self._walk(active))
             return decisions
         for queued in self.store.queued():
             if not self.store.claim_slot(int(queued["id"])):
@@ -601,9 +602,10 @@ class Controller:
             break
         return decisions
 
-    def _walk(self, active: dict[str, Any]) -> Decision:
+    def _walk(self, active: dict[str, Any]) -> list[Decision]:
         repair_id = int(active["id"])
         state = str(active["state"])
+        alongside: list[Decision] = []
         if (
             str(active["media_stage"] or "") == SYMPTOM
             and str(active["media_state"] or "") in UNRESOLVED_MEDIA
@@ -611,10 +613,15 @@ class Controller:
         ):
             # Footage of the failure is owed while the repair runs, and
             # carrying it forward is not the repair's own progress: the
-            # state machine below still decides what the repair does next.
-            self.check_media(repair_id)
+            # state machine below still decides what the repair does next,
+            # but what happened to the recording is reported either way, or
+            # nothing downstream would ever publish it.
+            alongside.append(self.check_media(repair_id))
             active = self.store.get(repair_id) or active
             state = str(active["state"])
+        return alongside + [self._step(active, repair_id, state)]
+
+    def _step(self, active: dict[str, Any], repair_id: int, state: str) -> Decision:
         if state == MERGED and str(active["media_state"] or "") in UNRESOLVED_MEDIA:
             # The verdict is in; the recording of that merged commit is not,
             # and the claim is held until that promise is closed.
@@ -1441,6 +1448,9 @@ class Controller:
             listed = self.devin.session_attachments(str(repair["session_id"]))
         except (RuntimeError, Ambiguous, Refused) as exc:
             return None, f"the session's attachments could not be listed: {exc}"
+        case = self._media_case(repair)
+        if not case:
+            return None, "this failure family does not name one defect case to record"
         rejected: list[str] = []
         for attachment in listed:
             if attachment.source != "devin":
@@ -1449,7 +1459,7 @@ class Controller:
             if capture is None:
                 continue
             problem = media.capture_problem(
-                capture, subject, self._media_case(repair), stage
+                capture, subject, case, stage
             ) or self._stale_capture(repair, capture)
             if problem:
                 rejected.append(problem)
@@ -1458,12 +1468,23 @@ class Controller:
         return None, "; ".join(rejected[:3])
 
     def _media_case(self, repair: dict[str, Any]) -> str:
-        """The one case this repair's family registers, where it registers one."""
-        if self.verifier is None:
-            return ""
+        """The defect this repair's family is about, never one of its controls.
+
+        A family registers the case that reproduces the defect plus the
+        permission controls that must keep holding, and footage of a control
+        proves nothing about the defect. Where the defect case is not exactly
+        one, nothing is asked for and nothing is accepted: guessing a case
+        would make any clip look like the right one.
+        """
         incident = self.incident_of(int(repair["incident_id"])) or {}
-        cases = tuple(self.verifier.cases_for(str(incident.get("family") or "")))
-        return cases[0] if len(cases) == 1 else ""
+        family = str(incident.get("family") or "")
+        registered = (
+            self.verifier.cases_for(family)
+            if self.verifier is not None
+            else CASES_BY_FAMILY.get(family, ())
+        )
+        defects = tuple(case for case in registered if case not in CONTROL_CASES)
+        return defects[0] if len(defects) == 1 else ""
 
     def _stale_capture(self, repair: dict[str, Any], capture: media.Capture) -> str:
         """Refuse footage that cannot be of the merged code being asked for.
@@ -1582,7 +1603,15 @@ class Controller:
         intent, claimed = self.store.intend(repair_id, "message", mark)
         if intent["state"] != INTENDED or not claimed:
             return MEDIA_REQUESTED, f"this {stage} request was already made"
-        case = self._media_case(repair) or "S1"
+        case = self._media_case(repair)
+        if not case:
+            self.store.settle(
+                int(intent["id"]), AMBIGUOUS, "no single defect case to record"
+            )
+            return (
+                MEDIA_FAILED,
+                "this failure family does not name one defect case to record",
+            )
         if stage == SYMPTOM:
             message = brief.symptom_message(subject, case)
         else:

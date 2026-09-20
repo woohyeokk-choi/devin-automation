@@ -288,7 +288,8 @@ def test_the_worker_records_a_rejected_poll_instead_of_raising(
         assert holder is not None
         repairs.update(int(holder), state="dispatched", attention=None)
         decisions = RepairWorker(controller).tick()
-        assert [d.action for d in decisions] == ["parked"]
+        # The owed recording is carried alongside the repair's own progress.
+        assert [d.action for d in decisions][-1] == "parked"
         repair = repairs.active()
         assert repair is not None and repair["state"] == NEEDS_ATTENTION
         assert str(status) in str(repair["attention"])
@@ -359,7 +360,7 @@ def test_the_worker_announces_a_dispatch_and_says_nothing_about_polling(
     assert "Investigating ·" in wire.calls[0]["json"]["text"]
 
     # The next pass only polls a running session: nothing new to say.
-    assert [d.action for d in worker.tick()] == ["running"]
+    assert [d.action for d in worker.tick()][-1] == "running"
     assert len(wire.calls) == 1
 
 

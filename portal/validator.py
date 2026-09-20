@@ -51,6 +51,11 @@ COLOR_SCHEME = "googleCategory10c"
 #: name), so this is the discovery check, not a list of chart tools.
 REQUIRED_MCP_TOOLS = ("call_tool", "search_tools")
 
+#: Cases that exist to prove a control still holds, not to reproduce the
+#: defect. A repair is never about one of these, and footage of one is not
+#: footage of the failure.
+CONTROL_CASES: tuple[str, ...] = ("N1",)
+
 #: Which cases answer which registered failure family. One repair targets one
 #: defect: a candidate cut from the immutable baseline still carries the other
 #: known defect, so the other family's target case is deliberately absent.
