@@ -261,9 +261,16 @@ def test_concurrent_delivery_creates_one_repair(
     # either defer to the claim holder or reconcile onto the object it created.
     assert len(wiring.devin_api.sessions) == 1
     assert len(wiring.github_api.issues) == 1
-    # `running` belongs here too: a loser's worker pass can poll the repair
-    # the winner just dispatched, which is the queue working, not a second job.
-    assert set(actions) <= {"dispatched", "deferred", "in_flight", "running"}
+    # `running` and `awaiting_media` belong here too: a loser's worker pass can
+    # poll the repair the winner just dispatched and report whichever phase it
+    # is in, which is the queue working, not a second job.
+    assert set(actions) <= {
+        "dispatched",
+        "deferred",
+        "in_flight",
+        "running",
+        "awaiting_media",
+    }
 
 
 def test_a_restart_reuses_the_issue_and_session_it_already_created(
