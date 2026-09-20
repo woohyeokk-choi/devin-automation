@@ -31,7 +31,7 @@ from typing import Any
 import requests
 
 from .measure import measure
-from .verification import Environment, RunnerError
+from .verification import Environment, Portal, RunnerError
 
 #: Environment variables that must never reach a candidate container or the
 #: Compose invocation that starts one.
@@ -46,6 +46,7 @@ SECRET_NAMES = (
 
 WEB_SERVICE = "superset-light"
 MCP_SERVICE = "superset-mcp-light"
+PORTAL_SERVICE = "portal"
 
 
 def safe_environment(ports: dict[str, str], extra: dict[str, str]) -> dict[str, str]:
@@ -98,6 +99,7 @@ class IsolatedStack:
         automation_ref: str,
         web_port: int = 8288,
         mcp_port: int = 5208,
+        portal_port: int = 8390,
         timeout_seconds: int = 900,
         git_host: str = "https://github.com",
     ) -> None:
@@ -107,6 +109,7 @@ class IsolatedStack:
         self.automation_ref = automation_ref
         self.web_port = web_port
         self.mcp_port = mcp_port
+        self.portal_port = portal_port
         self.timeout_seconds = timeout_seconds
         self.git_host = git_host
 
@@ -153,6 +156,101 @@ class IsolatedStack:
             head_sha=head_sha,
             provenance=provenance,
             commands=commands,
+        )
+
+    def serve_portal(self, environment: Environment) -> Portal:
+        """Start the demo portal itself against a retained stack.
+
+        Superset's own port is not the portal: the page the scenario is
+        performed on is this project's FastAPI application, and a retained
+        backend without it leaves an operator looking at Superset. It joins
+        the retained stack's network, so it reaches those containers by
+        service name, keeps state of its own so nothing of the live run is
+        shared, and dispatches nothing.
+        """
+        project = environment.project
+        port = free_port(self.portal_port)
+        data_dir = self.workspace / f"{project}-portal-state"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        data_dir.chmod(0o700)
+        url = f"http://127.0.0.1:{port}"
+        commands = environment.commands
+        self._portal_compose(environment, port, data_dir, ["up", "-d"], commands)
+        try:
+            self._wait(f"{url}/healthz", commands)
+            self._reaches_settings(url, commands)
+        except RunnerError:
+            # Only this service comes down. `--remove-orphans` here would
+            # mean "everything in this project the portal file does not
+            # describe", which is the retained stack itself.
+            self._portal_compose(environment, port, data_dir, ["down"], commands)
+            raise
+        return Portal(
+            url=f"{url}/settings",
+            project=project,
+            data_dir=str(data_dir),
+            cleanup_command=(
+                f"PORTAL_DATA_DIR={data_dir} AUTOMATION_DIR={self.automation_dir} "
+                f"docker compose --project-name {project} "
+                f"-f {self.automation_dir}/stack/docker-compose.portal.yml down"
+            ),
+        )
+
+    def _reaches_settings(self, url: str, commands: list[str]) -> None:
+        """Prove the chart settings page is served, not merely a process.
+
+        Signed out it asks for credentials rather than showing the form, so
+        what is asserted is that the route exists and is this application's:
+        a 404 or a Superset page would both be a portal that is not there.
+        """
+        commands.append(f"GET {url}/settings")
+        try:
+            response = requests.get(f"{url}/settings", timeout=10, allow_redirects=False)
+        except requests.RequestException as exc:
+            raise RunnerError(f"the retained portal did not answer: {type(exc).__name__}")
+        if response.status_code not in (200, 302, 303, 307, 401):
+            raise RunnerError(
+                f"the retained portal answered {response.status_code} for /settings"
+            )
+
+    def _portal_compose(
+        self,
+        environment: Environment,
+        port: int,
+        data_dir: Path,
+        action: list[str],
+        commands: list[str],
+    ) -> None:
+        argv = [
+            "docker", "compose",
+            "--project-name", environment.project,
+            "-f", str(self.automation_dir / "stack" / "docker-compose.portal.yml"),
+            *action,
+        ]
+        env = safe_environment(
+            {
+                "PORTAL_PORT_HOST": str(port),
+                "PORTAL_PORT_BIND": "127.0.0.1",
+            },
+            {
+                "PORTAL_DATA_DIR": str(data_dir),
+                "AUTOMATION_DIR": str(self.automation_dir),
+                "PORTAL_UID": str(os.getuid()),
+                "PORTAL_GID": str(os.getgid()),
+                "SUPERSET_NETWORK": f"{environment.project}_default",
+                "SUPERSET_CONTAINER_BASE_URL": f"http://{WEB_SERVICE}:8088",
+                "SUPERSET_CONTAINER_MCP_URL": f"http://{MCP_SERVICE}:5008/mcp",
+                "PORTAL_ENVIRONMENT_KIND": "merged-demo",
+                "PORTAL_RUN_ID": f"merged-{environment.head_sha[:12]}",
+                "PORTAL_BASELINE_SHA": environment.head_sha,
+            },
+        )
+        self._run(
+            argv,
+            self.automation_dir,
+            commands,
+            env=env,
+            timeout=self.timeout_seconds,
         )
 
     def _discard(self, project: str, checkout: Path) -> None:
@@ -348,6 +446,7 @@ def replay_through_validator(environment: Environment, cases: tuple[str, ...]) -
 __all__ = [
     "IsolatedStack",
     "MCP_SERVICE",
+    "PORTAL_SERVICE",
     "SECRET_NAMES",
     "WEB_SERVICE",
     "replay_through_validator",

@@ -286,6 +286,16 @@ class Environment:
     commands: list[str] = field(default_factory=list)
 
 
+@dataclass
+class Portal:
+    """A retained portal somebody can open, and how to take it down."""
+
+    url: str
+    project: str
+    data_dir: str
+    cleanup_command: str
+
+
 def cleanup_command(environment: Environment) -> str:
     """How an operator takes a retained stack down again, by hand.
 
@@ -306,6 +316,8 @@ class Runner(Protocol):
     def prepare(self, head_sha: str) -> Environment: ...
 
     def teardown(self, environment: Environment) -> None: ...
+
+    def serve_portal(self, environment: Environment) -> Portal: ...
 
 
 #: How old a measurement may be and still describe the run it belongs to.
@@ -897,9 +909,24 @@ class Verifier:
         and the command that removes it again.
         """
         web = environment.provenance.get("web") or {}
+        try:
+            portal = self.runner.serve_portal(environment)
+            portal_url, portal_cleanup, portal_state = (
+                portal.url,
+                portal.cleanup_command,
+                "running",
+            )
+        except (RunnerError, OSError) as exc:
+            # The backend is still retained and still the merged commit; only
+            # the page is missing, and saying so is the whole point of the
+            # record. A URL nobody can open would read as a working demo.
+            portal_url, portal_cleanup = "", ""
+            portal_state = f"not started: {type(exc).__name__}: {exc}"
         record = {
             "project": environment.project,
-            "portal_url": f"{environment.base_url}/settings",
+            "portal_url": portal_url,
+            "portal_state": portal_state,
+            "portal_cleanup_command": portal_cleanup,
             "base_url": environment.base_url,
             "checkout": environment.checkout,
             "source_sha": environment.head_sha,

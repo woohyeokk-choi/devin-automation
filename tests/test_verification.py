@@ -31,6 +31,7 @@ from portal.providers import GitHub
 from portal.validator import BLOCKED, FAILED, PASSED, REQUIRED_CHECKS
 from portal.verification import (
     Environment,
+    Portal,
     RunnerError,
     VerificationStore,
     Verifier,
@@ -356,6 +357,68 @@ def test_a_damaged_checkout_still_gets_its_containers_removed(tmp_path: Path) ->
     )
 
 
+def test_the_retained_portal_joins_the_stack_and_carries_no_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It has to reach the retained containers, and start nothing of its own."""
+    stack = RecordingStack(tmp_path)
+    monkeypatch.setattr(stack, "_reaches_settings", lambda url, commands: None)
+    project = f"candidate{CANDIDATE_SHA[:12]}"
+
+    portal = stack.serve_portal(
+        Environment(
+            project=project,
+            base_url="http://127.0.0.1:8288",
+            mcp_url="http://127.0.0.1:5208/mcp",
+            checkout=str(tmp_path / "work" / project),
+            head_sha=CANDIDATE_SHA,
+        )
+    )
+
+    argv, env = stack.calls[-1]
+    assert argv[argv.index("--project-name") + 1] == project
+    assert argv[-2:] == ["up", "-d"]
+    assert env["SUPERSET_NETWORK"] == f"{project}_default"
+    assert env["SUPERSET_CONTAINER_BASE_URL"] == "http://superset-light:8088"
+    assert env["PORTAL_DATA_DIR"].endswith(f"{project}-portal-state")
+    assert not [name for name in SECRET_NAMES if name in env]
+    assert portal.url.endswith("/settings")
+    assert "127.0.0.1" in portal.url
+
+
+def test_taking_the_retained_portal_down_leaves_the_stack_it_showed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--remove-orphans` in this project would delete the merged stack."""
+    stack = RecordingStack(tmp_path)
+    monkeypatch.setattr(
+        stack,
+        "_reaches_settings",
+        lambda url, commands: (_ for _ in ()).throw(RunnerError("no /settings")),
+    )
+    project = f"candidate{CANDIDATE_SHA[:12]}"
+
+    with pytest.raises(RunnerError):
+        stack.serve_portal(
+            Environment(
+                project=project,
+                base_url="http://127.0.0.1:8288",
+                mcp_url="http://127.0.0.1:5208/mcp",
+                checkout=str(tmp_path / "work" / project),
+                head_sha=CANDIDATE_SHA,
+            )
+        )
+
+    portal_file = "docker-compose.portal.yml"
+    downs = [
+        argv
+        for argv, _ in stack.calls
+        if "down" in argv and any(portal_file in part for part in argv)
+    ]
+    assert downs, "the half-started portal was left running"
+    assert all("--remove-orphans" not in argv for argv in downs)
+
+
 def test_a_process_without_git_or_docker_reports_that_it_cannot_verify(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -372,11 +435,15 @@ def test_a_process_without_git_or_docker_reports_that_it_cannot_verify(
 class FakeRunner:
     """Stands in for the isolated Compose stack. Never starts anything."""
 
-    def __init__(self, build: Any = None, error: str = "") -> None:
+    def __init__(
+        self, build: Any = None, error: str = "", portal_error: str = ""
+    ) -> None:
         self.build = build or environment
         self.error = error
+        self.portal_error = portal_error
         self.prepared: list[str] = []
         self.torn_down: list[str] = []
+        self.served: list[str] = []
 
     def prepare(self, head_sha: str) -> Environment:
         self.prepared.append(head_sha)
@@ -386,6 +453,17 @@ class FakeRunner:
 
     def teardown(self, env: Environment) -> None:
         self.torn_down.append(env.project)
+
+    def serve_portal(self, env: Environment) -> Portal:
+        self.served.append(env.project)
+        if self.portal_error:
+            raise RunnerError(self.portal_error)
+        return Portal(
+            url="http://127.0.0.1:8390/settings",
+            project=env.project,
+            data_dir=f"/tmp/{env.project}-portal-state",
+            cleanup_command=f"docker compose --project-name {env.project} down",
+        )
 
 
 def case_result(case: str, broken: dict[str, Any] | None = None) -> dict[str, Any]:

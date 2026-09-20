@@ -827,6 +827,53 @@ def test_a_passing_post_merge_stack_is_left_running_for_the_demo(
     assert retained["retained_environment"]["source_sha"] == MERGE_SHA
 
 
+def test_the_retained_demo_names_the_portal_that_was_actually_started(
+    repairs: RepairStore, incident: dict[str, Any], store: VerificationStore
+) -> None:
+    """The page to open is this project's portal, not Superset's own port."""
+    wiring = gated(repairs)
+    runner = FakeRunner(build=lambda: env_at(MERGE_SHA))
+    repair_id = previewed(wiring, incident, store)
+    verifier = verifier_for(wiring, store, runner=runner)
+    verifier.retain_merged = True
+    wiring.controller.verifier = verifier
+    merge(wiring)
+
+    wiring.controller.check_merge(repair_id)
+
+    retained = json.loads(store.for_repair(repair_id)[-1]["report"])[
+        "retained_environment"
+    ]
+    assert runner.served == [retained["project"]]
+    assert retained["portal_url"] == "http://127.0.0.1:8390/settings"
+    assert retained["portal_url"] != f"{retained['base_url']}/settings"
+    assert retained["portal_state"] == "running"
+    assert retained["portal_cleanup_command"]
+
+
+def test_a_portal_that_would_not_start_is_reported_rather_than_invented(
+    repairs: RepairStore, incident: dict[str, Any], store: VerificationStore
+) -> None:
+    """No URL is better than one nobody can open; the checks still stand."""
+    wiring = gated(repairs)
+    runner = FakeRunner(
+        build=lambda: env_at(MERGE_SHA), portal_error="the portal never became healthy"
+    )
+    repair_id = previewed(wiring, incident, store)
+    verifier = verifier_for(wiring, store, runner=runner)
+    verifier.retain_merged = True
+    wiring.controller.verifier = verifier
+    merge(wiring)
+
+    assert wiring.controller.check_merge(repair_id).action == "merge_verified"
+
+    retained = json.loads(store.for_repair(repair_id)[-1]["report"])[
+        "retained_environment"
+    ]
+    assert retained["portal_url"] == ""
+    assert "never became healthy" in retained["portal_state"]
+
+
 def test_a_failing_post_merge_stack_is_not_left_running(
     repairs: RepairStore, incident: dict[str, Any], store: VerificationStore
 ) -> None:
