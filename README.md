@@ -441,8 +441,8 @@ records of its own baseline reproduction, delivered automatically to the
 incident thread, and an after-merge clip that cannot be produced until a human
 merges the candidate and the deployment is rebuilt at GitHub's merge commit.
 The second one does not exist yet. The same defect is also shown in Superset's
-own Explore UI, as a labelled preview on the baseline, in
-`artifacts/fresh-demo-20260919-2310/visual-preview/`; see
+own Explore UI, as a labelled preview on the baseline and held at the candidate
+head, in `artifacts/fresh-demo-20260919-2310/visual-preview/`; see
 [docs/results.md](docs/results.md#the-fresh-runs-two-video-stages).
 
 ### Two transports, one of them live

@@ -198,6 +198,14 @@ saved row limit going 137 → 1000, on the pinned baseline. It is a reproduction
 recorded after detection, not footage of the customer's original moment, and it
 says nothing about the fix. One upload row exists for it; it is never retried.
 
+A second symptom clip sits beside it: Slack file `F0C2XU6V475`, 23 seconds,
+captioned *Superset UI symptom replay — recorded after detection*. It is a
+later replay recorded on the builder VM, showing the raw-records presentation
+chart in Superset's own Explore UI — row limit 10 and 10 rows becoming limit
+1000 and 600 rows after a sort-only update. Builder VM, later replay,
+supplemental: it is neither the original discovery nor post-merge evidence, and
+it does not touch the canonical 137-row case.
+
 **After merge — does not exist.** PR #6 is open and unmerged, so there is no
 merged SHA to deploy, verify or film. The after-video is only produced once a
 human merges, the retained loopback deployment is rebuilt from GitHub's merge
@@ -224,6 +232,15 @@ expands the 10-row table to the whole 600-row table, measured from Superset's
 row badge, not assumed. The frontend was compiled from the pinned source with
 the repository's own `superset-node` Docker target; no upstream file was
 changed.
+
+The same chart was replayed against candidate head `7bb8de7b136f` in an
+isolated stack whose containers both measure to that exact commit: the row
+limit stays 10, ten rows render, and the requested `revenue [desc]` order
+applies — read back from the chart API and confirmed in Explore
+(`candidate-7bb8de7b136f-raw-presentation.json`,
+`candidate-7bb8de7b136f-05-after-sort-only.png`). That is a preview of an open
+pull request and a supplemental check; the 13 registered checks and the 137-row
+fixture are unchanged by it.
 
 Raw records rather than an aggregate top-N deliberately. In aggregate mode the
 table plugin rebuilds `orderby` from the metric, so a requested sort never

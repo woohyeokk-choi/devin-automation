@@ -16,8 +16,8 @@ means `verified_in_preview` — never merged, never deployed.
 | Repair 1 (S2) | issue [#1](https://github.com/woohyeokk-choi/superset/issues/1) → session [`4b7011c7…`](https://app.devin.ai/sessions/4b7011c76c1e4ec8bf28cb373b614577) → PR [#2](https://github.com/woohyeokk-choi/superset/pull/2) @ `d234055eaf85a70d5e5ec5a7a7256ee43d02dde6` |
 | Repair 2 (S1) | issue [#3](https://github.com/woohyeokk-choi/superset/issues/3) → session [`18b04127…`](https://app.devin.ai/sessions/18b04127f4a44af6a9c71f9eb3eaba9e) → PR [#4](https://github.com/woohyeokk-choi/superset/pull/4) @ `fe266eac51a996760a75997ff94b3270c9ef73b1` |
 | Fresh run (S1, `fresh-demo-20260919-2310`) | issue [#5](https://github.com/woohyeokk-choi/superset/issues/5) → session [`e8b63e60…`](https://app.devin.ai/sessions/e8b63e608d5a4397b114a296420695c7) → PR [#6](https://github.com/woohyeokk-choi/superset/pull/6) @ `7bb8de7b136f9afdc39d31b4c6809b3de467c461`, **open, unmerged, awaiting a human** |
-| Fresh-run media | symptom clip delivered (Slack `F0C324CM3KQ`); the after-merge clip does not exist yet |
-| Native chart preview | `artifacts/fresh-demo-20260919-2310/visual-preview/` — the same defect in Superset's Explore UI, baseline, labelled PREVIEW |
+| Fresh-run media | symptom clips delivered (Slack `F0C324CM3KQ` portal action, `F0C2XU6V475` native Explore replay); the after-merge clip does not exist yet |
+| Native chart preview | `artifacts/fresh-demo-20260919-2310/visual-preview/` — the same defect in Superset's Explore UI on the baseline, and held at candidate `7bb8de7b136f`; labelled PREVIEW |
 | Evidence | `artifacts/phase6/S2/`, `artifacts/phase6/S1/` |
 | Exact-SHA replay clips | `artifacts/phase8/replay/` — baseline vs accepted head per case, recorded later, not the original verification |
 | Numbers, with the caveats | [docs/results.md](results.md) |

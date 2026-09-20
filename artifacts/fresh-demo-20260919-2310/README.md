@@ -24,14 +24,18 @@ merge gate that has not been passed.
   report with the same redaction the console uses. Preview only; it says
   nothing about merged code.
 - `visual-preview/` — the same defect in Superset's own Explore UI on the
-  baseline, with measured row counts. Labelled PREVIEW; see its own README.
+  baseline, with measured row counts, plus the same scenario replayed against
+  candidate head `7bb8de7b136f` (limit 10 held, 10 rows, requested order
+  applied). Labelled PREVIEW; see its own README.
 
 ## The two media stages
 
 `symptom` is delivered: Slack file `F0C324CM3KQ`, message
 `1789863673.363649` in the incident thread `1789859861.249849`, captured by
 the repair session at `20260920T001427Z` against the baseline, one upload row,
-never retried.
+never retried. A supplemental later replay of the native Explore presentation
+chart, recorded on the builder VM, is Slack file `F0C2XU6V475` in the same
+thread — still symptom footage, still not post-merge evidence.
 
 `post-merge` does not exist. It requires a human merge, a retained loopback
 deployment rebuilt from GitHub's merge commit, the running source measured to
