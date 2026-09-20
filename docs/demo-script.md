@@ -122,6 +122,14 @@ Hard stop by 5:00.
   the persisted REST read-back; the pinned light image serves no compiled
   Superset frontend, and no clip of the custom portal's own screens at an
   accepted head exists yet.
+- That the fresh run is finished. PR #6 is open and unmerged: the symptom clip
+  is delivered, and the after-merge clip cannot be recorded until a human
+  merges and the deployment is rebuilt at GitHub's merge commit.
+- That the native Explore frames in
+  `artifacts/fresh-demo-20260919-2310/visual-preview/` show the fix or a
+  deployment. They are the baseline, on the builder's isolated loopback stack
+  — a different machine from the repair session's VM — and the presentation
+  chart they use is a labelled demonstration, not a registered case.
 - That CI passed. Both candidate heads had 0 check-runs and 0 statuses.
 - Any dollar figure derived from `acus_consumed`, or any ROI multiplier.
 - That a preview environment is still running.
