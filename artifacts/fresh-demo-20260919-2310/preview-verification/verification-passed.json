@@ -1,0 +1,269 @@
+{
+  "exported_at": "2026-09-20T00:45:47+00:00",
+  "kind": "independent verification of a live repair candidate",
+  "simulated": false,
+  "incident_id": 1,
+  "repair": {
+    "repair_id": 1,
+    "state": "awaiting_merge",
+    "attempt": 1,
+    "product_follow_ups_sent": 0,
+    "terminal_reason": null,
+    "issue_url": "https://github.com/woohyeokk-choi/superset/issues/5",
+    "session_url": "https://app.devin.ai/sessions/e8b63e608d5a4397b114a296420695c7",
+    "pr_url": "https://github.com/woohyeokk-choi/superset/pull/6",
+    "pr_head_sha": "7bb8de7b136f9afdc39d31b4c6809b3de467c461",
+    "requested_acu_limit": 20,
+    "deadline_utc": "2026-09-20T01:17:41.051266+00:00",
+    "api_reported_usage": {
+      "field": "acus_consumed",
+      "value": 0.0,
+      "note": "as the Devin v3 session read returned it at the final poll. Session reads carry no max_acu_limit field, so the requested cap is only what the create body asked for, and ACUs are not dollars."
+    },
+    "agent_self_report": {
+      "status": "running",
+      "status_detail": "waiting_for_user",
+      "note": "the agent's own readiness claim; it did not decide the verdict"
+    }
+  },
+  "verification": {
+    "verification_id": 1,
+    "verdict": "passed",
+    "graded_verdict": "passed",
+    "graded_note": "portal.verification.grade() rebuilt this verdict from the checks below, ignoring the report's own summary",
+    "cases": [
+      "S1",
+      "N1"
+    ],
+    "candidate_sha": "7bb8de7b136f9afdc39d31b4c6809b3de467c461",
+    "pr_url": "https://github.com/woohyeokk-choi/superset/pull/6",
+    "validator_ref": "5b1bd5c4a1c6dd543e287eec71b2d6cfede402ef",
+    "fixture_rev": "sha256:67ff039835f9890c",
+    "started_at": "2026-09-19T23:38:07.796+00:00",
+    "finished_at": "2026-09-19T23:39:45.260+00:00",
+    "commands": [
+      "git init --quiet /home/ubuntu/repos/devin-automation/runtime/fresh-candidates/candidate7bb8de7b136f",
+      "git remote add origin https://github.com/woohyeokk-choi/superset.git",
+      "git fetch --depth 1 origin 7bb8de7b136f9afdc39d31b4c6809b3de467c461",
+      "git checkout --quiet FETCH_HEAD",
+      "docker compose --project-name candidate7bb8de7b136f -f docker-compose-light.yml -f /home/ubuntu/repos/devin-automation/stack/docker-compose.ports.yml up -d superset-light superset-mcp-light",
+      "wait for http://127.0.0.1:46221/health",
+      "python3 scripts/seed_synthetic.py"
+    ],
+    "provenance": {
+      "measured_at": "2026-09-19T23:39:28.965+00:00",
+      "automation_ref": "5b1bd5c4a1c6dd543e287eec71b2d6cfede402ef",
+      "compose_project": "candidate7bb8de7b136f",
+      "checkout": {
+        "path": "/home/ubuntu/repos/devin-automation/runtime/fresh-candidates/candidate7bb8de7b136f",
+        "source_sha": "7bb8de7b136f9afdc39d31b4c6809b3de467c461",
+        "clean": true,
+        "code_hash": "ed570f35834fd4c2f1c7c2b8140f829a"
+      },
+      "config_revision": "491043576833080a",
+      "fixture": {
+        "kind": "content",
+        "rows": 60,
+        "grouping": [
+          "region",
+          "channel",
+          "product"
+        ],
+        "digest": "47bea47eb499e2b929604bd1a5863a58",
+        "description": "sha256 of the region/channel/product revenue aggregate the chart-data API returns for the fixture; `rows` counts that projection, not the seeded records"
+      },
+      "web": {
+        "service": "superset-light",
+        "container_id": "f4605f37564f",
+        "image_id": "sha256:89ba778eeb35d029a537f41be4f05d4148bc4d0a6407a963e311a879f1e1123d",
+        "state": "running",
+        "health": "healthy",
+        "source_mount": "/home/ubuntu/repos/devin-automation/runtime/fresh-candidates/candidate7bb8de7b136f/superset",
+        "config_path": "/app/docker/pythonpath_dev/superset_config_docker_light.py",
+        "code_hash": "ed570f35834fd4c2f1c7c2b8140f829a",
+        "source_sha": "7bb8de7b136f9afdc39d31b4c6809b3de467c461",
+        "clean": true
+      },
+      "mcp": {
+        "service": "superset-mcp-light",
+        "container_id": "214d30ffd3ac",
+        "image_id": "sha256:89ba778eeb35d029a537f41be4f05d4148bc4d0a6407a963e311a879f1e1123d",
+        "state": "running",
+        "health": "healthy",
+        "source_mount": "/home/ubuntu/repos/devin-automation/runtime/fresh-candidates/candidate7bb8de7b136f/superset",
+        "config_path": "/app/automation_stack/superset_config_mcp.py",
+        "code_hash": "ed570f35834fd4c2f1c7c2b8140f829a",
+        "source_sha": "7bb8de7b136f9afdc39d31b4c6809b3de467c461",
+        "clean": true
+      }
+    },
+    "report": {
+      "ran_at": "2026-09-19T23:39:32.284335+00:00",
+      "verdict": "passed",
+      "cases": [
+        {
+          "case": "S1",
+          "verdict": "passed",
+          "checks": [
+            {
+              "name": "chart_is_created",
+              "kind": "setup",
+              "expected": true,
+              "observed": true,
+              "holds": true,
+              "note": ""
+            },
+            {
+              "name": "chart_starts_at_the_saved_row_limit",
+              "kind": "setup",
+              "expected": 137,
+              "observed": 137,
+              "holds": true,
+              "note": ""
+            },
+            {
+              "name": "chart_starts_with_the_saved_palette",
+              "kind": "setup",
+              "expected": "googleCategory10c",
+              "observed": "googleCategory10c",
+              "holds": true,
+              "note": ""
+            },
+            {
+              "name": "the_requested_sort_change_persists",
+              "kind": "target",
+              "expected": false,
+              "observed": false,
+              "holds": true,
+              "note": ""
+            },
+            {
+              "name": "an_omitted_row_limit_keeps_the_saved_value",
+              "kind": "target",
+              "expected": 137,
+              "observed": 137,
+              "holds": true,
+              "note": "the caller never mentioned row_limit; it must not fall back to the schema default"
+            },
+            {
+              "name": "an_omitted_palette_keeps_the_saved_value",
+              "kind": "control",
+              "expected": "googleCategory10c",
+              "observed": "googleCategory10c",
+              "holds": true,
+              "note": ""
+            },
+            {
+              "name": "control_an_explicit_row_limit_is_applied",
+              "kind": "control",
+              "expected": 275,
+              "observed": 275,
+              "holds": true,
+              "note": ""
+            },
+            {
+              "name": "control_an_explicit_schema_default_row_limit_is_applied",
+              "kind": "control",
+              "expected": 1000,
+              "observed": 1000,
+              "holds": true,
+              "note": ""
+            },
+            {
+              "name": "control_plain_chart_is_created",
+              "kind": "setup",
+              "expected": true,
+              "observed": true,
+              "holds": true,
+              "note": ""
+            },
+            {
+              "name": "control_a_new_chart_keeps_the_schema_default_row_limit",
+              "kind": "control",
+              "expected": 1000,
+              "observed": 1000,
+              "holds": true,
+              "note": ""
+            }
+          ],
+          "blocked_reason": "",
+          "facts": {
+            "mcp_tools": [
+              "get_instance_info",
+              "health_check",
+              "search_tools",
+              "call_tool"
+            ],
+            "mcp_server": {
+              "name": "Superset MCP Server",
+              "version": "3.4.7"
+            },
+            "chart_id": 104,
+            "dataset_id": 22
+          }
+        },
+        {
+          "case": "N1",
+          "verdict": "passed",
+          "checks": [
+            {
+              "name": "control_the_restricted_role_can_list_charts",
+              "kind": "control",
+              "expected": 200,
+              "observed": 200,
+              "holds": true,
+              "note": ""
+            },
+            {
+              "name": "the_restricted_role_is_denied_a_write",
+              "kind": "target",
+              "expected": 403,
+              "observed": 403,
+              "holds": true,
+              "note": "an authenticated permission denial, not an authentication failure"
+            },
+            {
+              "name": "the_restricted_role_is_denied_chart_data",
+              "kind": "target",
+              "expected": 403,
+              "observed": 403,
+              "holds": true,
+              "note": ""
+            }
+          ],
+          "blocked_reason": "",
+          "facts": {}
+        }
+      ],
+      "mcp_readiness": {
+        "ready": true,
+        "reason": "",
+        "tools": [
+          "get_instance_info",
+          "health_check",
+          "search_tools",
+          "call_tool"
+        ],
+        "server": {
+          "name": "Superset MCP Server",
+          "version": "3.4.7"
+        },
+        "protocol_version": "2025-06-18"
+      },
+      "unknown_cases": [],
+      "target": {
+        "base_url": "http://127.0.0.1:46221",
+        "mcp_url": "http://127.0.0.1:33507/mcp"
+      },
+      "failures": []
+    }
+  },
+  "upstream_checks": {
+    "collected": true,
+    "github_check_runs": 0,
+    "github_commit_statuses": 0,
+    "combined_state": "pending",
+    "conclusions": [],
+    "note": "read from GitHub at export time. A combined state of 'pending' with zero check-runs and zero statuses is the absence of CI, not a passing CI result."
+  }
+}

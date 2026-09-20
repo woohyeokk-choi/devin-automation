@@ -1,0 +1,78 @@
+{
+  "namespace": "fresh-demo-20260919-2310",
+  "baseline_sha": "394bca55c792b7b3547e23f6e175a7cb0f0757e8",
+  "repair": {
+    "id": 1,
+    "fingerprint": "4850806e18c18de5acf83d2588df81c0",
+    "incident_id": 1,
+    "state": "awaiting_merge",
+    "attempt": 1,
+    "issue_url": "https://github.com/woohyeokk-choi/superset/issues/5",
+    "session_url": "https://app.devin.ai/sessions/e8b63e608d5a4397b114a296420695c7",
+    "acu_limit": 20,
+    "deadline_utc": "2026-09-20T01:17:41.051266+00:00",
+    "agent_status": "running",
+    "agent_acus": 0.0,
+    "agent_pr_url": "https://github.com/woohyeokk-choi/superset/pull/6",
+    "pr_head_sha": "7bb8de7b136f9afdc39d31b4c6809b3de467c461",
+    "merge_commit_sha": null,
+    "media_state": "delivered",
+    "media_stage": "symptom",
+    "media_file_id": "F0C324CM3KQ",
+    "created_at": "2026-09-19T23:16:30.541+00:00",
+    "updated_at": "2026-09-20T00:45:27.732+00:00"
+  },
+  "incidents": [
+    {
+      "id": 1,
+      "fingerprint": "4850806e18c18de5acf83d2588df81c0",
+      "family": "omitted_row_limit_is_reset"
+    }
+  ],
+  "slack": {
+    "channel": "C0C3X4BJ97S",
+    "messages": [
+      {
+        "id": 1,
+        "event_id": "1:session:e8b63e608d5a4397b114a296420695c7",
+        "repair_id": 1,
+        "kind": "investigation_started",
+        "state": "sent",
+        "attempts": 1,
+        "ts": "1789859861.249849"
+      },
+      {
+        "id": 2,
+        "event_id": "1:pr:7bb8de7b136f9afdc39d31b4c6809b3de467c461",
+        "repair_id": 1,
+        "kind": "pull_request",
+        "state": "sent",
+        "attempts": 1,
+        "ts": "1789860756.261739"
+      },
+      {
+        "id": 3,
+        "event_id": "1:awaiting-merge:7bb8de7b136f9afdc39d31b4c6809b3de467c461",
+        "repair_id": 1,
+        "kind": "awaiting_merge",
+        "state": "sent",
+        "attempts": 1,
+        "ts": "1789861185.416379"
+      }
+    ],
+    "uploads": [
+      {
+        "id": 1,
+        "upload_id": "4850806e18c18de5acf83d2588df81c0:394bca55c792b7b3547e23f6e175a7cb0f0757e8:symptom",
+        "repair_id": 1,
+        "path": "/home/ubuntu/repos/devin-automation/runtime/fresh-candidates/reports/media/repair-1/symptom-394bca55c792b7b3547e23f6e175a7cb0f0757e8-20260920T001427Z-S1.mp4",
+        "sha": "394bca55c792b7b3547e23f6e175a7cb0f0757e8",
+        "file_id": "F0C324CM3KQ",
+        "state": "sent",
+        "detail": "",
+        "created_at": "2026-09-20T00:21:11.057+00:00",
+        "updated_at": "2026-09-20T00:21:12.003+00:00"
+      }
+    ]
+  }
+}
