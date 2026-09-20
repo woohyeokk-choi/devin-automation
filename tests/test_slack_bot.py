@@ -23,6 +23,7 @@ from portal.notify import (
     NotificationLog,
     Notifier,
     Recording,
+    clip_caption,
     clip_upload_id,
     historical_message,
     historical_parents,
@@ -500,6 +501,76 @@ def test_an_upload_that_may_have_landed_is_unknown_rather_than_sent(
     # same clip twice.
     again = notifier.attach(upload_id, clip, CAPTURE, REPAIR, PASSED_ATTEMPT)
     assert again["state"] == UNKNOWN and len(bot.uploads) == 1
+
+
+def test_a_delivered_clip_can_be_recaptioned_in_place(
+    log: NotificationLog, clip: Path
+) -> None:
+    bot = FakeBot("F0123456789")
+    notifier = Notifier(log=log, bot=bot)
+    notifier.attach(
+        clip_upload_id(2, CAPTURE, clip), clip, CAPTURE, REPAIR, PASSED_ATTEMPT
+    )
+    before = log.uploads()[0]["caption"]
+
+    caption = clip_caption(
+        REPAIR,
+        headline="Superset UI — fix verified in preview",
+        result="Sort updated; saved limit and displayed rows remain 10.",
+        provenance=f"Unmerged PR · {HEAD[:12]} · local replay",
+    )
+    outcome = notifier.recaption(
+        "1789900000.000100",
+        "F0123456789",
+        caption,
+        "caption too long",
+        REPAIR,
+        PASSED_ATTEMPT,
+    )
+
+    assert outcome["state"] == SENT
+    assert len(bot.edits) == 1 and bot.edits[0]["ts"] == "1789900000.000100"
+    # The label is the repair's, not the caller's: unmerged footage says so.
+    assert "not merged/deployed" in bot.edits[0]["text"]
+    assert bot.edits[0]["text"] != before
+    amendment = log.amendments()[-1]
+    assert amendment["previous"] == before and amendment["state"] == SENT
+    assert log.uploads()[0]["caption"] == bot.edits[0]["text"]
+    # No second file: editing a caption is not another upload.
+    assert len(bot.uploads) == 1
+
+
+def test_a_caption_edit_addresses_only_a_clip_this_ledger_delivered(
+    log: NotificationLog, clip: Path
+) -> None:
+    bot = FakeBot("F0123456789")
+    notifier = Notifier(log=log, bot=bot)
+    notifier.attach(
+        clip_upload_id(2, CAPTURE, clip), clip, CAPTURE, REPAIR, PASSED_ATTEMPT
+    )
+    caption = clip_caption(
+        REPAIR, headline="short", result="shorter", provenance="preview"
+    )
+
+    stranger = notifier.recaption(
+        "1789900000.000100", "F9999999999", caption, "tidy", REPAIR, PASSED_ATTEMPT
+    )
+    other_repair = notifier.recaption(
+        "1789900000.000100",
+        "F0123456789",
+        caption,
+        "tidy",
+        REPAIR | {"id": 3},
+        PASSED_ATTEMPT,
+    )
+    unverified = notifier.recaption(
+        "1789900000.000100", "F0123456789", caption, "tidy", REPAIR, None
+    )
+
+    assert stranger["state"] == DISABLED and "F9999999999" in stranger["detail"]
+    assert other_repair["state"] == DISABLED
+    assert unverified["state"] == DISABLED
+    assert bot.edits == []
 
 
 def test_a_simulated_repair_uploads_nothing(log: NotificationLog, clip: Path) -> None:

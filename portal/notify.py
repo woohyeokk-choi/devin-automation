@@ -149,6 +149,7 @@ CREATE TABLE IF NOT EXISTS notification_uploads (
     path       TEXT NOT NULL,
     sha        TEXT NOT NULL,
     file_id    TEXT NOT NULL DEFAULT '',
+    caption    TEXT NOT NULL DEFAULT '',
     state      TEXT NOT NULL,
     detail     TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
@@ -271,6 +272,17 @@ class NotificationLog:
                     f"ALTER TABLE notifications ADD COLUMN {column} "
                     "TEXT NOT NULL DEFAULT ''"
                 )
+        uploaded = {
+            str(row["name"])
+            for row in self._conn.execute("PRAGMA table_info(notification_uploads)")
+        }
+        # A clip delivered before captions were kept has no stored wording;
+        # an empty caption says exactly that rather than inventing one.
+        if "caption" not in uploaded:
+            self._conn.execute(
+                "ALTER TABLE notification_uploads ADD COLUMN caption "
+                "TEXT NOT NULL DEFAULT ''"
+            )
         self._conn.commit()
         self._lock = threading.RLock()
 
@@ -352,14 +364,38 @@ class NotificationLog:
         return dict(row)
 
     def settle_upload(
-        self, upload_id: str, state: str, detail: str = "", file_id: str = ""
+        self,
+        upload_id: str,
+        state: str,
+        detail: str = "",
+        file_id: str = "",
+        caption: str = "",
     ) -> None:
         with self._lock, self._conn:
             self._conn.execute(
                 "UPDATE notification_uploads SET state = ?, detail = ?, "
-                "file_id = COALESCE(NULLIF(?, ''), file_id), updated_at = ? "
+                "file_id = COALESCE(NULLIF(?, ''), file_id), "
+                "caption = COALESCE(NULLIF(?, ''), caption), updated_at = ? "
                 "WHERE upload_id = ?",
-                (state, detail, file_id, utcnow(), upload_id),
+                (state, detail, file_id, caption, utcnow(), upload_id),
+            )
+
+    def clip_by_file_id(self, file_id: str) -> dict[str, Any] | None:
+        """The delivered upload Slack answered with this file id, if any."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM notification_uploads "
+                "WHERE file_id = ? AND state = ? ORDER BY id DESC LIMIT 1",
+                (file_id, SENT),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def recaption_clip(self, upload_id: str, caption: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE notification_uploads SET caption = ?, updated_at = ? "
+                "WHERE upload_id = ?",
+                (caption, utcnow(), upload_id),
             )
 
     def upload(self, upload_id: str) -> dict[str, Any] | None:
@@ -887,8 +923,71 @@ class Notifier:
             detail = redact_webhook(f"{type(exc).__name__}: {exc}", self.webhook)
             self.log.settle_upload(upload_id, FAILED, detail)
             return {"state": FAILED, "detail": detail, "file_id": ""}
-        self.log.settle_upload(upload_id, SENT, "", file_id)
+        self.log.settle_upload(upload_id, SENT, "", file_id, comment)
         return {"state": SENT, "detail": "", "file_id": file_id}
+
+    def recaption(
+        self,
+        ts: str,
+        file_id: str,
+        caption: str,
+        reason: str,
+        repair: dict[str, Any],
+        attempt: dict[str, Any] | None = None,
+    ) -> dict[str, str]:
+        """Rewrite the caption of a clip this ledger delivered, in place.
+
+        Shortening what a message says may not widen what it claims, so the
+        clip must still be one this deployment uploaded and Slack answered
+        for, and the repair must still satisfy the check a result message
+        does. The replacement is built by `clip_caption`, which re-applies
+        the preview or post-merge label from the repair's own state rather
+        than trusting the wording it is handed.
+        """
+        clip = self.log.clip_by_file_id(file_id)
+        if clip is None:
+            return {
+                "state": DISABLED,
+                "detail": f"no clip this deployment delivered carries {file_id}",
+            }
+        if int(clip["repair_id"] or 0) != int(repair.get("id") or 0):
+            return {
+                "state": DISABLED,
+                "detail": f"{file_id} belongs to repair {clip['repair_id']}",
+            }
+        problem = result_problem(repair, attempt)
+        if problem:
+            return {"state": DISABLED, "detail": problem}
+        if self.simulated or clip.get("simulated"):
+            return {"state": DISABLED, "detail": SIMULATED_RECORD_REFUSAL}
+        if self.bot is None:
+            return {
+                "state": DISABLED,
+                "detail": "editing a caption needs SLACK_BOT_TOKEN; the webhook cannot",
+            }
+        if not self.enabled:
+            return {"state": DISABLED, "detail": self.problem}
+        replacement = _labelled(caption)
+        previous = str(clip["caption"] or "")
+        try:
+            self.bot.amend(ts, replacement)
+        except Ambiguous as exc:
+            detail = redact_webhook(f"edit outcome unknown ({exc})", self.webhook)
+            self.log.record_amendment(
+                ts, self.channel, previous, replacement, reason, UNKNOWN, detail
+            )
+            return {"state": UNKNOWN, "detail": detail}
+        except Exception as exc:  # noqa: BLE001 - an edit may not break a repair
+            detail = redact_webhook(f"{type(exc).__name__}: {exc}", self.webhook)
+            self.log.record_amendment(
+                ts, self.channel, previous, replacement, reason, FAILED, detail
+            )
+            return {"state": FAILED, "detail": detail}
+        self.log.record_amendment(
+            ts, self.channel, previous, replacement, reason, SENT, ""
+        )
+        self.log.recaption_clip(str(clip["upload_id"]), replacement)
+        return {"state": SENT, "detail": ""}
 
     def amend(
         self, ts: str, text: str, reason: str, card: Card | None = None
@@ -1002,6 +1101,33 @@ def _links(repair: dict[str, Any]) -> str:
         if value:
             parts.append(f"{label} {escape(value)}")
     return " · ".join(parts)
+
+
+def clip_caption(
+    repair: dict[str, Any],
+    *,
+    headline: str,
+    result: str,
+    provenance: str,
+) -> str:
+    """A short caption for delivered footage: what, what it shows, from where.
+
+    The wording is the operator's; the claim is not. The label comes from the
+    repair's own state, so footage of an unmerged head says so however the
+    caption is phrased, and the pull request is named from the stored record
+    rather than typed in.
+    """
+    label = POST_MERGE_ONLY if str(repair.get("state") or "") == MERGED else PREVIEW_ONLY
+    lines = [
+        f"*{escape(_short(headline.strip(), 80))}*",
+        escape(_short(result.strip(), 160)),
+        escape(_short(provenance.strip(), 160)),
+    ]
+    pr_url = str(repair.get("agent_pr_url") or "")
+    if pr_url:
+        lines.append(f"<{escape(pr_url)}|pull request>")
+    lines.append(f"_{label}_")
+    return "\n".join(line for line in lines if line.strip())
 
 
 def _mismatch(incident: dict[str, Any] | None) -> str:
@@ -2165,6 +2291,7 @@ def main(argv: list[str] | None = None) -> int:
             "result",
             "attach",
             "amend",
+            "recaption",
             "correction",
             "restyle",
             "status",
@@ -2285,6 +2412,24 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "headline for the upload comment; only symptom footage may be "
             "re-captioned, and it stays a symptom either way"
+        ),
+    )
+    parser.add_argument(
+        "--file-id",
+        default="",
+        help="the Slack file id of a delivered clip; required for recaption",
+    )
+    parser.add_argument(
+        "--result",
+        default="",
+        help="one line saying what the footage shows; required for recaption",
+    )
+    parser.add_argument(
+        "--provenance",
+        default="",
+        help=(
+            "one line saying which head, environment and capture time the "
+            "footage came from; required for recaption"
         ),
     )
     args = parser.parse_args(argv)
@@ -2428,6 +2573,37 @@ def main(argv: list[str] | None = None) -> int:
                     "ts": args.ts,
                     "file_id": attachment,
                     **notifier.amend(args.ts, text, args.reason.strip()),
+                }
+            )
+            continue
+        if args.command == "recaption":
+            if not args.ts or not args.file_id:
+                raise SystemExit("recaption needs --ts and --file-id")
+            if not (args.caption and args.result and args.provenance):
+                raise SystemExit(
+                    "recaption needs --caption, --result and --provenance"
+                )
+            if not args.reason.strip():
+                raise SystemExit("recaption needs --reason")
+            caption = clip_caption(
+                repair,
+                headline=args.caption,
+                result=args.result,
+                provenance=args.provenance,
+            )
+            results.append(
+                {
+                    "repair": repair_id,
+                    "ts": args.ts,
+                    "file_id": args.file_id,
+                    **notifier.recaption(
+                        args.ts,
+                        args.file_id,
+                        caption,
+                        args.reason.strip(),
+                        repair,
+                        attempts[-1] if attempts else None,
+                    ),
                 }
             )
             continue
