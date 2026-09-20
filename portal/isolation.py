@@ -20,10 +20,12 @@ verifier turns into `blocked` rather than into a verdict about the product.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -47,6 +49,12 @@ SECRET_NAMES = (
 WEB_SERVICE = "superset-light"
 MCP_SERVICE = "superset-mcp-light"
 PORTAL_SERVICE = "portal"
+
+#: The retained demo's customer profile. It is the image's own development
+#: default, on a loopback-only port, holding nothing but synthetic fixtures,
+#: and the verifier signs in with it to prove the chart reads back.
+DEMO_USERNAME = "demo"
+DEMO_PASSWORD = "demo-local"
 
 
 def safe_environment(ports: dict[str, str], extra: dict[str, str]) -> dict[str, str]:
@@ -175,10 +183,11 @@ class IsolatedStack:
         data_dir.chmod(0o700)
         url = f"http://127.0.0.1:{port}"
         commands = environment.commands
+        self._measure_into(environment, data_dir, commands)
         self._portal_compose(environment, port, data_dir, ["up", "-d"], commands)
         try:
             self._wait(f"{url}/healthz", commands)
-            self._reaches_settings(url, commands)
+            self._reaches_settings(url, environment.head_sha, commands)
         except RunnerError:
             # Only this service comes down. `--remove-orphans` here would
             # mean "everything in this project the portal file does not
@@ -196,21 +205,80 @@ class IsolatedStack:
             ),
         )
 
-    def _reaches_settings(self, url: str, commands: list[str]) -> None:
-        """Prove the chart settings page is served, not merely a process.
+    def _measure_into(
+        self, environment: Environment, data_dir: Path, commands: list[str]
+    ) -> None:
+        """Measure this retained stack, into this deployment's own state.
 
-        Signed out it asks for credentials rather than showing the form, so
-        what is asserted is that the route exists and is this application's:
-        a 404 or a Superset page would both be a portal that is not there.
+        The portal reports whatever provenance file it is given, so a
+        retained demo pointed at the live run's `runtime/provenance.json`
+        would truthfully render somebody else's measurement. It gets its
+        own, measured from the containers actually serving it, written
+        beside its isolated state; the live file is never written here.
         """
-        commands.append(f"GET {url}/settings")
+        destination = data_dir / "provenance.json"
+        env = safe_environment(
+            {},
+            {
+                "AUTOMATION_DIR": str(self.automation_dir),
+                "SUPERSET_COMPOSE_PROJECT": environment.project,
+                "SUPERSET_BASE_URL": environment.base_url,
+            },
+        )
+        self._run(
+            [
+                sys.executable,
+                str(self.automation_dir / "scripts" / "capture_provenance.py"),
+                "--container",
+                f"{environment.project}-{WEB_SERVICE}-1",
+                "--output",
+                str(destination),
+            ],
+            self.automation_dir,
+            commands,
+            env=env,
+            timeout=self.timeout_seconds,
+        )
         try:
-            response = requests.get(f"{url}/settings", timeout=10, allow_redirects=False)
+            measured = json.loads(destination.read_text())
+        except (OSError, ValueError) as exc:
+            raise RunnerError(f"the retained portal has no provenance to report: {exc}")
+        reported = str((measured.get("source") or {}).get("checkout_sha") or "")
+        if reported != environment.head_sha:
+            raise RunnerError(
+                "the retained portal would report "
+                f"{reported[:12] or 'nothing'}, not {environment.head_sha[:12]}"
+            )
+
+    def _reaches_settings(self, url: str, head_sha: str, commands: list[str]) -> None:
+        """Prove the chart page an operator will show actually works.
+
+        A process answering `/healthz`, or a sign-in prompt on `/settings`,
+        says nothing about whether the chart behind it reads back: the page
+        has to render the saved chart, through this portal's own upstream
+        calls, and name the commit it is serving. Blocked upstreams and a
+        stale deployment both surface here rather than in the recording.
+        """
+        commands.append(f"GET {url}/settings (demo profile)")
+        try:
+            response = requests.get(
+                f"{url}/settings",
+                timeout=60,
+                allow_redirects=False,
+                auth=(DEMO_USERNAME, DEMO_PASSWORD),
+            )
         except requests.RequestException as exc:
             raise RunnerError(f"the retained portal did not answer: {type(exc).__name__}")
-        if response.status_code not in (200, 302, 303, 307, 401):
+        if response.status_code != 200:
             raise RunnerError(
                 f"the retained portal answered {response.status_code} for /settings"
+            )
+        page = response.text
+        if "Chart unavailable" in page or "Rows shown (row limit)" not in page:
+            raise RunnerError("the retained portal served no chart on /settings")
+        if head_sha[:12] not in page:
+            raise RunnerError(
+                f"the retained portal does not report {head_sha[:12]} on its pages"
             )
 
     def _portal_compose(
@@ -235,6 +303,9 @@ class IsolatedStack:
             {
                 "PORTAL_DATA_DIR": str(data_dir),
                 "AUTOMATION_DIR": str(self.automation_dir),
+                # This deployment's own measurement, not the live run's.
+                "PORTAL_PROVENANCE_DIR": str(data_dir),
+                "PORTAL_PROVENANCE_PATH": "/data/provenance.json",
                 "PORTAL_UID": str(os.getuid()),
                 "PORTAL_GID": str(os.getgid()),
                 "SUPERSET_NETWORK": f"{environment.project}_default",

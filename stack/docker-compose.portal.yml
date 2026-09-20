@@ -72,15 +72,20 @@ services:
       # parent scope is never accepted from a browser field.
       PORTAL_PARENT_INCIDENT: ${PORTAL_PARENT_INCIDENT:-}
       PORTAL_DATA_DIR: /data
-      PORTAL_PROVENANCE_PATH: /provenance/provenance.json
+      # A retained demo of another commit measures itself and passes
+      # /data/provenance.json here: reporting the live deployment's
+      # measurement on a different stack's pages would be a true file
+      # about the wrong containers.
+      PORTAL_PROVENANCE_PATH: ${PORTAL_PROVENANCE_PATH:-/provenance/provenance.json}
       # Fixed, not passed through: dispatch belongs to the coordinator, which
       # is the only process holding credentials, git and Docker. Sourcing a
       # shared .env must not turn this container into a second dispatcher.
       AUTO_REPAIR_ENABLED: "false"
     volumes:
       - ${PORTAL_DATA_DIR:?set PORTAL_DATA_DIR to the host state directory the coordinator also opens}:/data
-      # measured by scripts/capture_provenance.py on the host
-      - ${AUTOMATION_DIR:?set AUTOMATION_DIR}/runtime:/provenance:ro
+      # measured by scripts/capture_provenance.py on the host, for the
+      # containers this portal actually talks to
+      - ${PORTAL_PROVENANCE_DIR:-${AUTOMATION_DIR:?set AUTOMATION_DIR}/runtime}:/provenance:ro
     networks:
       - superset
     healthcheck:

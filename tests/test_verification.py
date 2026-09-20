@@ -278,7 +278,9 @@ def test_a_port_another_stack_already_holds_is_stepped_around() -> None:
 class RecordingStack(IsolatedStack):
     """An IsolatedStack whose subprocesses are recorded instead of run."""
 
-    def __init__(self, tmp_path: Path, fail_at: str = "") -> None:
+    def __init__(
+        self, tmp_path: Path, fail_at: str = "", measured_sha: str | None = None
+    ) -> None:
         super().__init__(
             target_repo="woohyeokk-choi/superset",
             automation_dir=tmp_path / "automation",
@@ -287,6 +289,7 @@ class RecordingStack(IsolatedStack):
         )
         self.calls: list[tuple[list[str], dict[str, str]]] = []
         self.fail_at = fail_at
+        self.measured_sha = measured_sha
 
     def _run(
         self,
@@ -301,6 +304,13 @@ class RecordingStack(IsolatedStack):
         Path(cwd).mkdir(parents=True, exist_ok=True)
         if self.fail_at and self.fail_at in " ".join(argv):
             raise RunnerError(f"{self.fail_at} failed")
+        if any("capture_provenance.py" in part for part in argv):
+            output = Path(argv[argv.index("--output") + 1])
+            output.write_text(
+                json.dumps(
+                    {"source": {"checkout_sha": self.measured_sha or CANDIDATE_SHA}}
+                )
+            )
         return ""
 
     def _wait(self, url: str, commands: list[str]) -> None:
@@ -362,7 +372,7 @@ def test_the_retained_portal_joins_the_stack_and_carries_no_dispatch(
 ) -> None:
     """It has to reach the retained containers, and start nothing of its own."""
     stack = RecordingStack(tmp_path)
-    monkeypatch.setattr(stack, "_reaches_settings", lambda url, commands: None)
+    monkeypatch.setattr(stack, "_reaches_settings", lambda url, sha, commands: None)
     project = f"candidate{CANDIDATE_SHA[:12]}"
 
     portal = stack.serve_portal(
@@ -384,6 +394,34 @@ def test_the_retained_portal_joins_the_stack_and_carries_no_dispatch(
     assert not [name for name in SECRET_NAMES if name in env]
     assert portal.url.endswith("/settings")
     assert "127.0.0.1" in portal.url
+    # Its own measurement, taken from its own containers, not the live
+    # deployment's runtime/provenance.json.
+    assert env["PORTAL_PROVENANCE_PATH"] == "/data/provenance.json"
+    assert env["PORTAL_PROVENANCE_DIR"] == env["PORTAL_DATA_DIR"]
+    measured = json.loads((Path(env["PORTAL_DATA_DIR"]) / "provenance.json").read_text())
+    assert measured["source"]["checkout_sha"] == CANDIDATE_SHA
+    assert not (stack.automation_dir / "runtime" / "provenance.json").exists()
+
+
+def test_a_portal_that_would_report_another_commit_is_not_served(
+    tmp_path: Path,
+) -> None:
+    """A page naming the wrong commit is worse than no page at all."""
+    stack = RecordingStack(tmp_path, measured_sha="b" * 40)
+    project = f"candidate{CANDIDATE_SHA[:12]}"
+
+    with pytest.raises(RunnerError, match="would report"):
+        stack.serve_portal(
+            Environment(
+                project=project,
+                base_url="http://127.0.0.1:8288",
+                mcp_url="http://127.0.0.1:5208/mcp",
+                checkout=str(tmp_path / "work" / project),
+                head_sha=CANDIDATE_SHA,
+            )
+        )
+
+    assert not [argv for argv, _ in stack.calls if argv[-2:] == ["up", "-d"]]
 
 
 def test_taking_the_retained_portal_down_leaves_the_stack_it_showed(
@@ -394,7 +432,7 @@ def test_taking_the_retained_portal_down_leaves_the_stack_it_showed(
     monkeypatch.setattr(
         stack,
         "_reaches_settings",
-        lambda url, commands: (_ for _ in ()).throw(RunnerError("no /settings")),
+        lambda url, sha, commands: (_ for _ in ()).throw(RunnerError("no /settings")),
     )
     project = f"candidate{CANDIDATE_SHA[:12]}"
 
