@@ -63,6 +63,27 @@ candidate preview on `127.0.0.1:8488` serve Explore with compiled assets, and
 the two native clips in the Slack thread were recorded there. Those stacks are
 temporary loopback environments on the builder machine, not deployments.
 
+### Showing the defect happen, rather than its aftermath
+
+A second, disposable portal deployment can be pointed at the same baseline
+Superset to demonstrate the failure live on its own chart. Three settings
+shape it, and all three keep their existing defaults so the recorded run is
+unchanged:
+
+| Setting | Default | Presentation value |
+| --- | --- | --- |
+| `PORTAL_CHART_ROW_LIMIT` | `137` | `10` — small enough that the limit is visible in the rendered chart |
+| `PORTAL_CHART_QUERY_MODE` | `aggregate` | `raw` — one row per order, so a row limit changes what is on screen |
+| `PORTAL_SUPERSET_PUBLIC_URL` | empty | the host-visible Superset address, which turns the chart id on `/settings` into a link to the same saved chart |
+
+With `PORTAL_CHART_NAME` set to its own chart, the deployment creates, resets
+and updates only that chart. Applying a sort with the row limit left blank
+sends the real MCP `update_chart` shown on the page — which carries no
+`row_limit` field — and Superset replaces the saved `10` with `1000`, about
+600 rows. Run it with `AUTO_REPAIR_ENABLED=false` and without a parent
+incident configured: its failures are then refused as incidents by design, so
+a demonstration cannot open an issue, create a session or post to Slack.
+
 ## Start it
 
 Two checkouts are needed — this repository and the Superset fork at the

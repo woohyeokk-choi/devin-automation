@@ -378,11 +378,56 @@ def chart_settings(
         "settings.html",
         request,
         chart=chart,
+        chart_url=native_chart_url(chart),
+        chart_row_limit=settings.chart_row_limit,
+        sort_request=sort_request_preview(chart),
         blocked_reason=blocked_reason,
         denied_reason=denied_reason,
         trace_id=trace_id or trace.trace_id,
         note=note,
     )
+
+
+def native_chart_url(chart: dict[str, Any] | None) -> str:
+    """Where a browser on the host opens this same saved chart in Superset.
+
+    Only offered when the deployment was told its host-visible address: the
+    address this server uses is a container one, and a link built from it
+    would not open for the person reading the page.
+    """
+    if not chart or not settings.superset_public_url:
+        return ""
+    return f"{settings.superset_public_url.rstrip('/')}/explore/?slice_id={chart['id']}"
+
+
+def sort_request_preview(chart: dict[str, Any] | None) -> str:
+    """The sort-only MCP request, rendered from the one the portal sends.
+
+    Read off the real request rather than written out again, so the page
+    cannot claim a request shape the portal does not use. Columns are shown
+    by name and the direction as an ellipsis, because that is the one part
+    the person choosing at the form decides.
+    """
+    if not chart:
+        return ""
+    request = portal.sort_only_request(chart["id"], descending=True)
+    lines = [f"update_chart(identifier={request['identifier']}, config={{"]
+    for key, value in request["config"].items():
+        if key == "columns":
+            shown = json.dumps([_column_label(column) for column in value])
+        elif key == "sort_by":
+            shown = '[{"column": "%s", "ascending": \u2026}]' % value[0]["column"]
+        else:
+            shown = json.dumps(value)
+        lines.append(f'  "{key}": {shown},')
+    lines[-1] = lines[-1].rstrip(",")
+    lines.append("})            \u2190 sort only; row limit not sent")
+    return "\n".join(lines)
+
+
+def _column_label(column: dict[str, Any]) -> str:
+    aggregate = column.get("aggregate")
+    return f"{column['name']} ({aggregate})" if aggregate else str(column["name"])
 
 
 @app.post("/settings/sort", dependencies=WRITE)
@@ -595,14 +640,25 @@ def ops_bundle_file(
     )
 
 
+#: Where a fixture reset may return to. An allowlist, so the button cannot be
+#: turned into an open redirect by whoever submits the form.
+RESET_RETURNS = ("/ops", "/settings")
+
+
 @app.post("/ops/fixtures/reset", dependencies=[Depends(csrf_guard)])
-def ops_reset(request: Request, _: str = Depends(ops_guard)) -> RedirectResponse:
+def ops_reset(
+    request: Request,
+    back_to: str = Form("/ops"),
+    _: str = Depends(ops_guard),
+) -> RedirectResponse:
     """Restore the disposable fixture to its documented starting state.
 
-    Forgets the portal's own exploration records and puts the demo chart back to
-    row limit 137, highest-revenue-first and googleCategory10c, so a replay
-    always starts from the same "before" values. Only these disposable fixture
-    records are touched; nothing else in Superset is deleted from here.
+    Forgets the portal's own exploration records and puts this deployment's own
+    demo chart back to its configured row limit, highest-revenue-first and
+    googleCategory10c, so a replay always starts from the same "before" values.
+    The chart is found by this deployment's configured name, so a presentation
+    environment resets its own chart and no other. Only these disposable
+    fixture records are touched; nothing else in Superset is deleted from here.
     """
     trace = portal.new_trace("operator")
     removed = store.clear_explorations()
@@ -615,4 +671,5 @@ def ops_reset(request: Request, _: str = Depends(ops_guard)) -> RedirectResponse
         trace.blocked("portal.reset_fixture", exc)
     portal.reload_provenance()
     note = "fixture reset" if chart else "fixture reset incomplete (see trace)"
-    return back(request, trace, note=note, path="/ops")
+    path = back_to if back_to in RESET_RETURNS else "/ops"
+    return back(request, trace, note=note, path=path)

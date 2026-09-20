@@ -8,9 +8,12 @@ files.
 
 Nothing in it costs money: every session, issue and pull request below already
 exists, and no repair is dispatched while recording (`AUTO_REPAIR_ENABLED=false`).
-Nothing is re-run either: the walkthrough is **chart-first and read-only**. Do
-not reset the historical fixture and do not change a chart's sort while
-filming — that would write a new incident over the case being narrated.
+The walkthrough is **chart-first**. Exactly one action is performed live, and
+it happens on a separate disposable presentation deployment: the opening sort
+change on chart 10 at <http://127.0.0.1:8093>. Everything about the historical
+case — chart 9, incident 1, issue #5, the session and PR #6 — is read-only.
+Do not reset the historical fixture and do not change the sort of chart 9 or
+chart 105 while filming.
 
 When the completed S1 session is opened, say the sentence verbatim:
 
@@ -20,6 +23,8 @@ When the completed S1 session is opened, say the sentence verbatim:
 
 | | |
 | --- | --- |
+| Live opening — portal | <http://127.0.0.1:8093/settings> — the disposable presentation deployment (run id `demo-rehearsal`, namespace `demo-rehearsal-20260920`, `AUTO_REPAIR_ENABLED=false`, no GitHub or Slack). Its **Prepare this chart for another run** button resets only its own chart 10 to row limit **10**, highest revenue first |
+| Live opening — native chart | <http://127.0.0.1:8088/explore/?slice_id=10> — `Order revenue - live demonstration` at `394bca55`: before the action, raw records, saved limit **10**, 10 rows |
 | Native Superset, baseline | <http://127.0.0.1:8088/explore/?slice_id=9> — `Order revenue - 10-row view (presentation)` at `394bca55`, already in its reset state: saved row limit **1000**, ~600 rows on screen |
 | Native Superset, candidate | <http://127.0.0.1:8488/explore/?slice_id=105> — same chart at PR #6 head `7bb8de7b136f`: saved row limit **10**, 10 rows, sorted descending. An isolated **unmerged preview**, not a deployment |
 | Portal / operator console | <http://127.0.0.1:8092/ops> — private VM loopback, not published; run namespace `fresh-demo-20260919-2310`, dispatch off |
@@ -42,23 +47,43 @@ head — say which one is on screen.
 
 Two things that look alike and are not the same run: the original incident is
 the registered behaviour check that saw **137 → 1000**, and the presentation
-chart used for the native footage is a later, separate local replay of the
-same defect (**10 → 1000**, ~600 rows). Never merge their timestamps into one
-story.
+charts used for the native footage and the live opening are later, separate
+local replays of the same defect (**10 → 1000**, ~600 rows). Never merge their
+timestamps into one story. The presentation deployment runs in the
+`reproduction` environment with no parent incident configured, so its failure
+events are refused as incidents by design — a replay cannot open an issue,
+create a session or post to Slack.
+
+One native-UI quirk to plan around: Explore caches the form data of the tab
+you opened, so **refreshing the tab you opened before the action shows the old
+state**. After applying the sort, re-enter
+<http://127.0.0.1:8088/explore/?slice_id=10> in the address bar rather than
+pressing reload.
 
 ## Screen-by-screen
 
-### 0:00–0:30 · The symptom, in Superset's own UI (8088, slice 9)
+### 0:00–0:45 · The defect happening, live (8093 → 8088, slice 10)
 
-Screen: native Explore on the baseline. The chart is a raw-record table whose
-saved row limit reads **1000** with roughly 600 rows rendered, although it was
-saved as a 10-row view.
+Start on the native chart 10: a raw-record table, saved row limit **10**, ten
+rows on screen. Switch to <http://127.0.0.1:8093/settings>, which shows the
+same saved values read back from Superset and the exact request it is about to
+send — `update_chart(identifier=10, config={…})` with **no `row_limit` field**.
+Change the order to *lowest revenue first* and click **Apply** once.
 
-> "A sort-only update through Superset's MCP API omitted the row limit. The
-> saved limit didn't stay — it was replaced by the schema default. This is the
-> state that update left behind; I'm not re-running it now."
+> "That is one sort-only request to Superset's MCP integration — not the
+> column-header button in the UI. The request has no row limit in it at all."
 
-### 0:30–1:05 · The stored event, not a story (`/ops`, then `/ops/incidents/1`)
+The portal's read-back now says **1000**. Re-enter the chart URL: the same
+native chart renders **600 rows**.
+
+> "Nothing asked for that. An unrelated field was replaced with the schema
+> default, and the product's own saved value is the proof — this page only
+> reads it back."
+
+Then move to chart 9, the same defect caught earlier by the registered
+behaviour check, and narrate the rest of the run from there.
+
+### 0:45–1:10 · The stored event, not a story (`/ops`, then `/ops/incidents/1`)
 
 > "Every request and response is logged server-side, redacted, with a trace
 > id. The failing behaviour check — `row_limit` expected 137, observed 1000 —
@@ -68,7 +93,7 @@ saved as a 10-row view.
 Show the trace, the failing assertion row, then the incident header: family
 `omitted_row_limit_is_reset`, fingerprint, baseline SHA.
 
-### 1:05–1:30 · Part 3: what the operator actually sees
+### 1:10–1:30 · Part 3: what the operator actually sees
 
 Stay on `/ops/incidents` and read the run summary card:
 

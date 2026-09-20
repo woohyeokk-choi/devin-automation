@@ -24,8 +24,22 @@ SERVICE_PROFILE = "portal_service"
 RESTRICTED_PROFILE = "restricted_viewer"
 DIMENSIONS = ("region", "channel", "product")
 SORTS = {"desc": "highest revenue first", "asc": "lowest revenue first"}
+#: The saved row limit a deployment uses unless it configures another one.
 DEFAULT_ROW_LIMIT = 137
 CHART_COLOR_SCHEME = "googleCategory10c"
+#: The two shapes the demo chart is ever saved in. An aggregate table answers
+#: with one row per region whatever the row limit is, so a deployment that
+#: wants the limit to be *visible* in the rendered chart asks for raw records.
+AGGREGATE_COLUMNS = [{"name": "region"}, {"name": "revenue", "aggregate": "SUM"}]
+RAW_COLUMNS = [
+    {"name": "id"},
+    {"name": "region"},
+    {"name": "channel"},
+    {"name": "product"},
+    {"name": "revenue"},
+]
+AGGREGATE_SORT_COLUMN = "SUM(revenue)"
+RAW_SORT_COLUMN = "revenue"
 REVENUE_METRIC = {
     "expressionType": "SIMPLE",
     "column": {"column_name": "revenue"},
@@ -386,6 +400,39 @@ class Portal:
         raise Denied(403, what)
 
     # ------------------------------------------------------- chart settings
+    @property
+    def raw_rows(self) -> bool:
+        """Whether this deployment's chart lists rows instead of aggregating."""
+        return self.settings.chart_query_mode == "raw"
+
+    @property
+    def sort_column(self) -> str:
+        """The column a sort change names, in this chart's shape."""
+        return RAW_SORT_COLUMN if self.raw_rows else AGGREGATE_SORT_COLUMN
+
+    def chart_shape(self) -> dict[str, Any]:
+        """The columns and query mode every saved state of the chart carries."""
+        if self.raw_rows:
+            return {
+                "chart_type": "table",
+                "query_mode": "raw",
+                "columns": [dict(column) for column in RAW_COLUMNS],
+            }
+        return {
+            "chart_type": "table",
+            "columns": [dict(column) for column in AGGREGATE_COLUMNS],
+        }
+
+    def sort_only_request(self, chart_id: int, descending: bool) -> dict[str, Any]:
+        """The MCP request a sort change sends — and the one the page shows.
+
+        Built here rather than written out twice, so what the portal displays
+        cannot drift from what it sends. There is no `row_limit` key in it.
+        """
+        config = self.chart_shape()
+        config["sort_by"] = [{"column": self.sort_column, "ascending": not descending}]
+        return {"identifier": chart_id, "generate_preview": False, "config": config}
+
     def find_chart(self, trace: Trace, gateway: SupersetGateway) -> dict[str, Any] | None:
         query = (
             "(filters:!((col:slice_name,opr:eq,value:'"
@@ -445,9 +492,8 @@ class Portal:
             "save_chart": True,
             "generate_preview": False,
             "config": {
-                "chart_type": "table",
-                "columns": [{"name": "region"}, {"name": "revenue", "aggregate": "SUM"}],
-                "row_limit": DEFAULT_ROW_LIMIT,
+                **self.chart_shape(),
+                "row_limit": self.settings.chart_row_limit,
                 "color_scheme": CHART_COLOR_SCHEME,
             },
         }
@@ -481,13 +527,9 @@ class Portal:
                 "identifier": chart["id"],
                 "generate_preview": False,
                 "config": {
-                    "chart_type": "table",
-                    "columns": [
-                        {"name": "region"},
-                        {"name": "revenue", "aggregate": "SUM"},
-                    ],
-                    "sort_by": [{"column": "SUM(revenue)", "ascending": False}],
-                    "row_limit": DEFAULT_ROW_LIMIT,
+                    **self.chart_shape(),
+                    "sort_by": [{"column": self.sort_column, "ascending": False}],
+                    "row_limit": self.settings.chart_row_limit,
                     "color_scheme": CHART_COLOR_SCHEME,
                 },
             },
@@ -495,7 +537,7 @@ class Portal:
         )
         after = self.read_chart(trace, gateway, chart["id"])
         expected = {
-            "row_limit": DEFAULT_ROW_LIMIT,
+            "row_limit": self.settings.chart_row_limit,
             "color_scheme": CHART_COLOR_SCHEME,
             "order_desc": True,
         }
@@ -524,22 +566,19 @@ class Portal:
     ) -> dict[str, Any]:
         """Change only the sort order and check that nothing else moved."""
         self._require_editor(trace, gateway, "change chart settings")
-        config: dict[str, Any] = {
-            "chart_type": "table",
-            "columns": [{"name": "region"}, {"name": "revenue", "aggregate": "SUM"}],
-            "sort_by": [{"column": "SUM(revenue)", "ascending": not descending}],
-        }
+        request = self.sort_only_request(chart["id"], descending)
+        config: dict[str, Any] = request["config"]
         if explicit_row_limit is not None:
             config["row_limit"] = explicit_row_limit
         self.mcp.call_tool(
             trace,
             "update_chart",
-            {"identifier": chart["id"], "generate_preview": False, "config": config},
+            request,
             input_summary={"chart_id": chart["id"], "config": config},
         )
         after = self.read_chart(trace, gateway, chart["id"])
 
-        requested = {"sort_by": "SUM(revenue)", "descending": descending}
+        requested = {"sort_by": self.sort_column, "descending": descending}
         observed = {"sort_by": after["sort_by"], "descending": after["order_desc"]}
         sort_applied = bool(after["sort_by"]) and after["order_desc"] == descending
         trace.assert_contract(

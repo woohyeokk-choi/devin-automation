@@ -46,6 +46,23 @@ class Settings:
     chart_name: str = field(
         default_factory=lambda: _env("PORTAL_CHART_NAME", "Synthetic orders by region")
     )
+    #: The saved row limit this deployment's disposable chart is created and
+    #: reset to. A presentation environment uses a small number so the defect
+    #: is visible in the rendered chart rather than only in the settings page.
+    chart_row_limit: int = field(
+        default_factory=lambda: int(_env("PORTAL_CHART_ROW_LIMIT", "137"))
+    )
+    #: `aggregate` (one row per region) or `raw` (one row per order). Raw is
+    #: what makes a row limit visible in the rendered chart.
+    chart_query_mode: str = field(
+        default_factory=lambda: _env("PORTAL_CHART_QUERY_MODE", "aggregate")
+    )
+    #: How a browser on the host reaches the same Superset, when that differs
+    #: from the address this server uses. Empty means they are the same, and
+    #: no link is offered rather than a guessed one.
+    superset_public_url: str = field(
+        default_factory=lambda: _env("PORTAL_SUPERSET_PUBLIC_URL", "")
+    )
 
     # --- local state -------------------------------------------------------
     data_dir: Path = field(
