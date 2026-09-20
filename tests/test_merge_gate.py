@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -511,8 +511,17 @@ def test_a_refused_termination_keeps_the_claim_rather_than_losing_it(
 # --- the merged commit's recording -----------------------------------------
 
 
-def capture_name(sha: str = MERGE_SHA, case: str = "S1") -> str:
-    return f"post-merge-{sha}-20260920T001500Z-{case}.mp4"
+#: The clock every wiring runs on, so a capture can be stamped relative to
+#: the moment its recording was asked for rather than to real time.
+CLOCK = datetime(2026, 9, 19, 12, 0, tzinfo=timezone.utc)
+
+
+def stamp(offset: timedelta = timedelta(0)) -> str:
+    return (CLOCK + offset).strftime("%Y%m%dT%H%M%SZ")
+
+
+def capture_name(sha: str = MERGE_SHA, case: str = "S1", at: str = "") -> str:
+    return f"post-merge-{sha}-{at or stamp()}-{case}.mp4"
 
 
 def merged_and_asked(
@@ -615,6 +624,148 @@ def test_a_recording_is_not_waited_for_forever(
     assert repair is not None and repair["media_state"] == MEDIA_FAILED
     assert repair["state"] == MERGED  # the verdict itself still stands
     assert repairs.slot_holder() is None
+
+
+def test_every_ending_of_the_recording_also_ends_the_session(
+    repairs: RepairStore,
+    incident: dict[str, Any],
+    store: VerificationStore,
+    tmp_path: Path,
+) -> None:
+    """A session kept alive only to record stops when recording is over."""
+    wiring = gated(repairs)
+    repair_id = merged_and_asked(wiring, incident, store, tmp_path)
+
+    for _ in range(MAX_MEDIA_POLLS + 2):
+        if wiring.controller.check_media(repair_id).action != "awaiting_media":
+            break
+
+    assert wiring.devin_api.terminated == [wiring.session_id()]
+
+
+def test_a_delivered_recording_also_ends_the_session(
+    repairs: RepairStore,
+    incident: dict[str, Any],
+    store: VerificationStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wiring = gated(repairs)
+    repair_id = merged_and_asked(wiring, incident, store, tmp_path)
+    wiring.devin_api.add_attachment(wiring.session_id(), capture_name())
+    monkeypatch.setattr("portal.media.download", _write_capture)
+    assert wiring.controller.check_media(repair_id).action == "media_captured"
+    assert not wiring.devin_api.terminated  # still needed until Slack answers
+
+    wiring.controller.media_delivered(repair_id, "F0CSIMULATED", "stored by Slack")
+
+    assert wiring.devin_api.terminated == [wiring.session_id()]
+    assert repairs.slot_holder() is None
+
+
+def test_a_session_that_will_not_stop_keeps_the_claim_after_delivery(
+    repairs: RepairStore,
+    incident: dict[str, Any],
+    store: VerificationStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wiring = gated(repairs)
+    repair_id = merged_and_asked(wiring, incident, store, tmp_path)
+    wiring.devin_api.add_attachment(wiring.session_id(), capture_name())
+    monkeypatch.setattr("portal.media.download", _write_capture)
+    assert wiring.controller.check_media(repair_id).action == "media_captured"
+
+    def refuse(session_id: str) -> None:
+        raise Ambiguous("the terminate call was not answered")
+
+    assert wiring.controller.devin is not None
+    wiring.controller.devin.terminate_session = refuse  # type: ignore[method-assign]
+
+    wiring.controller.media_delivered(repair_id, "F0CSIMULATED", "stored by Slack")
+
+    repair = repairs.get(repair_id)
+    assert repair is not None and repair["media_state"] == MEDIA_DELIVERED
+    assert repair["media_file_id"] == "F0CSIMULATED"
+    assert "may still be running" in str(repair["attention"])
+    assert repairs.slot_holder() == repair_id
+
+
+def test_an_unreadable_session_does_not_outlast_the_deadline(
+    repairs: RepairStore,
+    incident: dict[str, Any],
+    store: VerificationStore,
+    tmp_path: Path,
+) -> None:
+    """Usage that cannot be read is no reason to wait past the wall clock."""
+    wiring = gated(repairs)
+    repair_id = merged_and_asked(wiring, incident, store, tmp_path)
+
+    def unreadable(session_id: str) -> Any:
+        raise Ambiguous("the session could not be read")
+
+    assert wiring.controller.devin is not None
+    wiring.controller.devin.get_session = unreadable  # type: ignore[method-assign]
+
+    # Inside the deadline the pass simply waits for a readable answer.
+    assert wiring.controller.check_media(repair_id).action == "deferred"
+
+    repair = repairs.get(repair_id)
+    assert repair is not None
+    wiring.clock = datetime.fromisoformat(str(repair["deadline_utc"])) + timedelta(
+        minutes=1
+    )
+
+    decision = wiring.controller.check_media(repair_id)
+
+    assert decision.action == "media_failed" and "deadline" in decision.detail
+    settled = repairs.get(repair_id)
+    assert settled is not None and settled["media_state"] == MEDIA_FAILED
+    assert settled["state"] == MERGED  # the merged verdict is untouched
+    assert wiring.devin_api.terminated == [wiring.session_id()]
+
+
+def test_footage_older_than_the_request_or_dated_ahead_of_it_is_refused(
+    repairs: RepairStore,
+    incident: dict[str, Any],
+    store: VerificationStore,
+    tmp_path: Path,
+) -> None:
+    wiring = gated(repairs)
+    repair_id = merged_and_asked(wiring, incident, store, tmp_path)
+    session = wiring.session_id()
+    wiring.devin_api.add_attachment(
+        session, capture_name(at=stamp(-timedelta(minutes=20)))
+    )
+    wiring.devin_api.add_attachment(
+        session, capture_name(at=stamp(timedelta(hours=3)))
+    )
+
+    decision = wiring.controller.check_media(repair_id)
+
+    assert decision.action == "awaiting_media"
+    assert "before the merged commit's recording was requested" in decision.detail
+    assert "in the future" in decision.detail
+    repair = repairs.get(repair_id)
+    assert repair is not None and not repair["media_path"]
+
+
+def test_footage_with_nothing_to_date_it_against_is_refused(
+    repairs: RepairStore,
+    incident: dict[str, Any],
+    store: VerificationStore,
+    tmp_path: Path,
+) -> None:
+    """No reference time means no capture qualifies, rather than all of them."""
+    wiring = gated(repairs)
+    repair_id = merged_and_asked(wiring, incident, store, tmp_path)
+    repairs.update(repair_id, media_asked_at=None, merge_verification=None)
+    wiring.devin_api.add_attachment(wiring.session_id(), capture_name())
+
+    decision = wiring.controller.check_media(repair_id)
+
+    assert decision.action == "awaiting_media"
+    assert "no readable time" in decision.detail
 
 
 def test_an_ambiguous_request_is_not_sent_a_second_time(

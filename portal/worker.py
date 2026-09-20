@@ -227,7 +227,12 @@ class RepairWorker:
         return decisions
 
     def _publish_capture(self, repair_id: int) -> None:
-        """Offer a downloaded post-merge capture to Slack, once.
+        """Offer one downloaded capture to Slack, once.
+
+        Which stage it belongs to decides what it is allowed to claim: the
+        symptom goes up as footage of the baseline failing while the repair
+        is still running, the other only as the merged commit running.
+        Neither may be captioned as the other.
 
         The controller has the capture on disk and knows what it claims to
         be; only Slack can say whether it was published, so the file id it
@@ -247,26 +252,32 @@ class RepairWorker:
                 repair_id, "the downloaded capture does not name what it recorded"
             )
             return
+        symptom = capture.stage == media.SYMPTOM
+        scope = (
+            "the repair session's own reproduction on the unchanged baseline, "
+            "recorded on its machine — not the verifier host"
+            if symptom
+            else "the repair session's own build of the merged commit, "
+            "recorded on its machine — not the verifier host"
+        )
         try:
             outcome = self.notifier.attach(
-                f"{repair['fingerprint']}:{capture.sha}:post-merge",
+                f"{repair['fingerprint']}:{capture.sha}:{capture.stage}",
                 path,
                 Recording(
                     url=IN_THREAD,
                     case=capture.case,
                     sha=capture.sha,
                     recorded_at=capture.recorded_at,
-                    scope=(
-                        "the repair session's own build of the merged commit, "
-                        "recorded on its machine — not the verifier host"
-                    ),
+                    scope=scope,
                 ),
                 dict(repair),
-                self._merge_attempt(repair),
+                None if symptom else self._merge_attempt(repair),
                 simulated_record=bool(repair["simulated"]),
+                symptom_of=capture.sha if symptom else "",
             )
         except Exception as exc:  # noqa: BLE001 - an upload may not break a repair
-            log.exception("post-merge capture upload failed")
+            log.exception("capture upload failed")
             self.controller.media_failed(
                 repair_id, f"the capture could not be offered ({type(exc).__name__})"
             )

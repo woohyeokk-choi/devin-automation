@@ -315,6 +315,33 @@ pull request, merge or deploy anything. The recording is evidence of the
 merged code, not a new verdict: the host checks remain the source of truth."""
 
 
+def symptom_message(baseline_sha: str, case: str = "S1") -> str:
+    """Ask the session to keep footage of the failure it is reproducing.
+
+    Reproduction is already the first thing the session was briefed to do,
+    so this buys no extra work: it asks for the reproduction it is running
+    anyway to be recorded before any product code changes. Nobody's browser
+    can be recorded retrospectively, which is why the request goes out with
+    the dispatch rather than after a fix exists.
+    """
+    return f"""While you reproduce this on the unchanged baseline, record that
+reproduction \u2014 before you change any product code.
+
+Baseline commit: `{baseline_sha}`
+
+Capture the failing user action through the portal UI and attach it as a single
+video named exactly
+
+    symptom-{baseline_sha}-<YYYYMMDDTHHMMSSZ>-{case}.mp4
+
+where the timestamp is the UTC time you captured it. The name is how the
+recording is identified, so a file named anything else is ignored, and a clip
+of anything other than the baseline failing is not this evidence. Keep
+credentials and any real data out of the frame. Then carry on with the repair
+exactly as briefed: this recording is evidence of the symptom, not a verdict,
+and the host's checks remain the source of truth."""
+
+
 def follow_up_message(failures: list[str], pr_url: str, head_sha: str) -> str:
     """Verification feedback, delivered to the same session that produced the PR."""
     bullets = "\n".join(f"- {failure}" for failure in failures)

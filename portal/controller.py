@@ -68,9 +68,11 @@ CREATE TABLE IF NOT EXISTS repairs (
     merge_commit_sha TEXT,
     merge_verification TEXT,
     media_state      TEXT,
+    media_stage      TEXT,
     media_detail     TEXT,
     media_path       TEXT,
     media_file_id    TEXT,
+    media_asked_at   TEXT,
     media_polls      INTEGER NOT NULL DEFAULT 0,
     created_at       TEXT NOT NULL,
     updated_at       TEXT NOT NULL
@@ -128,11 +130,18 @@ TERMINAL = "terminal"
 
 INTENDED, CONFIRMED, AMBIGUOUS = "intended", "confirmed", "ambiguous"
 
-#: What is still owed after a merged commit passes. The verdict is the
-#: host's and is already final; these track the session's own recording of
-#: that commit, which is a separate promise and fails visibly rather than
-#: quietly. `requested` survives an ambiguous send: the next pass looks for
-#: the capture instead of asking again.
+#: The two recordings an incident is worth, in the order they exist. The
+#: symptom is the failure as the baseline still produces it, asked for while
+#: the repair runs; the merged one is the same action on code a human
+#: merged. One slot carries whichever is in flight, and the stage says
+#: which, because a clip of the old failure must never stand in for the fix.
+SYMPTOM, AFTER_MERGE = media.SYMPTOM, media.AFTER_MERGE
+
+#: What is still owed for the stage in flight. A verdict is the host's and
+#: never depends on this; these track the session's own recording, which is
+#: a separate promise and fails visibly rather than quietly. `requested`
+#: survives an ambiguous send: the next pass looks for the capture instead
+#: of asking again.
 MEDIA_PENDING = "pending"
 MEDIA_REQUESTED = "requested"
 MEDIA_CAPTURED = "captured"
@@ -143,6 +152,12 @@ UNRESOLVED_MEDIA = (MEDIA_PENDING, MEDIA_REQUESTED, MEDIA_CAPTURED)
 #: How many passes a capture may be waited for. Bounded so a session that
 #: never records anything ends in a stated failure, not an open wait.
 MAX_MEDIA_POLLS = 60
+
+#: How far two clocks may disagree before a capture's own timestamp is read
+#: as evidence about a different moment. Small on purpose: this covers skew
+#: between the session's machine and the host, not a window in which older
+#: footage becomes acceptable.
+CLOCK_TOLERANCE = timedelta(minutes=2)
 
 MAX_FOLLOW_UPS = 2
 ALLOWED_PR_HOST = "github.com"
@@ -231,9 +246,11 @@ class RepairStore:
             "merge_commit_sha",
             "merge_verification",
             "media_state",
+            "media_stage",
             "media_detail",
             "media_path",
             "media_file_id",
+            "media_asked_at",
         ):
             if column not in present:
                 self._conn.execute(f"ALTER TABLE repairs ADD COLUMN {column} TEXT")
@@ -587,6 +604,17 @@ class Controller:
     def _walk(self, active: dict[str, Any]) -> Decision:
         repair_id = int(active["id"])
         state = str(active["state"])
+        if (
+            str(active["media_stage"] or "") == SYMPTOM
+            and str(active["media_state"] or "") in UNRESOLVED_MEDIA
+            and state not in (PROPOSED, TERMINAL)
+        ):
+            # Footage of the failure is owed while the repair runs, and
+            # carrying it forward is not the repair's own progress: the
+            # state machine below still decides what the repair does next.
+            self.check_media(repair_id)
+            active = self.store.get(repair_id) or active
+            state = str(active["state"])
         if state == MERGED and str(active["media_state"] or "") in UNRESOLVED_MEDIA:
             # The verdict is in; the recording of that merged commit is not,
             # and the claim is held until that promise is closed.
@@ -684,6 +712,14 @@ class Controller:
             agent_status=session.status,
             agent_detail=session.status_detail,
             agent_acus=session.acus_consumed,
+            # The failure is still live on the baseline at this moment and
+            # the session is about to reproduce it, which is the only point
+            # at which footage of the symptom can honestly be taken. The
+            # promise is written down here so it fails visibly if it is
+            # never kept.
+            media_state=MEDIA_PENDING,
+            media_stage=SYMPTOM,
+            media_polls=0,
         )
         return Decision("dispatched", session.url, repair_id)
 
@@ -846,6 +882,13 @@ class Controller:
     def _exceeded(self, repair: dict[str, Any], acus: float) -> str:
         if acus >= float(repair["acu_limit"]):
             return f"ACU budget exhausted: {acus} of {repair['acu_limit']} consumed"
+        deadline = str(repair["deadline_utc"] or "")
+        if deadline and self._now() > datetime.fromisoformat(deadline):
+            return f"wall-clock deadline {deadline} passed"
+        return ""
+
+    def _past_deadline(self, repair: dict[str, Any]) -> str:
+        """The wall-clock half of the budget, answerable without the API."""
         deadline = str(repair["deadline_utc"] or "")
         if deadline and self._now() > datetime.fromisoformat(deadline):
             return f"wall-clock deadline {deadline} passed"
@@ -1204,8 +1247,15 @@ class Controller:
                     f"(preview {str(repair['pr_head_sha'] or '')[:12]})"
                 ),
                 media_state=MEDIA_PENDING,
+                media_stage=AFTER_MERGE,
                 media_detail="the merged commit passed; its recording is owed",
                 media_polls=0,
+                # The slot carries one stage at a time: the symptom's file
+                # and request belong to footage of the old failure and
+                # must not be read as the merged commit's.
+                media_path=None,
+                media_file_id=None,
+                media_asked_at=None,
             )
             return Decision("merge_verified", merge_sha, repair_id)
         self.store.update(
@@ -1257,16 +1307,17 @@ class Controller:
     # --- the recording of the merged code ----------------------------------
 
     def check_media(self, repair_id: int) -> Decision:
-        """Carry the merged-code recording from request to a file on disk.
+        """Carry one owed recording from request to a file on disk.
 
-        The verdict is already the host's and does not depend on this. What
-        does depend on it is the promise that the demo shows the merged
-        commit running, and a promise that can quietly evaporate is worse
-        than one that fails out loud: the request is written down, a send
-        whose outcome is unknown is reconciled by looking for the capture
-        rather than by asking again, the session's usage is re-read every
-        pass, and the wait is bounded. Delivery is Slack's word, recorded by
-        the worker; nothing here may call a recording delivered.
+        Two are owed over a repair's life: the symptom as the baseline still
+        produces it, and the merged commit running. Neither decides anything
+        — the verdicts belong to the host — but a promise that can quietly
+        evaporate is worse than one that fails out loud, so the request is
+        written down, a send whose outcome is unknown is reconciled by
+        looking for the capture rather than by asking again, the session's
+        usage is re-read every pass, and the wait is bounded. Delivery is
+        Slack's word, recorded by the worker; nothing here may call a
+        recording delivered.
         """
         repair = self.store.get(repair_id)
         if repair is None:
@@ -1276,8 +1327,9 @@ class Controller:
             return Decision(
                 "skipped", f"the recording is {state or 'not owed'}", repair_id
             )
-        merge_sha = str(repair["merge_commit_sha"] or "")
-        if self.devin is None or not repair["session_id"] or not merge_sha:
+        stage = str(repair["media_stage"] or AFTER_MERGE)
+        subject = self._media_sha(repair, stage)
+        if self.devin is None or not repair["session_id"] or not subject:
             return self._settle_media(
                 repair_id, MEDIA_FAILED, "there is no session to ask for a recording"
             )
@@ -1285,33 +1337,41 @@ class Controller:
         repair, unread = self._refresh_usage(repair_id)
         if repair is None:
             return Decision("skipped", "no such repair", repair_id)
-        if unread:
-            return Decision("deferred", unread, repair_id)
-        exceeded = self._exceeded(repair, float(repair["agent_acus"] or 0.0))
+        # An unreadable session is a reason to wait for its usage, never a
+        # reason to wait past the wall clock: that deadline is known here
+        # without asking anybody.
+        exceeded = self._past_deadline(repair) if unread else self._exceeded(
+            repair, float(repair["agent_acus"] or 0.0)
+        )
         if exceeded:
             # The same policy every other expiry uses: a session kept alive
-            # for this step does not go on working unobserved. The merged
-            # verdict stands; only the recording is lost.
-            problem = self._end_session(repair)
+            # for this step does not go on working unobserved. Whatever was
+            # already verified stands; only the recording is lost.
             return self._settle_media(
-                repair_id,
-                MEDIA_FAILED,
-                f"no recording arrived before {exceeded}"
-                + (f"; {problem}" if problem else ""),
-                held=bool(problem),
+                repair_id, MEDIA_FAILED, f"no recording arrived before {exceeded}"
             )
+        if unread:
+            return Decision("deferred", unread, repair_id)
         polls = int(repair["media_polls"] or 0) + 1
         self.store.update(repair_id, media_polls=polls)
         if polls > MAX_MEDIA_POLLS:
             return self._settle_media(
                 repair_id,
                 MEDIA_FAILED,
-                f"no capture of {merge_sha[:12]} appeared in {MAX_MEDIA_POLLS} passes",
+                f"no {stage} capture of {subject[:12]} appeared in "
+                f"{MAX_MEDIA_POLLS} passes",
             )
 
         if state == MEDIA_PENDING:
-            asked, detail = self._ask_for_post_merge_media(repair_id, merge_sha)
-            self.store.update(repair_id, media_state=asked, media_detail=detail)
+            asked, detail = self._ask_for_media(repair_id, stage, subject)
+            self.store.update(
+                repair_id,
+                media_state=asked,
+                media_detail=detail,
+                # What a capture has to be newer than, written down when the
+                # session is asked rather than derived later.
+                media_asked_at=self._now().isoformat(),
+            )
             if asked == MEDIA_FAILED:
                 return self._settle_media(repair_id, MEDIA_FAILED, detail)
 
@@ -1321,11 +1381,11 @@ class Controller:
             # would say nothing new.
             return Decision("media_captured", kept, repair_id)
 
-        found, problem = self._find_capture(repair, merge_sha)
+        found, problem = self._find_capture(repair, stage, subject)
         if found is None:
             return Decision(
                 "awaiting_media",
-                problem or "no capture of the merged commit yet",
+                problem or f"no {stage} capture of {subject[:12]} yet",
                 repair_id,
             )
         attachment, capture = found
@@ -1352,15 +1412,29 @@ class Controller:
         )
         return Decision("media_captured", str(destination), repair_id)
 
+    def _media_sha(self, repair: dict[str, Any], stage: str) -> str:
+        """The commit the stage in flight is about.
+
+        The symptom is footage of the baseline everyone agreed the failure
+        was measured on; the other is the commit a human merged. Reading
+        either from the wrong field is how a clip ends up filed against code
+        it never ran.
+        """
+        if stage == SYMPTOM:
+            incident = self.incident_of(int(repair["incident_id"])) or {}
+            return str(incident.get("baseline_sha") or "").lower()
+        return str(repair["merge_commit_sha"] or "").lower()
+
     def _find_capture(
-        self, repair: dict[str, Any], merge_sha: str
+        self, repair: dict[str, Any], stage: str, subject: str
     ) -> tuple[tuple[Attachment, media.Capture] | None, str]:
-        """The session's own capture of this merged commit, if it exists yet.
+        """The session's own capture for this stage, if it exists yet.
 
         Only what the agent produced counts, and only if it names this exact
-        commit, the case that was replayed and a capture time no older than
-        the merge it claims to show. An operator's earlier upload and a
-        pre-merge clip are both evidence about something else.
+        stage and commit, the case that was replayed and a capture time no
+        older than the request it answers. An operator's earlier upload, a
+        pre-merge clip and the symptom footage are each evidence about
+        something else.
         """
         assert self.devin is not None
         try:
@@ -1375,7 +1449,7 @@ class Controller:
             if capture is None:
                 continue
             problem = media.capture_problem(
-                capture, merge_sha, self._media_case(repair)
+                capture, subject, self._media_case(repair), stage
             ) or self._stale_capture(repair, capture)
             if problem:
                 rejected.append(problem)
@@ -1392,18 +1466,35 @@ class Controller:
         return cases[0] if len(cases) == 1 else ""
 
     def _stale_capture(self, repair: dict[str, Any], capture: media.Capture) -> str:
-        """Refuse footage recorded before the merged commit was graded."""
+        """Refuse footage that cannot be of the merged code being asked for.
+
+        The capture has to be newer than the request it answers, and a
+        reference time that is missing or unreadable is a refusal rather
+        than a pass: without one, any clip the session already held would
+        qualify. Only clock skew between two machines is tolerated, and a
+        capture stamped in the future is refused for the same reason.
+        """
+        reference = str(repair["media_asked_at"] or "")
+        if not reference:
+            try:
+                record = json.loads(str(repair["merge_verification"] or "{}"))
+                reference = str(record.get("at") or "") if isinstance(record, dict) else ""
+            except ValueError:
+                reference = ""
         try:
-            record = json.loads(str(repair["merge_verification"] or "{}"))
-            graded = datetime.fromisoformat(str(record.get("at") or ""))
+            asked = datetime.fromisoformat(reference)
             recorded = datetime.fromisoformat(capture.recorded_at)
         except (ValueError, TypeError):
-            return ""
-        if recorded < graded - timedelta(minutes=30):
+            return "there is no readable time to judge this capture against"
+        if asked.tzinfo is None:
+            asked = asked.replace(tzinfo=timezone.utc)
+        if recorded < asked - CLOCK_TOLERANCE:
             return (
                 f"the capture is stamped {capture.recorded_at}, before the merged "
-                "commit was verified"
+                "commit's recording was requested"
             )
+        if recorded > self._now() + CLOCK_TOLERANCE:
+            return f"the capture is stamped {capture.recorded_at}, in the future"
         return ""
 
     def _settle_media(
@@ -1415,16 +1506,44 @@ class Controller:
         file_id: str = "",
         held: bool = False,
     ) -> Decision:
-        """Close the recording promise, one way or the other, and free the claim."""
+        """Close one recording promise, one way or the other.
+
+        The merged recording is the last thing the session is kept alive
+        for, so both of its endings end it: a delivered capture and a
+        stated failure alike. A session that refuses to stop, or whose stop
+        went unanswered, keeps the claim held — no verdict is affected
+        either way. The symptom is different: the repair it belongs to is
+        still running, so closing that promise closes nothing else.
+        """
+        repair = self.store.get(repair_id)
+        stage = str(repair["media_stage"] or AFTER_MERGE) if repair else AFTER_MERGE
         values: dict[str, Any] = {"media_state": state, "media_detail": detail}
         if file_id:
             values["media_file_id"] = file_id
+        if stage == SYMPTOM:
+            if state == MEDIA_FAILED:
+                values["media_detail"] = detail
+            self.store.update(repair_id, **values)
+            return Decision(
+                "media_delivered" if state == MEDIA_DELIVERED else "media_failed",
+                detail,
+                repair_id,
+            )
+        problem = self._end_session(repair) if repair else ""
+        if problem:
+            detail = f"{detail}; {problem}"
+            values["media_detail"] = detail
         if state == MEDIA_FAILED:
             values["attention"] = (
                 "the merged commit is verified; its recording is not: " + detail
             )
+        if problem:
+            values["attention"] = (
+                "session may still be running; the claim is held until someone "
+                f"resolves it: {problem}"
+            )
         self.store.update(repair_id, **values)
-        if not held:
+        if not held and not problem:
             self.store.release_slot(repair_id)
         return Decision(
             "media_delivered" if state == MEDIA_DELIVERED else "media_failed",
@@ -1442,33 +1561,38 @@ class Controller:
         """The capture exists but was not published. Said plainly."""
         return self._settle_media(repair_id, MEDIA_FAILED, detail)
 
-    def _ask_for_post_merge_media(
-        self, repair_id: int, merge_sha: str
+    def _ask_for_media(
+        self, repair_id: int, stage: str, subject: str
     ) -> tuple[str, str]:
-        """Ask the same session, once, to record the merged code.
+        """Ask the same session, once, to record one stage.
 
-        Independent host verification has already decided the outcome; this
-        only asks the session that wrote the fix for a capture of the merged
-        commit. It is keyed by that commit, so a later pass says nothing
-        twice — including after a send whose outcome is unknown, where the
-        capture is the reconciliation and asking again could queue the work
-        a second time.
+        Nothing here buys a second session or a second piece of work: the
+        session that is already reproducing the failure is asked to keep its
+        reproduction, and after a merge the session that wrote the fix is
+        asked for a capture of the merged commit. Each request is keyed by
+        its stage and commit, so a later pass says nothing twice — including
+        after a send whose outcome is unknown, where the capture is the
+        reconciliation and asking again could queue the work a second time.
         """
         repair = self.store.get(repair_id)
         if repair is None or self.devin is None:
             return MEDIA_FAILED, "there is no session to ask for a recording"
         scope = f"{self.run}:" if self.run else ""
-        mark = f"{scope}{repair['fingerprint']}:{merge_sha}:post-merge-media"
+        mark = f"{scope}{repair['fingerprint']}:{subject}:{stage}-media"
         intent, claimed = self.store.intend(repair_id, "message", mark)
         if intent["state"] != INTENDED or not claimed:
-            return MEDIA_REQUESTED, "this post-merge request was already made"
-        message = brief.post_merge_message(
-            merge_sha,
-            self.base_branch,
-            str(repair["agent_pr_url"] or ""),
-            str(repair["pr_head_sha"] or ""),
-            case=self._media_case(repair) or "S1",
-        )
+            return MEDIA_REQUESTED, f"this {stage} request was already made"
+        case = self._media_case(repair) or "S1"
+        if stage == SYMPTOM:
+            message = brief.symptom_message(subject, case)
+        else:
+            message = brief.post_merge_message(
+                subject,
+                self.base_branch,
+                str(repair["agent_pr_url"] or ""),
+                str(repair["pr_head_sha"] or ""),
+                case=case,
+            )
         try:
             self.devin.send_message(str(repair["session_id"]), message)
         except Refused as exc:

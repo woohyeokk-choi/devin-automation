@@ -782,12 +782,20 @@ class Notifier:
         attempt: dict[str, Any] | None = None,
         *,
         simulated_record: bool = False,
+        symptom_of: str = "",
     ) -> dict[str, str]:
         """Upload one existing local clip into its repair's thread.
 
-        The clip must say which capture it is and which commit it ran at, and
-        that commit must be the accepted head, or nothing is offered to Slack:
-        an unbound file next to a verified result reads as proof of it.
+        `symptom_of` names the baseline commit when the clip is footage of
+        the failure rather than of a fix. That is the only thing it relaxes:
+        symptom footage is checked against that baseline instead of an
+        accepted head, and is captioned as what it is, so it can never be
+        read as evidence that anything was repaired.
+
+        Otherwise the clip must say which capture it is and which commit it
+        ran at, and that commit must be the accepted head, or nothing is
+        offered to Slack: an unbound file next to a verified result reads as
+        proof of it.
 
         Matching the head is not enough on its own. A candidate that was never
         accepted has a head too, so the repair must also satisfy the same
@@ -802,9 +810,12 @@ class Notifier:
         is recorded as `unknown` rather than as a delivered file.
         """
         repair_id = repair.get("id")
-        problem = result_problem(repair, attempt) or recording_problem(
-            recording, repair
-        )
+        if symptom_of:
+            problem = symptom_problem(recording, repair, symptom_of)
+        else:
+            problem = result_problem(repair, attempt) or recording_problem(
+                recording, repair
+            )
         if problem:
             return {"state": DISABLED, "detail": problem, "file_id": ""}
         if not path.is_file():
@@ -842,9 +853,16 @@ class Notifier:
             if repair_id is not None
             else ""
         )
+        if symptom_of:
+            headline = "Symptom replay — recorded after detection"
+        elif str(repair.get("state") or "") == MERGED:
+            headline = "After merge — verified"
+        else:
+            headline = "Replay"
         comment = _labelled(
-            f"{escape(recording.case)} replay captured {escape(recording.recorded_at)} "
-            f"against `{sha[:12]}` — {_short(recording.scope or 'scope unstated', 120)}"
+            f"{headline}: {escape(recording.case)} captured "
+            f"{escape(recording.recorded_at)} against `{sha[:12]}` — "
+            f"{_short(recording.scope or 'scope unstated', 120)}"
         )
         try:
             file_id = self.bot.upload(
@@ -1623,6 +1641,42 @@ def accepted_sha(repair: dict[str, Any]) -> str:
     if str(repair.get("state") or "") == MERGED:
         return str(repair.get("merge_commit_sha") or "").lower()
     return str(repair.get("pr_head_sha") or "").lower()
+
+
+def symptom_problem(
+    recording: Recording, repair: dict[str, Any], baseline_sha: str
+) -> str:
+    """Why this capture cannot be shown as the symptom, if it cannot.
+
+    Symptom footage answers a different question from result footage: it
+    shows the failure on the commit the incident was measured against, so
+    it is checked against that baseline and never against an accepted head.
+    What it may not do is drift the other way and pass for a fix, which is
+    why a clip naming anything but the baseline is refused here too.
+    """
+    if repair.get("simulated"):
+        return "the repair is simulated"
+    url = recording.url
+    if url != IN_THREAD and (not url.startswith("https://") or _is_signed(url)):
+        return "not a shareable https link"
+    missing = [
+        name
+        for name, value in (
+            ("case", recording.case),
+            ("revision", recording.sha),
+            ("capture time", recording.recorded_at),
+        )
+        if not value.strip()
+    ]
+    if missing:
+        return f"the capture states no {', no '.join(missing)}"
+    sha = recording.sha.strip().lower()
+    baseline = baseline_sha.strip().lower()
+    if len(baseline) != 40:
+        return "the incident has no recorded baseline commit"
+    if sha != baseline:
+        return f"the capture ran against {sha[:12]}, not the baseline {baseline[:12]}"
+    return ""
 
 
 def recording_problem(recording: Recording, repair: dict[str, Any]) -> str:
