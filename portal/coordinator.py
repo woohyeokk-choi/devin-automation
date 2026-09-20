@@ -102,6 +102,8 @@ def open_state(config: Settings = settings, *, simulated: bool = False) -> State
         target_repo=config.target_repo,
         parent_fingerprint=config.parent_incident,
         expected_baseline=config.baseline_sha,
+        telemetry_admission=config.telemetry_admission,
+        telemetry_rate_limit=config.telemetry_rate_limit,
     )
     incidents.event_log = events
     # The portal folds events as it commits them; folding again here costs

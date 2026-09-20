@@ -11,6 +11,11 @@
     blocked setup and unregistered failures create none.
     Repair dispatch is {{ 'enabled' if auto_repair_enabled else 'disabled (AUTO_REPAIR_ENABLED=false)' }};
     observation runs either way.
+    Browser telemetry admission is <strong>{{ telemetry_admission }}</strong>{% if telemetry_rate_limit %},
+    at most {{ telemetry_rate_limit }} admitted findings per hour{% endif %}: in
+    <code>dry_run</code> a qualified warning is recorded and blocked, in <code>disabled</code> it is not
+    admitted at all. Console entries that match no registered signature are kept as needs-attention
+    rather than treated as defects.
   </p>
   <table>
     <thead><tr>

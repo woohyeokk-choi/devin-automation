@@ -20,6 +20,7 @@ verifier turns into `blocked` rather than into a verdict about the product.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -27,6 +28,7 @@ import socket
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -46,9 +48,17 @@ SECRET_NAMES = (
     "PORTAL_COOKIE_SECRET",
 )
 
+# superset-frontend/package.json pins node ^24.16.0; the toolchain image has
+# to satisfy that engine or npm refuses to install.
+NODE_IMAGE = os.environ.get("VERIFIER_NODE_IMAGE", "node:24-bookworm")
 WEB_SERVICE = "superset-light"
 MCP_SERVICE = "superset-mcp-light"
 PORTAL_SERVICE = "portal"
+
+#: Families whose defect is only observable in a browser. Their candidate
+#: stacks cost a frontend build and a saved-chart fixture, which the others
+#: have no reason to pay.
+BROWSER_FAMILIES = ("bigint_number_format_not_applied",)
 
 #: The retained demo's customer profile. It is the image's own development
 #: default, on a loopback-only port, holding nothing but synthetic fixtures,
@@ -109,6 +119,8 @@ class IsolatedStack:
         mcp_port: int = 5208,
         portal_port: int = 8390,
         timeout_seconds: int = 900,
+        #: A frontend build is minutes of npm, not seconds of Compose.
+        build_timeout_seconds: int = 5_400,
         git_host: str = "https://github.com",
     ) -> None:
         self.target_repo = target_repo
@@ -119,10 +131,11 @@ class IsolatedStack:
         self.mcp_port = mcp_port
         self.portal_port = portal_port
         self.timeout_seconds = timeout_seconds
+        self.build_timeout_seconds = build_timeout_seconds
         self.git_host = git_host
 
     # --- lifecycle ---------------------------------------------------------
-    def prepare(self, head_sha: str) -> Environment:
+    def prepare(self, head_sha: str, family: str = "") -> Environment:
         project = f"candidate{head_sha[:12]}"
         checkout = self.workspace / project
         commands: list[str] = []
@@ -130,13 +143,23 @@ class IsolatedStack:
         self.mcp_port = free_port(self.mcp_port)
         base_url = f"http://127.0.0.1:{self.web_port}"
         mcp_url = f"http://127.0.0.1:{self.mcp_port}/mcp"
+        browser_case = family in BROWSER_FAMILIES
+        fixture: dict[str, int] = {}
+        assets: dict[str, Any] = {}
         try:
             self._checkout(project, head_sha, checkout, commands)
+            if browser_case:
+                # Before the stack starts: the bind mount would otherwise
+                # serve an empty asset directory, and a bundle built later
+                # is a different thing from the bundle under test.
+                assets = self._build_frontend(project, checkout, head_sha, commands)
             self._compose(
                 project, checkout, ["up", "-d", WEB_SERVICE, MCP_SERVICE], commands
             )
             self._wait(f"{base_url}/health", commands)
             self._seed(project, base_url, mcp_url, commands)
+            if browser_case:
+                fixture = self._seed_browser_fixture(project, commands)
             provenance = measure(
                 project=project,
                 web_service=WEB_SERVICE,
@@ -149,6 +172,8 @@ class IsolatedStack:
                 checkout=checkout,
                 config_files=[self.automation_dir / "stack" / "superset_config_mcp.py"],
             )
+            if assets:
+                provenance["assets"] = assets
         except RunnerError:
             # Only this attempt's namespace and checkout are removed. The
             # baseline environment is a different Compose project and is not
@@ -164,7 +189,99 @@ class IsolatedStack:
             head_sha=head_sha,
             provenance=provenance,
             commands=commands,
+            fixture=fixture,
         )
+
+    # --- browser candidates ------------------------------------------------
+    def _build_frontend(
+        self, project: str, checkout: Path, head_sha: str, commands: list[str]
+    ) -> dict[str, Any]:
+        """Build the candidate's own frontend bundle, and prove it is its own.
+
+        A frontend defect cannot be verified against a bundle somebody else
+        compiled: the served JavaScript, not the diff, is what a browser
+        runs. The checkout's asset directory is git-ignored and therefore
+        empty, so it is built here from this commit's sources, and the
+        measurement below is what later refuses a bundle that did not come
+        from this checkout.
+        """
+        directory = checkout / "superset" / "static" / "assets"
+        # The web image ships a Node runtime but no npm and no installed
+        # packages, so the build runs in a toolchain image over the same
+        # checkout the stack bind-mounts. Webpack writes into
+        # superset/static/assets, which is why the whole tree is mounted and
+        # not just superset-frontend. `zstd` is a binary dependency of the
+        # webpack config (simple-zstd shells out to it) and is absent from
+        # the plain Node image. Ownership is handed back at the end so the
+        # host can read the bundle and delete the checkout afterwards.
+        script = (
+            "set -e; apt-get update -qq; apt-get install -y -qq zstd >/dev/null; "
+            "npm ci; npm run build; "
+            f"chown -R {os.getuid()}:{os.getgid()} /candidate"
+        )
+        argv = [
+            "docker", "run", "--rm",
+            "-v", f"{checkout}:/candidate",
+            "-w", "/candidate/superset-frontend",
+            "-e", "NODE_OPTIONS=--max-old-space-size=8192",
+            NODE_IMAGE, "bash", "-lc", script,
+        ]
+        self._run(
+            argv, checkout, commands, env=safe_environment({}, {}),
+            timeout=self.build_timeout_seconds,
+        )
+        built = sorted(p for p in directory.glob("*.js")) if directory.is_dir() else []
+        if not built:
+            raise RunnerError("the candidate's frontend build produced no bundle")
+        digest = hashlib.sha256()
+        for path in built:
+            digest.update(path.name.encode())
+            digest.update(path.read_bytes())
+        return {
+            "built_from_sha": head_sha,
+            "source": str(directory),
+            "files": len(built),
+            "bundle_hash": f"sha256:{digest.hexdigest()[:16]}",
+            "built_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _seed_browser_fixture(self, project: str, commands: list[str]) -> dict[str, int]:
+        """Create this stack's own saved charts and report their real ids.
+
+        Chart ids are assigned by whichever metadata database the fixture
+        ran against, so the builder's ids mean nothing here. The script runs
+        inside the candidate's web container, against the candidate's own
+        database, and its ids are what the browser case navigates to.
+        """
+        script = (self.automation_dir / "scenarios" / "b1_fixture.py").read_text()
+        argv = [
+            "docker", "exec", "-i",
+            "-e", "B1_DATABASE=examples",
+            f"{project}-{WEB_SERVICE}-1", "python3", "-",
+        ]
+        commands.append(" ".join(argv) + " < scenarios/b1_fixture.py")
+        try:
+            result = subprocess.run(
+                argv, input=script, capture_output=True, text=True, timeout=600
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RunnerError(f"the browser fixture failed: {type(exc).__name__}") from None
+        if result.returncode != 0:
+            raise RunnerError(
+                f"the browser fixture exited {result.returncode}: "
+                f"{result.stderr.strip()[-300:] or 'no stderr'}"
+            )
+        try:
+            reported = json.loads(result.stdout.strip().splitlines()[-1])
+            ids = {
+                "chart_id": int(reported["chart_id"]),
+                "control_chart_id": int(reported["control_chart_id"]),
+            }
+        except (IndexError, KeyError, ValueError) as exc:
+            raise RunnerError(f"the browser fixture reported no chart ids: {exc}") from None
+        if ids["chart_id"] <= 0 or ids["control_chart_id"] <= 0:
+            raise RunnerError("the browser fixture reported unusable chart ids")
+        return ids
 
     def serve_portal(self, environment: Environment) -> Portal:
         """Start the demo portal itself against a retained stack.
@@ -511,7 +628,15 @@ def replay_through_validator(environment: Environment, cases: tuple[str, ...]) -
     """
     from .validator import Target, run
 
-    return run(cases, Target(base_url=environment.base_url, mcp_url=environment.mcp_url))
+    return run(
+        cases,
+        Target(
+            base_url=environment.base_url,
+            mcp_url=environment.mcp_url,
+            chart_id=environment.fixture.get("chart_id", 0),
+            control_chart_id=environment.fixture.get("control_chart_id", 0),
+        ),
+    )
 
 
 __all__ = [

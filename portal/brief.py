@@ -117,6 +117,58 @@ def marker(incident: dict[str, Any], attempt: int, run: str = "") -> str:
     return f"runtime-repair:{scope}{incident['fingerprint']}:attempt-{attempt}"
 
 
+#: What "fixed" means for a formatting defect, written before the fix exists
+#: so the session is not left to invent its own acceptance bar. The precision
+#: language is deliberate: a memory unit display is *supposed* to round, so
+#: two nearby inputs may legitimately print the same string at the requested
+#: precision. What may not happen is a value losing its meaning.
+ACCEPTANCE = """## What counts as fixed
+
+- The chosen format is applied to values outside the JavaScript safe-integer
+  range, and the product stops logging the formatter warning for them.
+- The raw numeric meaning is preserved. A rounded human-readable unit display
+  may render two nearby inputs identically at the requested precision — that
+  is what rounding is — but a value must never be silently turned into a
+  different number.
+- Converting values to a JavaScript `Number` wherever they appear is **not**
+  an acceptable fix: that conversion is the precision loss this defect is
+  made of.
+- The control keeps working: values inside the safe range format exactly as
+  before, in the same chart, with the same format.
+- Keep the change narrow and led by the trace. Do not rework unrelated
+  formatter families (currency, percent, time) unless your own reproduction
+  shows the same code path is responsible."""
+
+
+def _telemetry_rows(incident: dict[str, Any]) -> str:
+    """The browser's own words, for an incident admitted from telemetry.
+
+    A telemetry incident has no expected/observed assertion pair — inventing
+    one would misrepresent how it was detected — so the brief carries the
+    captured severity, diagnostic and what the chart was showing instead.
+    """
+    rows = set()
+    for event in incident["events"]:
+        body = event.get("output") or {}
+        if event.get("outcome") != "telemetry" or not isinstance(body, dict):
+            continue
+        page = body.get("page") or {}
+        rows.add(
+            f"| `{body.get('severity')}` | `{body.get('diagnostic')}` | "
+            f"{body.get('occurrences_in_scan')} | `{page.get('visible_values')}` |"
+        )
+    if not rows:
+        return ""
+    header = (
+        "\n## Observed browser evidence\n\n"
+        "Captured by a scheduled read-only scan of the saved chart, not by an\n"
+        "assertion: the severity below is the one the product emitted.\n\n"
+        "| Severity | Diagnostic | Occurrences in one scan | Values on screen |\n"
+        "|---|---|---|---|\n"
+    )
+    return header + "\n".join(sorted(rows)) + "\n"
+
+
 def _contract(incident: dict[str, Any]) -> str:
     rows = {
         (
@@ -137,14 +189,24 @@ def issue_body(
 ) -> str:
     events, gaps = bundle_events(incident)
     return f"""{_rerun_note(run)}{reproduction_markdown(incident, events, gaps, versions)}
+{_evidence_section(incident)}
+{ACCEPTANCE}
 
+<!-- {marker(incident, attempt, run)} -->
+"""
+
+
+def _evidence_section(incident: dict[str, Any]) -> str:
+    """Whichever of the two detection paths actually produced this incident."""
+    contract = _contract(incident)
+    if not contract:
+        return _telemetry_rows(incident)
+    return f"""
 ## Contract
 
 | Assertion | Expected | Observed |
 |---|---|---|
-{_contract(incident)}
-
-<!-- {marker(incident, attempt, run)} -->
+{contract}
 """
 
 
@@ -218,11 +280,10 @@ code, and open a pull request.
 )}
 ```
 
-| Assertion | Expected | Observed |
-|---|---|---|
-{_contract(incident)}
-
+{_evidence_section(incident)}
 {TASK.format(repo=incident['target_repo'], base=base)}
+
+{ACCEPTANCE}
 
 {GUARDRAILS.format(repo=incident['target_repo'], base=base)}
 

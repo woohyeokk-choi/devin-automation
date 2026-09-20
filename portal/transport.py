@@ -21,15 +21,17 @@ from urllib3.exceptions import NewConnectionError
 
 try:  # urllib3 >= 2 splits DNS failures out of NewConnectionError
     from urllib3.exceptions import NameResolutionError
+
+    _DNS_FAILURE: type[Exception] = NameResolutionError
 except ImportError:  # pragma: no cover - urllib3 1.x
-    NameResolutionError = NewConnectionError
+    _DNS_FAILURE = NewConnectionError
 
 #: The only failures that prove the request never reached the server. A
 #: `requests.ConnectionError` is also raised for a reset or a dropped socket
 #: *after* the body was written (the HTTP adapter wraps `ProtocolError` and a
 #: bare `OSError` the same way), so the class alone cannot be read as
 #: "nothing was sent".
-_PRE_SEND = (NewConnectionError, NameResolutionError)
+_PRE_SEND = (NewConnectionError, _DNS_FAILURE)
 
 
 def _never_sent(exc: BaseException) -> bool:

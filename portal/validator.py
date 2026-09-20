@@ -62,6 +62,9 @@ CONTROL_CASES: tuple[str, ...] = ("N1",)
 CASES_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "discarded_form_data_key_is_reused": ("S2", "N1"),
     "omitted_row_limit_is_reset": ("S1", "N1"),
+    # B1 carries its own control inside the same chart, and N1 is about an
+    # MCP write this candidate never touches.
+    "bigint_number_format_not_applied": ("B1",),
 }
 
 
@@ -87,6 +90,15 @@ REQUIRED_CHECKS: dict[str, tuple[str, ...]] = {
         "control_an_explicit_row_limit_is_applied",
         "control_an_explicit_schema_default_row_limit_is_applied",
         "control_a_new_chart_keeps_the_schema_default_row_limit",
+    ),
+    "B1": (
+        "large_values_are_formatted",
+        "no_formatter_warning_is_logged",
+        "large_values_are_formatted_on_a_second_load",
+        "no_formatter_warning_is_logged_on_a_second_load",
+        "control_small_values_keep_their_format_in_the_same_chart",
+        "control_the_small_value_chart_is_unchanged",
+        "control_the_small_value_chart_logs_nothing",
     ),
     "N1": (
         "control_the_restricted_role_can_list_charts",
@@ -171,6 +183,11 @@ class Target:
     password: str = "admin"
     restricted_username: str = "restricted_analyst"
     restricted_password: str = "restricted-analyst-local"
+    #: Saved charts for the browser case, assigned by whichever metadata
+    #: database the fixture ran against. Zero means "not set up here", which
+    #: blocks B1 rather than guessing an id.
+    chart_id: int = 0
+    control_chart_id: int = 0
 
 
 def _login(target: Target, username: str, password: str) -> SupersetClient:
@@ -598,10 +615,108 @@ def case_n1(target: Target) -> CaseResult:
     return recorder.result()
 
 
+#: The values the B1 fixture stores. Two beyond the JavaScript safe-integer
+#: range, two inside it in the same chart with the same format: the pair is
+#: the whole point, because a "fix" that stops formatting everything would
+#: otherwise satisfy a check that only looked at the large values.
+B1_LARGE_VALUES = ("1425300509404304697", "9007199254740993")
+B1_SAFE_RENDERED = ("4KiB", "8KiB")
+
+
+def _b1_load(browser: Any, target: Target, chart_id: int, label: str) -> dict[str, Any]:
+    from .monitor import MonitorConfig, scan
+    from .telemetry import QUALIFIED, qualify
+
+    config = MonitorConfig(
+        base_url=target.base_url,
+        username=target.username,
+        password=target.password,
+        chart_id=chart_id,
+        chart_name=label,
+        scenario="B1",
+        interval_seconds=0,
+        name="verifier-replay",
+    )
+    result = scan(config, browser=browser)
+    summary = qualify(result["console"])
+    return {
+        "values": result["visible_values"],
+        "navigation_error": result["navigation_error"],
+        "statuses": sorted({r["status"] for r in result["requests"]}),
+        "warnings": [
+            f.message for f in summary.findings if f.classification == QUALIFIED
+        ],
+        "needs_attention": summary.as_dict()["needs_attention"],
+    }
+
+
+def case_b1(target: Target) -> CaseResult:
+    """B1 — a chosen number format must apply to large integers too.
+
+    Replayed the way the defect is seen: a browser opens the already-saved
+    chart and the check reads what is on screen and what the product logged.
+    The assertions below are the verifier's own and are deliberately separate
+    from the monitor's trigger — the monitor decides *whether* something
+    happened, this decides whether a candidate fixed it.
+    """
+    recorder = Recorder("B1")
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return _blocked("B1", "playwright is not installed in the validator", recorder)
+    try:
+        recorder.require("a_chart_to_replay_is_configured", True, target.chart_id > 0)
+        recorder.require("a_control_chart_is_configured", True, target.control_chart_id > 0)
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(args=["--no-sandbox"])
+            try:
+                fresh = _b1_load(browser, target, target.chart_id, "affected chart")
+                # A second visit in its own context: the saved chart has to
+                # keep the format on a later load, not only on the one that
+                # immediately follows a save.
+                again = _b1_load(browser, target, target.chart_id, "affected chart")
+                control = _b1_load(
+                    browser, target, target.control_chart_id, "control chart"
+                )
+            finally:
+                browser.close()
+        recorder.require("the_chart_rendered", "", fresh["navigation_error"])
+        recorder.require("the_chart_data_request_succeeded", [200], fresh["statuses"])
+    except Blocked as exc:
+        return _blocked("B1", str(exc), recorder)
+    except (OSError, RuntimeError) as exc:
+        return _blocked("B1", f"browser replay failed: {type(exc).__name__}", recorder)
+    recorder.facts = {"fresh": fresh, "second_load": again, "control": control}
+
+    for name, load in (("", fresh), ("_on_a_second_load", again)):
+        raw = [v for v in B1_LARGE_VALUES if v in load["values"]]
+        recorder.check(
+            f"large_values_are_formatted{name}", TARGET, [], raw,
+            note="raw digits on screen mean the format was not applied",
+        )
+        recorder.check(
+            f"no_formatter_warning_is_logged{name}", TARGET, [], load["warnings"],
+        )
+    missing = [v for v in B1_SAFE_RENDERED if v not in fresh["values"]]
+    recorder.check(
+        "control_small_values_keep_their_format_in_the_same_chart",
+        CONTROL, [], missing,
+    )
+    recorder.check(
+        "control_the_small_value_chart_is_unchanged",
+        CONTROL, [], [v for v in B1_SAFE_RENDERED if v not in control["values"]],
+    )
+    recorder.check(
+        "control_the_small_value_chart_logs_nothing", CONTROL, [], control["warnings"]
+    )
+    return recorder.result()
+
+
 CASES: dict[str, Callable[[Target], CaseResult]] = {
     "S2": case_s2,
     "S1": case_s1,
     "N1": case_n1,
+    "B1": case_b1,
 }
 
 

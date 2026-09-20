@@ -16,15 +16,18 @@ noticing that the product broke.
 
 from __future__ import annotations
 
+import builtins
 import hashlib
 import json
 import sqlite3
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .events import EventStore, utcnow
+from . import telemetry
+from .events import TELEMETRY, EventStore, utcnow
 from .redaction import scrub
 
 SCHEMA = """
@@ -107,6 +110,12 @@ KNOWN_KINDS = BASELINE_KINDS | DERIVED_KINDS
 #: An incident that is recorded but must never be dispatched for repair.
 ELIGIBLE, BLOCKED = "eligible", "blocked"
 
+#: Browser-telemetry admission modes. `dry_run` records what the monitor found
+#: and refuses to dispatch it, which is what a new signature runs under until
+#: an operator has read a few scans.
+ENABLED, DRY_RUN, DISABLED = "enabled", "dry_run", "disabled"
+ADMISSION_MODES = (ENABLED, DRY_RUN, DISABLED)
+
 
 @dataclass(frozen=True)
 class Family:
@@ -123,6 +132,12 @@ class Family:
     #: baseline they hold, and if one ever fails it is an unreproduced new
     #: behaviour, not a qualified repair case for this family.
     controls: tuple[str, ...] = ()
+    #: The registered browser signature (`portal.telemetry`) whose real
+    #: console output observes this defect. A family carries either failing
+    #: contract assertions or a browser signature; the two admission paths
+    #: stay separate so a console warning is never dressed up as an
+    #: `assertion_failed` event it is not.
+    telemetry_family: str = ""
 
 
 FAMILIES: tuple[Family, ...] = (
@@ -157,6 +172,23 @@ FAMILIES: tuple[Family, ...] = (
         assertions=("row_limit_survives_an_unrelated_change",),
         controls=("color_scheme_survives_an_unrelated_change",),
     ),
+    Family(
+        key="bigint_number_format_not_applied",
+        scenario="B1",
+        title="A memory number format is not applied to large integers",
+        statement=(
+            "A table column whose values exceed the JavaScript safe-integer "
+            "range shows raw digits instead of the memory format the user "
+            "chose, and the product logs a formatter warning carrying a "
+            "TypeError. The same format renders correctly for smaller values "
+            "in the same chart, and the chart's data request succeeds."
+        ),
+        # Observed through the product's own console output, not through a
+        # contract assertion of ours: nothing in this family is a registered
+        # assertion, so the assertion path can never raise it.
+        assertions=(),
+        telemetry_family="bigint_number_format_not_applied",
+    ),
 )
 
 _BY_ASSERTION: dict[str, Family] = {
@@ -165,10 +197,17 @@ _BY_ASSERTION: dict[str, Family] = {
 _CONTROLS: frozenset[str] = frozenset(
     name for family in FAMILIES for name in family.controls
 )
+_BY_TELEMETRY: dict[str, Family] = {
+    family.telemetry_family: family for family in FAMILIES if family.telemetry_family
+}
 
 
 def family_for(assertion_name: str) -> Family | None:
     return _BY_ASSERTION.get(assertion_name)
+
+
+def telemetry_family_for(key: str) -> Family | None:
+    return _BY_TELEMETRY.get(key)
 
 
 def baseline_of(revision: dict[str, Any]) -> tuple[str, str]:
@@ -202,9 +241,19 @@ class IncidentStore:
         target_repo: str,
         parent_fingerprint: str = "",
         expected_baseline: str = "",
+        telemetry_admission: str = DRY_RUN,
+        telemetry_rate_limit: int = 5,
     ) -> None:
         self.db_path = db_path
         self.target_repo = target_repo
+        #: How far browser telemetry may travel. Defaults to `dry_run`, so a
+        #: deployment that turns the monitor on without deciding anything else
+        #: observes rather than dispatches.
+        if telemetry_admission not in ADMISSION_MODES:
+            raise ValueError(f"unknown telemetry admission mode {telemetry_admission!r}")
+        self.telemetry_admission = telemetry_admission
+        #: Telemetry observations admitted per rolling hour; 0 disables the cap.
+        self.telemetry_rate_limit = telemetry_rate_limit
         # Server-side configuration: which incident a preview/verification run
         # belongs to. A browser field can never supply this.
         self.parent_fingerprint = parent_fingerprint
@@ -278,6 +327,8 @@ class IncidentStore:
         return ELIGIBLE, None
 
     def _observe(self, event: dict[str, Any]) -> dict[str, Any]:
+        if event.get("outcome") == TELEMETRY:
+            return self._observe_telemetry(event)
         assertion = event.get("assertion") or {}
         name = assertion.get("name", "")
         if event.get("outcome") != "assertion_failed":
@@ -294,7 +345,96 @@ class IncidentStore:
             return {"action": "suppressed", "reason": "unregistered_failure"}
         if assertion.get("subject") == "harness":
             return {"action": "suppressed", "reason": "harness_failure"}
+        return self._ingest(event, family)
 
+    # ------------------------------------------------- browser telemetry
+    def _observe_telemetry(self, event: dict[str, Any]) -> dict[str, Any]:
+        """Admit one qualified browser finding, or say why it was not.
+
+        The severity the product emitted is carried through untouched and is
+        re-checked against the registered signature here: an incident may only
+        claim the symptom that was actually reproduced. Everything else is
+        recorded as an operator-visible note rather than a product defect.
+        """
+        event_id = event.get("event_id")
+        body = event.get("output") or {}
+        if not isinstance(body, dict):
+            self._record_error(event_id, "telemetry event without a finding body")
+            return {"action": "suppressed", "reason": "malformed_telemetry"}
+
+        classification = str(body.get("classification") or "")
+        if classification == telemetry.NEEDS_ATTENTION:
+            # Deliberately visible and deliberately not a defect: an
+            # unregistered warning is something to look at, not something to
+            # hand a repair session.
+            self._record_error(
+                event_id,
+                f"unregistered browser {body.get('severity')}: {body.get('diagnostic')}",
+            )
+            return {"action": "suppressed", "reason": "needs_attention"}
+        if classification != telemetry.QUALIFIED:
+            return {"action": "suppressed", "reason": f"classification:{classification}"}
+
+        family = telemetry_family_for(str(body.get("family") or ""))
+        if family is None:
+            return {"action": "suppressed", "reason": "unregistered_signature"}
+        signature = telemetry.signature_for(family.telemetry_family)
+        if signature is None or body.get("severity") != signature.severity:
+            self._record_error(
+                event_id,
+                "telemetry severity does not match the registered signature",
+            )
+            return {"action": "suppressed", "reason": "severity_mismatch"}
+
+        if self.telemetry_admission == DISABLED:
+            return {"action": "suppressed", "reason": "telemetry_admission_disabled"}
+        if self._telemetry_rate_exceeded(event):
+            self._record_error(event_id, "telemetry admission rate limit reached")
+            return {"action": "suppressed", "reason": "telemetry_rate_limited"}
+
+        # Dry run still records the incident — an operator should see what the
+        # monitor found — but it can never be dispatched.
+        blocked = (
+            "telemetry admission is in dry-run mode"
+            if self.telemetry_admission == DRY_RUN
+            else None
+        )
+        return self._ingest(event, family, role="browser_telemetry", forced_block=blocked)
+
+    def _telemetry_rate_exceeded(self, event: dict[str, Any]) -> bool:
+        """Cap how much browser evidence one window may admit.
+
+        A monitor that starts finding a new warning on every scan must not be
+        able to fill the store or the console; past the cap the surplus is
+        recorded as a processing note instead.
+        """
+        if self.telemetry_rate_limit <= 0:
+            return False
+        since = (
+            datetime.fromisoformat(str(event.get("ts_utc") or utcnow()))
+            - timedelta(hours=1)
+        ).isoformat()
+        row = self._conn.execute(
+            """SELECT COUNT(*) AS n FROM incident_events
+                WHERE role = 'browser_telemetry' AND ts_utc >= ?""",
+            (since,),
+        ).fetchone()
+        return int(row["n"] or 0) >= self.telemetry_rate_limit
+
+    def _ingest(
+        self,
+        event: dict[str, Any],
+        family: Family,
+        *,
+        role: str = "failure",
+        forced_block: str | None = None,
+    ) -> dict[str, Any]:
+        """Shared storage path for every admitted observation.
+
+        Whatever noticed the defect — a contract assertion or the browser
+        monitor — identity, deduplication and admission are decided the same
+        way, so one path cannot quietly become more permissive than the other.
+        """
         event_id = event.get("event_id")
         if not event_id:
             self._record_error(None, "event without an event_id")
@@ -312,6 +452,8 @@ class IncidentStore:
         derived = kind in DERIVED_KINDS
         baseline_sha, strength = baseline_of(event.get("revision") or {})
         admission, admission_reason = self._admission(event, family, baseline_sha)
+        if forced_block:
+            admission, admission_reason = BLOCKED, forced_block
         print_key = (
             self.parent_fingerprint
             if derived
@@ -373,7 +515,7 @@ class IncidentStore:
                         event.get("step_index") or 0,
                         event["ts_utc"],
                         event.get("operation") or "",
-                        "derived_evidence" if derived else "failure",
+                        "derived_evidence" if derived else role,
                         # Scrubbed again on the way in: the bundle leaves the
                         # portal, so it gets the sanitizer a second time rather
                         # than trusting that the log already did it.
@@ -472,7 +614,10 @@ class IncidentStore:
         ).fetchone()
         return {"event_count": row["events"] or 0, "derived_event_count": row["derived"] or 0}
 
-    def list(self) -> list[dict[str, Any]]:
+    def list(self) -> builtins.list[dict[str, Any]]:
+        # This method shadows the builtin inside the class body, so the
+        # annotations below name it explicitly rather than silently losing
+        # their element types.
         rows = self._conn.execute(
             "SELECT * FROM incidents ORDER BY last_seen_at DESC, id DESC"
         ).fetchall()
@@ -495,7 +640,7 @@ class IncidentStore:
         incident["processing_errors"] = self.processing_errors()
         return incident
 
-    def eligible(self) -> list[dict[str, Any]]:
+    def eligible(self) -> builtins.list[dict[str, Any]]:
         """Incidents a controller may act on. Blocked ones are visible, never dispatched."""
         rows = self._conn.execute(
             "SELECT id FROM incidents WHERE admission = ? ORDER BY id", (ELIGIBLE,)
@@ -508,7 +653,7 @@ class IncidentStore:
         ).fetchone()
         return self.get(int(row["id"])) if row else None
 
-    def events(self, incident_id: int) -> list[dict[str, Any]]:
+    def events(self, incident_id: int) -> builtins.list[dict[str, Any]]:
         """Evidence ordered the way it happened: by trace, then request step."""
         rows = self._conn.execute(
             """SELECT event_json FROM incident_events
@@ -517,7 +662,7 @@ class IncidentStore:
         )
         return [json.loads(row["event_json"]) for row in rows]
 
-    def traces(self, incident_id: int) -> list[dict[str, Any]]:
+    def traces(self, incident_id: int) -> builtins.list[dict[str, Any]]:
         rows = self._conn.execute(
             """SELECT trace_id, MIN(ts_utc) AS started_at, COUNT(*) AS evidence,
                       MAX(role) AS role
@@ -527,7 +672,7 @@ class IncidentStore:
         )
         return [dict(row) for row in rows]
 
-    def processing_errors(self, limit: int = 20) -> list[dict[str, Any]]:
+    def processing_errors(self, limit: int = 20) -> builtins.list[dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT * FROM incident_processing_errors ORDER BY id DESC LIMIT ?",
             (limit,),

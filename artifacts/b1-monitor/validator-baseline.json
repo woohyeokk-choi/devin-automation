@@ -1,0 +1,141 @@
+{
+  "case": "B1",
+  "verdict": "failed",
+  "checks": [
+    {
+      "name": "a_chart_to_replay_is_configured",
+      "kind": "setup",
+      "expected": true,
+      "observed": true,
+      "holds": true,
+      "note": ""
+    },
+    {
+      "name": "a_control_chart_is_configured",
+      "kind": "setup",
+      "expected": true,
+      "observed": true,
+      "holds": true,
+      "note": ""
+    },
+    {
+      "name": "the_chart_rendered",
+      "kind": "setup",
+      "expected": "",
+      "observed": "",
+      "holds": true,
+      "note": ""
+    },
+    {
+      "name": "the_chart_data_request_succeeded",
+      "kind": "setup",
+      "expected": [
+        200
+      ],
+      "observed": [
+        200
+      ],
+      "holds": true,
+      "note": ""
+    },
+    {
+      "name": "large_values_are_formatted",
+      "kind": "target",
+      "expected": [],
+      "observed": [
+        "1425300509404304697",
+        "9007199254740993"
+      ],
+      "holds": false,
+      "note": "raw digits on screen mean the format was not applied"
+    },
+    {
+      "name": "no_formatter_warning_is_logged",
+      "kind": "target",
+      "expected": [],
+      "observed": [
+        "Formatter failed, falling back to raw value TypeError: Cannot convert a BigInt value to a number"
+      ],
+      "holds": false,
+      "note": ""
+    },
+    {
+      "name": "large_values_are_formatted_on_a_second_load",
+      "kind": "target",
+      "expected": [],
+      "observed": [
+        "1425300509404304697",
+        "9007199254740993"
+      ],
+      "holds": false,
+      "note": "raw digits on screen mean the format was not applied"
+    },
+    {
+      "name": "no_formatter_warning_is_logged_on_a_second_load",
+      "kind": "target",
+      "expected": [],
+      "observed": [
+        "Formatter failed, falling back to raw value TypeError: Cannot convert a BigInt value to a number"
+      ],
+      "holds": false,
+      "note": ""
+    },
+    {
+      "name": "control_small_values_keep_their_format_in_the_same_chart",
+      "kind": "control",
+      "expected": [],
+      "observed": [],
+      "holds": true,
+      "note": ""
+    },
+    {
+      "name": "control_the_small_value_chart_is_unchanged",
+      "kind": "control",
+      "expected": [],
+      "observed": [],
+      "holds": true,
+      "note": ""
+    },
+    {
+      "name": "control_the_small_value_chart_logs_nothing",
+      "kind": "control",
+      "expected": [],
+      "observed": [],
+      "holds": true,
+      "note": ""
+    }
+  ],
+  "facts": {
+    "fresh": {
+      "values": "cold_archive | 1425300509404304697 | 4KiB | warm_tier | 9007199254740993 | 8KiB",
+      "navigation_error": "",
+      "statuses": [
+        200
+      ],
+      "warnings": [
+        "Formatter failed, falling back to raw value TypeError: Cannot convert a BigInt value to a number"
+      ],
+      "needs_attention": 0
+    },
+    "second_load": {
+      "values": "cold_archive | 1425300509404304697 | 4KiB | warm_tier | 9007199254740993 | 8KiB",
+      "navigation_error": "",
+      "statuses": [
+        200
+      ],
+      "warnings": [
+        "Formatter failed, falling back to raw value TypeError: Cannot convert a BigInt value to a number"
+      ],
+      "needs_attention": 0
+    },
+    "control": {
+      "values": "warm_tier | 8KiB | cold_archive | 4KiB",
+      "navigation_error": "",
+      "statuses": [
+        200
+      ],
+      "warnings": [],
+      "needs_attention": 0
+    }
+  }
+}

@@ -254,6 +254,39 @@ verdict for this scenario lives in `portal/visual.py` and is labelled a
 demonstration; it is deliberately not one of the registered cases a candidate
 is accepted on, and the canonical fixtures and validator are untouched by it.
 
+## B1: a third defect, detected but not yet dispatched
+
+S1 and S2 were found by assertions the automation itself wrote. B1 is the
+first case found the other way round: the product's own browser console, read
+by a scheduled monitor that only looks.
+
+The defect is [apache/superset#44007](https://github.com/apache/superset/issues/44007),
+reproduced on the same baseline: a Table column with the `MEMORY_BINARY`
+number format shows `1425300509404304697` as raw digits while `4096` in the
+same chart renders `4KiB`. The precise severity is a **handled formatter
+failure with a visible fallback** — the product logs
+`Formatter failed, falling back to raw value TypeError: Cannot convert a
+BigInt value to a number` at `warning`, `POST /api/v1/chart/data` returns 200,
+there is no pageerror and the chart does not crash. It must not be described
+as an exception, a 500 or a crash.
+
+What has actually run, from the monitor container against the isolated
+baseline stack, is in [`artifacts/b1-monitor`](../artifacts/b1-monitor):
+three read-only scans, two of the defect chart and one of the small-number
+control; five events; one incident. Drained under each admission mode, the
+same five events produce 0 incidents (`disabled`), 1 recorded and blocked
+(`dry_run`) and 1 eligible (`enabled`). The control scan contributes nothing
+in any mode, and the second defect scan consolidates into the first incident
+rather than proposing a second session.
+
+What has **not** run: no B issue, no repair session, no Slack thread, no
+product change. Live dispatch is off pending authorization, so B1 stops at an
+eligible incident. Verification for it is written but unexercised against a
+real candidate — for a frontend defect it builds the bundle from the
+candidate's own commit (the S1/S2 shortcut of reusing the baseline bundle is
+invalid here) and refuses a bundle whose provenance is missing or from another
+commit.
+
 ## What this does not show
 
 - Nothing merged, nothing deployed, no production or public preview.

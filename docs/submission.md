@@ -19,6 +19,7 @@ means `verified_in_preview` — never merged, never deployed.
 | Fresh-run media | symptom clips delivered (Slack `F0C324CM3KQ` portal action, `F0C2XU6V475` native Explore replay); the after-merge clip does not exist yet |
 | Native chart preview | `artifacts/fresh-demo-20260919-2310/visual-preview/` — the same defect in Superset's Explore UI on the baseline, and held at candidate `7bb8de7b136f`; labelled PREVIEW |
 | Evidence | `artifacts/phase6/S2/`, `artifacts/phase6/S1/` |
+| B1 (browser telemetry, no dispatch) | [apache/superset#44007](https://github.com/apache/superset/issues/44007) reproduced on the baseline; monitor scans, admission modes and the validator's baseline failure in `artifacts/b1-monitor/`. No issue, session, PR or Slack post exists for it. |
 | Exact-SHA replay clips | `artifacts/phase8/replay/` — baseline vs accepted head per case, recorded later, not the original verification |
 | Numbers, with the caveats | [docs/results.md](results.md) |
 | Design decisions and full history | [docs/EXECUTION_PLAN.md](EXECUTION_PLAN.md) |
@@ -47,6 +48,14 @@ were fixed by API-created sessions and each passed an independent behavioural
 replay at its exact PR head — 19 checks for S2, 13 for S1, all holding, zero
 product follow-ups needed. Most of those checks are setup and controls, and
 the two runs share three permission checks; they are not 32 unique tests.
+
+Third defect, B1: the loop's entry point no longer has to be an assertion the
+automation wrote. A scheduled monitor drives its own Chromium through the
+saved chart read-only and admits the product's own `console.warn` — a handled
+formatter failure with a visible fallback, not an exception or a crash. It is
+implemented and exercised locally; it has not been dispatched, so there is no
+B1 issue, session, PR or notification, and its verifier has run only against
+the unfixed baseline, where it correctly fails.
 
 Not verified: no upstream CI ran on either candidate (0 check-runs, 0
 statuses), nothing is merged or deployed, human touch time and cost per repair

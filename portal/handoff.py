@@ -53,6 +53,34 @@ STEPS = {
 5. Read the settings back. Expected: row limit still 137. Observed at
    baseline: it has been reset to 1000. The colour scheme is preserved,
    which is the control that keeps this narrow.""",
+    "B1": """1. Build the synthetic fixture once, inside the running Superset
+   container, from this repository's checkout:
+
+   ```bash
+   docker exec -i -e B1_DATABASE=<analytics database name> \\
+     <superset container> python3 - < scenarios/b1_fixture.py
+   ```
+
+   It prints `chart_id` (the affected chart) and `control_chart_id`. The
+   fixture creates its own schema, table, dataset and two saved Table charts
+   and touches nothing else. The chart IDs are whatever that metadata
+   database assigns; do not reuse the ones in this evidence, and do not
+   expect the monitoring host's URLs to resolve from your machine.
+2. Sign in to Superset and open the affected chart, `/explore/?slice_id=<chart_id>`.
+   The number format (`MEMORY_BINARY`) is already saved on the chart, so this
+   is ordinary navigation: no control has to be touched to see the failure.
+3. Observe the table. The two values beyond the JavaScript safe-integer range
+   (`1425300509404304697` and `9007199254740993`) render as raw digits, while
+   values inside it, in the same chart with the same format, render as `4KiB`
+   and `8KiB`.
+4. Open the browser console. The product logs, once per affected cell:
+   `Formatter failed, falling back to raw value TypeError: Cannot convert a
+   BigInt value to a number`. It is a **warning**: the failure is caught and
+   the raw value is shown. There is no uncaught exception, no chart crash,
+   and `POST /api/v1/chart/data` returns 200.
+5. Open the control chart, `/explore/?slice_id=<control_chart_id>`: same
+   format, same column type, all values inside the safe range. It formats
+   correctly and logs nothing. A fix must keep this true.""",
 }
 
 SETUP = """```bash

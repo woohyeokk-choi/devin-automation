@@ -22,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -127,7 +128,54 @@ def automation_facts() -> dict[str, object]:
     }
 
 
+#: A stack whose fixture is not the S1/S2 synthetic order table (the B1
+#: monitor stack, for instance) names its own table here, and its revision is
+#: measured from the database instead of from this repository's DDL constant.
+FIXTURE_SCHEMA = os.environ.get("SUPERSET_FIXTURE_SCHEMA", "")
+FIXTURE_TABLE = os.environ.get("SUPERSET_FIXTURE_TABLE", "")
+
+
+def psql(sql: str) -> subprocess.CompletedProcess[str]:
+    return run(
+        ["docker", "exec", "-i", DB_CONTAINER, "psql", "-U", DB_USER, "-d", DB_NAME],
+        input=sql,
+    )
+
+
+def external_fixture_facts() -> dict[str, object]:
+    """Revision of a fixture this repository does not define the DDL for.
+
+    The shape is read back out of the database (column names and types) and
+    hashed with the row count, so the revision still changes if the fixture
+    changes, without pretending to know DDL it never wrote.
+    """
+    table = f"{FIXTURE_SCHEMA}.{FIXTURE_TABLE}"
+    shape = psql(
+        "SELECT column_name || ':' || data_type FROM information_schema.columns "
+        f"WHERE table_schema = '{FIXTURE_SCHEMA}' AND table_name = '{FIXTURE_TABLE}' "  # noqa: S608
+        "ORDER BY ordinal_position;"
+    )
+    count = psql(f"SELECT count(*) FROM {table};")  # noqa: S608
+    if shape.returncode != 0 or count.returncode != 0:
+        return {"table": table, "rows": None, "revision": None}
+    try:
+        rows = int(count.stdout.strip().splitlines()[2].strip())
+    except (IndexError, ValueError):
+        return {"table": table, "rows": None, "revision": None}
+    digest = hashlib.sha256()
+    digest.update(table.encode())
+    digest.update("|".join(line.strip() for line in shape.stdout.splitlines()).encode())
+    digest.update(f"|rows={rows}".encode())
+    return {
+        "table": table,
+        "rows": rows,
+        "revision": "sha256:" + digest.hexdigest()[:16],
+    }
+
+
 def fixture_facts() -> dict[str, object]:
+    if FIXTURE_SCHEMA and FIXTURE_TABLE:
+        return external_fixture_facts()
     proc = run(
         ["docker", "exec", "-i", DB_CONTAINER, "psql", "-U", DB_USER, "-d", DB_NAME],
         input=f"SELECT count(*) FROM {SCHEMA}.{TABLE_NAME};",  # noqa: S608

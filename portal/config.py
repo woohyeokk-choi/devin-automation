@@ -133,6 +133,17 @@ class Settings:
     merge_gate: bool = field(
         default_factory=lambda: _env("PORTAL_MERGE_GATE", "false").lower() == "true"
     )
+    #: How far a qualified browser-telemetry finding may travel:
+    #: `enabled` may become a dispatchable incident, `dry_run` is recorded and
+    #: never dispatched, `disabled` is not admitted at all. Dry run is the
+    #: default so turning the monitor on observes before it acts.
+    telemetry_admission: str = field(
+        default_factory=lambda: _env("PORTAL_TELEMETRY_ADMISSION", "dry_run")
+    )
+    #: Telemetry observations admitted per rolling hour; 0 removes the cap.
+    telemetry_rate_limit: int = field(
+        default_factory=lambda: int(_env("PORTAL_TELEMETRY_RATE_LIMIT", "5"))
+    )
     #: The product SHA this deployment is supposed to be running. When set,
     #: evidence measured against any other SHA is recorded but never becomes
     #: dispatchable: we cannot ask for a repair of code we cannot pin.

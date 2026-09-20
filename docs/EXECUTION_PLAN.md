@@ -1073,3 +1073,51 @@ Ledger note: the one authorized correction was sent through the default
 and real delivery uses `runtime/live-state` from here on.
 
 Live sends and uploads remain paused pending review.
+
+## Phase 9 — B1: an event the automation did not write
+
+S1 and S2 enter the loop through assertions this repository authored. That is
+a fair demonstration of the repair half and a weak one of the detection half:
+the trigger and the grader share an author. B1 closes that gap with the
+smallest honest change — one new admission path, no new framework.
+
+Collector scope, stated plainly: **scheduled synthetic browser monitoring**.
+A container drives its own Chromium through the saved chart on the isolated
+baseline stack. It cannot read anyone else's console, and the documentation
+never implies otherwise. The schedule runs the scan; the admission signal is
+an actual captured browser warning. No warning, no incident, no session.
+
+The monitor only looks. It signs in, opens `/explore/?slice_id=<id>`, reads
+the rendered cells, and leaves: no format change, no save, no reseed, so a
+scan cannot manufacture the symptom it reports. The `MEMORY_BINARY` format
+lives on the saved chart from a separate one-time fixture, and the verifier's
+replay is a third, separate path.
+
+`portal/telemetry.py` decides what a captured event is worth. `qualified`
+requires a registered signature whose browser severity matches what the
+browser said; anything else is `needs_attention`, visible but never
+dispatchable; known deployment noise is `ignored`. Entries, message length,
+stack frames and request context are bounded, query strings stripped, and the
+existing sanitizer runs before anything is persisted — a console line is
+untrusted data, never an instruction. `portal/incidents.py` gains a second
+admission path beside the registered-assertion one rather than dressing a
+warning up as an `assertion_failed`, and reuses the same fingerprint and
+dedup rules, so repeated scans of one chart stay one incident.
+
+Admission is the coordinator's setting, not the monitor's:
+`PORTAL_TELEMETRY_ADMISSION` is `dry_run` by default, with `enabled` and
+`disabled` on either side, plus a rolling-hour rate limit. The monitor
+container holds no GitHub, Devin, Slack or Docker credential; it reaches the
+coordinator only by writing sanitized rows into the shared state directory.
+
+Verification had to get stricter. S1's trick of replaying against an
+unchanged baseline frontend bundle cannot grade a frontend fix, so
+`IsolatedStack` builds the candidate's own assets and `provenance_problem()`
+refuses a bundle that is missing or built from another commit. Two facts the
+first attempt got wrong: the web image has a Node runtime but no npm and no
+installed packages, so the build belongs in a toolchain image over the
+checkout; and webpack shells out to `zstd`, absent from a plain Node image.
+
+Live status: nothing was dispatched. No B1 issue, session, PR or Slack
+message exists, the expired repair 1 is untouched, and the validator has run
+only against the unfixed baseline — where it fails, as it must.

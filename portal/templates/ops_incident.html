@@ -43,6 +43,30 @@
 </div>
 
 <div class="card">
+  <h2>Browser telemetry</h2>
+  <p class="muted">What a scheduled read-only scan of the saved chart captured from the product's own console. Severity is the browser's, unchanged.</p>
+  <table>
+    <thead><tr><th>Severity</th><th>Diagnostic</th><th>Seen in scan</th><th>Chart / route</th><th>Visible values</th><th>Requests</th><th>Trace/step</th></tr></thead>
+    <tbody>
+      {% for event in incident.events if event.outcome == 'telemetry' %}
+      {% set body = event.output or {} %}
+      <tr>
+        <td><span class="pill {{ 'assertion_failed' if body.severity == 'error' else 'ok' }}">{{ body.severity }}</span> <span class="muted">{{ body.classification }}</span></td>
+        <td><code>{{ body.diagnostic }}</code>{% if body.module %}<br><span class="muted">{{ body.module }}</span>{% endif %}</td>
+        <td>{{ body.occurrences_in_scan }}</td>
+        <td>{{ (body.page or {}).chart }}<br><span class="muted">{{ (body.page or {}).route }}</span></td>
+        <td><code>{{ (body.page or {}).visible_values }}</code></td>
+        <td class="muted">{% for req in body.requests or [] %}{{ req.method }} {{ req.path }} → {{ req.status }}<br>{% endfor %}</td>
+        <td><a href="/ops/traces/{{ event.trace_id }}">{{ event.trace_id }}</a>/{{ event.step_index }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="muted">No browser telemetry on this incident.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
   <h2>Traces</h2>
   <table>
     <thead><tr><th>Trace</th><th>Started (UTC)</th><th>Evidence events</th><th>Role</th></tr></thead>

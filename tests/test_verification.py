@@ -480,11 +480,13 @@ class FakeRunner:
         self.error = error
         self.portal_error = portal_error
         self.prepared: list[str] = []
+        self.families: list[str] = []
         self.torn_down: list[str] = []
         self.served: list[str] = []
 
-    def prepare(self, head_sha: str) -> Environment:
+    def prepare(self, head_sha: str, family: str = "") -> Environment:
         self.prepared.append(head_sha)
+        self.families.append(family)
         if self.error:
             raise RunnerError(self.error)
         return self.build()
@@ -930,3 +932,89 @@ def test_a_candidate_with_no_verifier_configured_is_parked_not_passed(
     repair = repairs.get(int(candidate["id"]))
     assert repair is not None and repair["state"] == NEEDS_ATTENTION
     assert "no verifier" in repair["attention"]
+
+
+# --- the browser family (B1) ----------------------------------------------
+
+
+B1_FAMILY = "bigint_number_format_not_applied"
+
+
+def _with_assets(*, built_from: str) -> Environment:
+    env = environment()
+    env.provenance["assets"] = {
+        "built_from_sha": built_from,
+        "files": 12,
+        "bundle_hash": "sha256:bundle",
+    }
+    return env
+
+
+def test_a_number_format_fix_may_touch_its_own_frontend_paths() -> None:
+    verdict = check_scope(
+        [
+            "superset-frontend/packages/superset-ui-core/src/number-format/"
+            "NumberFormatter.ts",
+            "superset-frontend/packages/superset-ui-core/test/number-format/"
+            "NumberFormatter.test.ts",
+        ],
+        B1_FAMILY,
+    )
+    assert verdict.allowed, verdict.reasons
+
+
+def test_the_frontend_ban_is_lifted_only_for_the_registered_paths() -> None:
+    """Letting a frontend family in must not open the whole frontend tree."""
+    verdict = check_scope(
+        ["superset-frontend/src/dashboard/components/Header/index.tsx"], B1_FAMILY
+    )
+    assert not verdict.allowed
+    assert any("registered scope" in reason for reason in verdict.reasons)
+
+
+def test_a_frontend_candidate_that_changes_only_tests_is_refused() -> None:
+    verdict = check_scope(
+        [
+            "superset-frontend/packages/superset-ui-core/test/number-format/"
+            "NumberFormatter.test.ts"
+        ],
+        B1_FAMILY,
+    )
+    assert not verdict.allowed
+    assert "the candidate changes no product code" in verdict.reasons
+
+
+def test_a_frontend_candidate_without_a_built_bundle_is_refused() -> None:
+    """The unchanged-bundle shortcut: correct sources, somebody else's assets."""
+    problem = provenance_problem(environment(), CANDIDATE_SHA, family=B1_FAMILY)
+    assert "no frontend bundle was built" in problem
+
+
+def test_a_bundle_built_from_another_commit_is_refused() -> None:
+    env = _with_assets(built_from="a" * 40)
+    problem = provenance_problem(env, CANDIDATE_SHA, family=B1_FAMILY)
+    assert "was built from" in problem and CANDIDATE_SHA in problem
+
+
+def test_a_bundle_built_from_the_candidate_is_accepted() -> None:
+    env = _with_assets(built_from=CANDIDATE_SHA)
+    assert provenance_problem(env, CANDIDATE_SHA, family=B1_FAMILY) == ""
+    # And a backend family is not asked for a bundle it never needed.
+    assert provenance_problem(environment(), CANDIDATE_SHA, family=S1_FAMILY) == ""
+
+
+def test_the_browser_case_answers_the_browser_family() -> None:
+    from portal.validator import CASES_BY_FAMILY
+
+    assert CASES_BY_FAMILY[B1_FAMILY] == ("B1",)
+    assert "large_values_are_formatted" in REQUIRED_CHECKS["B1"]
+    assert "control_the_small_value_chart_logs_nothing" in REQUIRED_CHECKS["B1"]
+
+
+def test_the_browser_case_blocks_rather_than_guessing_a_chart_id() -> None:
+    """Chart ids belong to the stack that seeded them; absent is not zero."""
+    from portal.validator import Target, case_b1
+
+    result = case_b1(Target(base_url="http://127.0.0.1:1", mcp_url=""))
+    assert result.verdict == BLOCKED
+    assert "a_chart_to_replay_is_configured" in result.blocked_reason

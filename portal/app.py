@@ -48,6 +48,8 @@ incidents = IncidentStore(
     target_repo=settings.target_repo,
     parent_fingerprint=settings.parent_incident,
     expected_baseline=settings.baseline_sha,
+    telemetry_admission=settings.telemetry_admission,
+    telemetry_rate_limit=settings.telemetry_rate_limit,
 )
 # Observation, not dispatch: the incident model is fed from the server's own
 # event stream regardless of AUTO_REPAIR_ENABLED.
@@ -172,6 +174,8 @@ def base_context(request: Request, **extra: Any) -> dict[str, Any]:
         "sorts": SORTS,
         "environment_kind": settings.environment_kind,
         "auto_repair_enabled": settings.auto_repair_enabled,
+        "telemetry_admission": settings.telemetry_admission,
+        "telemetry_rate_limit": settings.telemetry_rate_limit,
         "provenance": provenance_summary(portal.provenance),
         "dataset_table": settings.dataset_table,
     }

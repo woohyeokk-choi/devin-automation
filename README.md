@@ -228,6 +228,78 @@ python3 scripts/export_examples.py
   two-hour repair outlives a one-hour installation token. `GITHUB_TOKEN` is
   still honoured where a deployment outside this machine sets one.
 
+## Scheduled synthetic browser monitoring (B1)
+
+S1/S2 are contract assertions over REST/MCP. B1 is the other kind of signal:
+a real browser console event the product emits on its own, collected by a
+container that watches one saved chart on a schedule.
+
+**Scope, stated plainly.** The monitor drives *its own* Chromium inside its own
+container. It cannot read anybody else's browser, and nothing in this
+repository claims otherwise. The schedule decides *when to look*; an actually
+captured console event decides *whether an incident exists*. A clean scan
+writes a scan summary and nothing else — no warning, no incident, no session.
+
+**What the scan is allowed to do.** Sign in, open `/explore/?slice_id=<id>` for
+an already-saved chart, read what the console printed, leave. It changes no
+chart setting, saves nothing and seeds nothing. The fixture is created once
+(`python3 -m scenarios.b1_fixture` inside the Superset container) and the
+verifier's replay is a separate path. The container holds the Superset demo
+login and nothing else — no GitHub, Devin, Slack or Docker credential, and no
+inbound port, so there is no ingestion endpoint to attack. It reaches the
+coordinator only by writing sanitized rows into the shared state directory.
+
+The defect it watches is [apache/superset#44007](https://github.com/apache/superset/issues/44007)
+reproduced on baseline `394bca55`: a Table column with the `MEMORY_BINARY`
+format leaves values beyond the JavaScript safe-integer range as raw digits
+while the same format renders `4KiB`/`8KiB` for small ones, and the product
+logs `Formatter failed, falling back to raw value TypeError: Cannot convert a
+BigInt value to a number`. Severity is the browser's `warning`, kept as such:
+this is a handled formatter failure with a visible fallback, not an uncaught
+exception, an HTTP 500 or a chart crash. `POST /api/v1/chart/data` returns 200.
+Unlike the S1/S2 stack, the stack under a browser monitor must serve **built
+frontend assets**.
+
+```bash
+# one-time fixture, inside the running Superset container
+docker exec -e B1_DATABASE=examples -i <project>-superset-light-1 \
+    python3 - < scenarios/b1_fixture.py     # prints the two chart ids
+
+# the monitor (loops every MONITOR_INTERVAL_SECONDS)
+export MONITOR_CHART_ID=<defect chart id> PORTAL_DATA_DIR=... AUTOMATION_DIR=$PWD
+docker compose -f stack/docker-compose.monitor.yml up -d --build
+
+# a single scan, printed as JSON, nothing persisted beyond the event store
+docker compose -f stack/docker-compose.monitor.yml run --rm monitor \
+    python -m portal.monitor --once
+```
+
+### From a console event to an admitted incident
+
+| Stage | Rule |
+| --- | --- |
+| Collect | Only events the product emitted. The monitor never prints a warning of its own, and a bug-specific expected-value assertion is never the trigger — the replay test asserts values, the runtime source does not. |
+| Bound | At most 200 entries a scan, 1500 characters a message, 5 stack frames; request context keeps method, path and status with the query string stripped. No cookies, auth headers, form data or full HARs. |
+| Classify | `qualified` only for a registered signature (`portal/telemetry.py`) whose browser severity matches. Any other warning/error is `needs_attention` — visible, never dispatchable. Known deployment noise (preload hints, the service-worker 404) is `ignored`. |
+| Consolidate | A rerender burst is one finding with a count; repeated scans of the same chart stay one incident, by the same fingerprint rule as an assertion incident. |
+| Admit | `PORTAL_TELEMETRY_ADMISSION` is `dry_run` by default (recorded, blocked from dispatch), `enabled` (may become an eligible incident) or `disabled` (not admitted at all), with `PORTAL_TELEMETRY_RATE_LIMIT` admitted findings per rolling hour. The monitor cannot grant itself any of this: admission is the coordinator's setting. |
+
+Verification for this family is stricter than for S1/S2: the frontend defect
+means the candidate's **assets must be built from the candidate revision**, and
+`provenance_problem()` refuses an environment that reuses an unchanged baseline
+bundle or one built from another commit. The build runs in a Node toolchain
+image over the candidate checkout — the web image carries a Node runtime but
+no npm and no installed packages, and webpack shells out to `zstd` — and
+webpack writes into the same `superset/static/assets` the stack bind-mounts.
+The replay checks both a fresh and a second load of the saved chart, and the
+small-number control chart alongside.
+
+Live status: the monitor, the admission path and the validator run here; no B
+issue, Devin session or Slack post has been created — remote dispatch stays off
+until it is authorized. What those runs produced, including the validator
+failing on the unfixed baseline as it should, is in
+[`artifacts/b1-monitor`](artifacts/b1-monitor).
+
 ## Incidents
 
 Registered semantic failures become incidents even though

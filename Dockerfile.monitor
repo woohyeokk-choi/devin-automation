@@ -1,0 +1,29 @@
+# The scheduled synthetic browser monitor.
+#
+# Separate from the portal image on purpose: this is the only container that
+# runs a browser, and it is the only one that never holds a GitHub, Devin or
+# Slack credential. It writes sanitized events into the shared state
+# directory; deciding what to do about them belongs to the coordinator.
+FROM mcr.microsoft.com/playwright/python:v1.63.0-noble
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PORTAL_DATA_DIR=/data
+
+WORKDIR /app
+
+COPY requirements.txt ./
+# The base image ships the browsers but not the Python bindings; the pin has to
+# match the image tag or Playwright looks for a build that is not installed.
+RUN pip install --no-cache-dir --break-system-packages -r requirements.txt \
+    playwright==1.63.0
+
+COPY clients ./clients
+COPY portal ./portal
+COPY scenarios ./scenarios
+
+RUN mkdir -p /data
+USER pwuser
+VOLUME ["/data"]
+
+CMD ["python", "-m", "portal.monitor"]

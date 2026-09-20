@@ -54,7 +54,14 @@ CREATE TABLE IF NOT EXISTS explorations (
 );
 """
 
-OUTCOMES = ("ok", "assertion_failed", "expected_denial", "blocked", "error")
+#: An observation the *product* made about itself, captured from a browser by
+#: the monitor. Kept apart from `assertion_failed` deliberately: our contract
+#: assertions and the application's own console output are different kinds of
+#: evidence, and folding one into the other would misreport which of them
+#: noticed the defect.
+TELEMETRY = "telemetry"
+
+OUTCOMES = ("ok", "assertion_failed", "expected_denial", "blocked", "error", TELEMETRY)
 
 
 def utcnow() -> str:

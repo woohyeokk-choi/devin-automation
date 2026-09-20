@@ -72,10 +72,28 @@ SCOPE_BY_FAMILY: dict[str, tuple[str, ...]] = {
         "tests/unit_tests/mcp_service/",
         "tests/integration_tests/charts/",
     ),
+    # A number-formatting defect lives in the frontend, so this family's
+    # scope is the formatting package and the chart plugin that renders the
+    # affected cells — not the frontend tree at large, which is where the
+    # build, the authentication surface and every other plugin also live.
+    "bigint_number_format_not_applied": (
+        "superset-frontend/packages/superset-ui-core/src/number-format/",
+        "superset-frontend/packages/superset-ui-core/test/number-format/",
+        "superset-frontend/plugins/plugin-chart-table/src/",
+        "superset-frontend/plugins/plugin-chart-table/test/",
+    ),
 }
 
-#: Product prefixes: a diff of tests alone repairs nothing.
+#: Where the *product* lives, per family: a diff of tests alone repairs
+#: nothing, and for a frontend defect `superset/` would be the wrong tree to
+#: demand a change in.
 PRODUCT_PREFIX = "superset/"
+PRODUCT_PREFIX_BY_FAMILY: dict[str, tuple[str, ...]] = {
+    "bigint_number_format_not_applied": (
+        "superset-frontend/packages/superset-ui-core/src/",
+        "superset-frontend/plugins/plugin-chart-table/src/",
+    ),
+}
 
 #: Checked first. Some of these are unreachable from the product repository
 #: anyway (the validator lives in the automation repository); they are listed
@@ -135,6 +153,8 @@ def check_scope(paths: list[str], family: str) -> ScopeVerdict:
             False, (f"{len(paths)} files changed; a single-defect repair is smaller",)
         )
     allowed = SCOPE_BY_FAMILY.get(family)
+    forbidden = _forbidden_for(allowed or ())
+    product = PRODUCT_PREFIX_BY_FAMILY.get(family, (PRODUCT_PREFIX,))
     if not allowed:
         return ScopeVerdict(
             False,
@@ -145,13 +165,31 @@ def check_scope(paths: list[str], family: str) -> ScopeVerdict:
         )
     reasons: list[str] = []
     for path in paths:
-        if any(path.startswith(prefix) for prefix in FORBIDDEN_PREFIXES):
+        if any(path.startswith(prefix) for prefix in forbidden):
             reasons.append(f"{path} is outside what a repair may change")
         elif not any(path.startswith(prefix) for prefix in allowed):
             reasons.append(f"{path} is not in the registered scope for {family}")
-    if not reasons and not any(path.startswith(PRODUCT_PREFIX) for path in paths):
+    if not reasons and not any(
+        path.startswith(prefix) for path in paths for prefix in product
+    ):
         reasons.append("the candidate changes no product code")
     return ScopeVerdict(not reasons, tuple(reasons))
+
+
+def _forbidden_for(allowed: tuple[str, ...]) -> tuple[str, ...]:
+    """The blanket bans, minus those a family's own scope sits inside.
+
+    `superset-frontend/` is banned by default because it carries the build
+    and every other plugin, but a frontend defect cannot be repaired without
+    touching it. Dropping only the bans a registered scope is nested in keeps
+    the narrow path list as the thing that decides, rather than widening the
+    policy for every family at once.
+    """
+    return tuple(
+        prefix
+        for prefix in FORBIDDEN_PREFIXES
+        if not any(path.startswith(prefix) for path in allowed)
+    )
 
 
 # ------------------------------------------------------------------ grading
@@ -284,6 +322,10 @@ class Environment:
     head_sha: str
     provenance: dict[str, Any] = field(default_factory=dict)
     commands: list[str] = field(default_factory=list)
+    #: Identifiers a browser case needs, produced by this stack's own
+    #: fixture run: the saved charts belong to this metadata database and
+    #: no other, so they travel with the environment rather than a config.
+    fixture: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -313,7 +355,7 @@ def cleanup_command(environment: Environment) -> str:
 class Runner(Protocol):
     """Builds, starts and tears down an isolated stack at one commit."""
 
-    def prepare(self, head_sha: str) -> Environment: ...
+    def prepare(self, head_sha: str, family: str = "") -> Environment: ...
 
     def teardown(self, environment: Environment) -> None: ...
 
@@ -338,10 +380,32 @@ def _inside(mount: str, checkout: str) -> bool:
     return resolved == root or root in resolved.parents
 
 
+#: Families whose verdict depends on compiled assets. For these, a stack that
+#: serves a bundle somebody else built answers a different question, however
+#: correct its Python source is.
+ASSET_BUILT_FAMILIES = ("bigint_number_format_not_applied",)
+
+
+def _asset_problem(measured: dict[str, Any], head_sha: str) -> str:
+    """Why the served frontend bundle cannot stand for this commit, or ``""``."""
+    assets = measured.get("assets") or {}
+    if not assets:
+        return "no frontend bundle was built for a candidate whose defect is in the frontend"
+    if str(assets.get("built_from_sha") or "").lower() != head_sha.lower():
+        return (
+            f"the served frontend bundle was built from "
+            f"{assets.get('built_from_sha') or 'an unknown commit'}, not {head_sha}"
+        )
+    if not assets.get("files") or not assets.get("bundle_hash"):
+        return "the frontend bundle was not measured, so it cannot be told from a stale one"
+    return ""
+
+
 def provenance_problem(
     environment: Environment,
     head_sha: str,
     *,
+    family: str = "",
     now: datetime | None = None,
 ) -> str:
     """Why the measured stack cannot stand for this commit, or ``""``.
@@ -412,6 +476,8 @@ def provenance_problem(
         return "the provenance does not say which automation revision graded the run"
     if not measured.get("config_revision"):
         return "the provenance does not say which configuration the stack was started with"
+    if family in ASSET_BUILT_FAMILIES:
+        return _asset_problem(measured, head_sha)
     return ""
 
 
@@ -634,7 +700,8 @@ class Verifier:
         started = utcnow()
         stage = POST_MERGE if merge_sha else PREVIEW
         pr_url = str(repair.get("agent_pr_url") or "")
-        cases = self.cases_for(str(incident.get("family") or ""))
+        family = str(incident.get("family") or "")
+        cases = self.cases_for(family)
         environment: Environment | None = None
         report: dict[str, Any] = {}
         commands: list[str] = []
@@ -649,7 +716,7 @@ class Verifier:
                 )
             else:
                 head_sha, files = self._read_candidate(pr_url)
-            scope = check_scope(files, str(incident.get("family") or ""))
+            scope = check_scope(files, family)
             if not scope.allowed:
                 # A diff outside the registered scope is a policy stop, not
                 # evidence about the product: nothing was executed, so there
@@ -667,9 +734,9 @@ class Verifier:
                     reason="no registered case answers this failure family",
                     stage=stage,
                 )
-            environment = self.runner.prepare(head_sha)
+            environment = self.runner.prepare(head_sha, family)
             commands = list(environment.commands)
-            problem = provenance_problem(environment, head_sha)
+            problem = provenance_problem(environment, head_sha, family=family)
             if problem:
                 return self._finish(
                     repair, incident, started, BLOCKED, head_sha, pr_url, cases,
