@@ -16,13 +16,34 @@ The single living plan — decisions, phase status, commands and blockers — is
 [pull request #1](https://github.com/woohyeokk-choi/devin-automation/pull/1)
 and not merged. `main` does **not** contain the application; clone the branch.
 
-Status: two real repairs ran end to end and reached `verified_in_preview`
-(Superset [#2](https://github.com/woohyeokk-choi/superset/pull/2) and
-[#4](https://github.com/woohyeokk-choi/superset/pull/4), both open and
-unmerged, nothing deployed). The portal never dispatches: it is fixed at
-`AUTO_REPAIR_ENABLED=false` and only a trusted host coordinator holds
-credentials. See [artifacts/phase6/](artifacts/phase6/) for the evidence and
-[docs/results.md](docs/results.md) for the numbers.
+Publishing the app on `main` is a separate approval item, not a reason to
+merge anything.
+
+**The primary story is S1**, the omitted `row_limit` reset: a real MCP
+sort-only `update_chart` that omits `row_limit` silently resets the saved
+limit, the portal's registered behaviour check fails, one incident is created,
+the coordinator opens fork issue
+[#5](https://github.com/woohyeokk-choi/superset/issues/5) and one Devin API
+session, and the session's PR
+[#6](https://github.com/woohyeokk-choi/superset/pull/6) @ `7bb8de7b136f` passed
+an independent replay at that exact head. It is **open, unmerged and awaiting a
+human**; nothing is deployed and there is no post-merge evidence.
+The scheduled browser monitor (B1, below) is **optional and disabled** — never
+dispatched, and no part of the S1 story depends on it.
+
+Earlier repairs [#2](https://github.com/woohyeokk-choi/superset/pull/2) and
+[#4](https://github.com/woohyeokk-choi/superset/pull/4) reached
+`verified_in_preview` the same way and are also open. The portal never
+dispatches: it is fixed at `AUTO_REPAIR_ENABLED=false` and only a trusted host
+coordinator holds credentials. See [artifacts/phase6/](artifacts/phase6/) for
+the evidence, [docs/submission.md](docs/submission.md) for the Part 1/2/3 map
+and [docs/results.md](docs/results.md) for the numbers.
+
+Running it without any paid key: the credential-free
+`--network none` simulation in [docs/submission.md](docs/submission.md)
+("Try it in one command") uses `FakeGitHub`/`FakeDevin` and creates no remote
+work; live historical output, local replays and that simulation are labelled
+separately everywhere they appear.
 
 ---
 

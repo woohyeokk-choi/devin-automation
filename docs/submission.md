@@ -7,6 +7,19 @@ reproduces and fixes the product and opens a pull request, and an independent
 host validator replays the same scenario against the exact PR head. Passing
 means `verified_in_preview` — never merged, never deployed.
 
+The **primary story is S1** — the omitted `row_limit` reset, run end to end in
+namespace `fresh-demo-20260919-2310`. B1 (browser telemetry) is **optional and
+disabled**: it is implemented and locally exercised, never dispatched, and
+nothing in the main story depends on it.
+
+## What answers which part
+
+| Part | Where it is answered |
+| --- | --- |
+| 1 — detect a real runtime failure | The portal's registered behaviour check on a real MCP sort-only `update_chart` that omits `row_limit`: the saved limit is reset (137 → 1000 in the original incident). Sanitized events → one deduplicated incident (`omitted_row_limit_is_reset`). `portal/incidents.py`, console at `/ops/incidents`. |
+| 2 — repair it automatically | The coordinator turns that incident into one fork issue and exactly one Devin API session (durable intent, single-flight claim, budget/deadline), the session reproduces and fixes Superset and opens a PR, and an independent host validator replays the scenario against the exact PR head. `portal/controller.py`, `portal/verification.py`. |
+| 3 — observability | Operator console: per-run summary card (distinct incidents, repairs, linked PRs, independent preview passes, merge-verified, attention), per-incident lifecycle state, attempts, requested ACU vs reported consumption (unknown stays unknown), last recorded update with a no-fresh-poll warning, full verification reports, and a Slack thread with a durable delivery ledger. `portal/summary.py`, `/ops/incidents`, `/ops/notifications`. |
+
 ## Links
 
 | | |
@@ -16,7 +29,7 @@ means `verified_in_preview` — never merged, never deployed.
 | Repair 1 (S2) | issue [#1](https://github.com/woohyeokk-choi/superset/issues/1) → session [`4b7011c7…`](https://app.devin.ai/sessions/4b7011c76c1e4ec8bf28cb373b614577) → PR [#2](https://github.com/woohyeokk-choi/superset/pull/2) @ `d234055eaf85a70d5e5ec5a7a7256ee43d02dde6` |
 | Repair 2 (S1) | issue [#3](https://github.com/woohyeokk-choi/superset/issues/3) → session [`18b04127…`](https://app.devin.ai/sessions/18b04127f4a44af6a9c71f9eb3eaba9e) → PR [#4](https://github.com/woohyeokk-choi/superset/pull/4) @ `fe266eac51a996760a75997ff94b3270c9ef73b1` |
 | Fresh run (S1, `fresh-demo-20260919-2310`) | issue [#5](https://github.com/woohyeokk-choi/superset/issues/5) → session [`e8b63e60…`](https://app.devin.ai/sessions/e8b63e608d5a4397b114a296420695c7) → PR [#6](https://github.com/woohyeokk-choi/superset/pull/6) @ `7bb8de7b136f9afdc39d31b4c6809b3de467c461`, **open, unmerged, awaiting a human** |
-| Fresh-run media | symptom clips delivered (Slack `F0C324CM3KQ` portal action, `F0C2XU6V475` native Explore replay); the after-merge clip does not exist yet |
+| Fresh-run media | symptom clips delivered (Slack `F0C324CM3KQ` portal action, `F0C2XU6V475` native Explore replay) and one candidate **preview** clip (`F0C36VA3HQA`, unmerged PR #6 head); the after-merge clip does not exist yet |
 | Native chart preview | `artifacts/fresh-demo-20260919-2310/visual-preview/` — the same defect in Superset's Explore UI on the baseline, and held at candidate `7bb8de7b136f`; labelled PREVIEW |
 | Evidence | `artifacts/phase6/S2/`, `artifacts/phase6/S1/` |
 | B1 (browser telemetry, no dispatch) | [apache/superset#44007](https://github.com/apache/superset/issues/44007) reproduced on the baseline; monitor scans, admission modes and the validator's baseline failure in `artifacts/b1-monitor/`. No issue, session, PR or Slack post exists for it. |
@@ -24,6 +37,10 @@ means `verified_in_preview` — never merged, never deployed.
 | Numbers, with the caveats | [docs/results.md](results.md) |
 | Design decisions and full history | [docs/EXECUTION_PLAN.md](EXECUTION_PLAN.md) |
 | Loom walkthrough | _pending — to be recorded_ |
+
+Publishing this code on `main` is a separate approval item; until then the
+branch checkout above is the only accurate way to run it, and no merge of any
+PR is implied by anything here.
 
 ## Try it in one command, no credentials
 
