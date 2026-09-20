@@ -66,7 +66,11 @@ MAX_REDIRECTS = 3
 #: name; `PORTAL_MEDIA_HOSTS` lets an operator add the storage host this
 #: deployment actually observes rather than having a wildcard stand in for
 #: it. A host that is not listed is refused by name, never by URL.
-DEFAULT_HOSTS = (".devin.ai", ".cognition.ai")
+DEFAULT_HOSTS = (
+    ".devin.ai",
+    ".cognition.ai",
+    "devin-public-attachments.s3.dualstack.us-west-2.amazonaws.com",
+)
 
 #: A capture is a video file. The response has to say so, and the bytes
 #: have to agree: an ISO base-media file names its brand in the second box.
@@ -197,16 +201,19 @@ def download(
     timeout: int = TIMEOUT_SECONDS,
     total_seconds: int = TOTAL_SECONDS,
     hosts: tuple[str, ...] | None = None,
+    bearer: str = "",
+    bearer_origin: str = "",
 ) -> Path:
     """Fetch one capture to `destination`, bounded, with no credential of ours.
 
-    The URL is pre-signed by whoever issued the listing, so sending our own
-    Authorization header with it would hand that credential to a storage
-    host; the request carries none, and it is only ever sent to an allowed
-    attachment host. Redirects are followed by hand so each hop is judged by
-    those same rules instead of being taken on trust, and a response that
-    outruns `max_bytes` or `total_seconds` is abandoned with its partial
-    file removed.
+    The API serves a capture behind our own credential and redirects to
+    storage that is pre-signed instead. A `bearer` is therefore sent only
+    on a first request to exactly `bearer_origin`, and never again: the
+    redirect it hands back goes to somebody else's host, and following it
+    with our Authorization header would give that host the credential.
+    Redirects are followed by hand so each hop is judged by the same rules
+    as the first URL, and a response that outruns `max_bytes` or
+    `total_seconds` is abandoned with its partial file removed.
     """
     permitted = hosts if hosts is not None else allowed_hosts()
     deadline = time.monotonic() + total_seconds
@@ -219,6 +226,8 @@ def download(
             if problem:
                 raise MediaError(problem)
             request = urllib.request.Request(location, method="GET")
+            if hop == 0 and bearer and _is_origin(location, bearer_origin):
+                request.add_header("Authorization", f"Bearer {bearer}")
             opener = urllib.request.build_opener(_NoRedirect)
             try:
                 response = opener.open(request, timeout=timeout)
@@ -271,6 +280,18 @@ def download(
         destination.unlink(missing_ok=True)
         raise MediaError(wrong)
     return destination
+
+
+def _is_origin(url: str, origin: str) -> bool:
+    """Whether this URL is that exact origin, scheme, host and port alike."""
+    if not origin:
+        return False
+    here, there = urllib.parse.urlsplit(url), urllib.parse.urlsplit(origin)
+    return (here.scheme, here.hostname, here.port) == (
+        there.scheme,
+        there.hostname,
+        there.port,
+    ) and here.scheme == "https"
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

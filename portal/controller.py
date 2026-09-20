@@ -1402,7 +1402,12 @@ class Controller:
             )
         destination = self.media_dir / f"repair-{repair_id}" / capture.name
         try:
-            media.download(attachment.url, destination)
+            media.download(
+                self.devin.attachment_source(attachment),
+                destination,
+                bearer=self.devin.api_key,
+                bearer_origin=self.devin.api,
+            )
         except media.MediaError as exc:
             # The signed URL is a credential and never appears in any of this.
             return Decision(

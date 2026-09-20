@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
+from urllib.parse import quote
 
 from .transport import Response, Transport
 
@@ -384,6 +385,20 @@ class Devin:
             )
             for item in listed
         ]
+
+    def attachment_source(self, attachment: Attachment) -> str:
+        """The documented API location this attachment is fetched from.
+
+        The `url` a listing carries points at the web application and is
+        readable only by a signed-in browser. The API serves the same file
+        at its own path and answers with a redirect to storage, which is
+        where an unattended host can actually read it from.
+        """
+        name = quote(attachment.name, safe="")
+        return (
+            f"{self.api}/v3/organizations/{self.org_id}"
+            f"/attachments/{quote(attachment.attachment_id, safe='')}/{name}"
+        )
 
     def sessions_tagged(self, tag: str, first: int = 100) -> Iterator[Session]:
         """Documented cursor pagination: `first`/`after`, `items`/`end_cursor`."""

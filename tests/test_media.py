@@ -164,6 +164,45 @@ def test_a_redirect_is_judged_by_the_same_rules_as_the_first_url(
     assert not (tmp_path / "b.mp4").exists()
 
 
+def test_our_credential_reaches_the_api_and_no_host_it_redirects_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The API needs our key; the storage it hands off to must never see it."""
+    api = "https://api.devin.ai/v3/organizations/org-1/attachments/u/a.mp4"
+    storage = "https://attachments.devin.ai/signed/a.mp4"
+    carried: list[str | None] = []
+
+    class Opener:
+        def open(self, request: Any, timeout: float = 0) -> Any:
+            carried.append(request.get_header("Authorization"))
+            if request.full_url == api:
+                raise redirect(storage)
+            return FakeResponse(MP4)
+
+    monkeypatch.setattr(media.urllib.request, "build_opener", lambda *a: Opener())
+    monkeypatch.setattr(media.socket, "getaddrinfo", _public)
+
+    media.download(
+        api,
+        tmp_path / "a.mp4",
+        hosts=("api.devin.ai", "attachments.devin.ai"),
+        bearer="cog_secret",
+        bearer_origin="https://api.devin.ai",
+    )
+    assert carried == ["Bearer cog_secret", None]
+
+    # A first URL that is not the trusted origin carries nothing either.
+    carried.clear()
+    media.download(
+        storage,
+        tmp_path / "b.mp4",
+        hosts=("attachments.devin.ai",),
+        bearer="cog_secret",
+        bearer_origin="https://api.devin.ai",
+    )
+    assert carried == [None]
+
+
 def test_a_redirect_that_downgrades_the_scheme_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
