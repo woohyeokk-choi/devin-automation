@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from portal.controller import (
+    AWAITING_MERGE,
     CANDIDATE,
     DISPATCHED,
     NEEDS_ATTENTION,
@@ -753,6 +754,16 @@ def test_a_result_is_refused_unless_the_attempt_measured_that_head() -> None:
     assert result_problem(REPAIR | {"state": CANDIDATE}, PASSED_ATTEMPT)
     with pytest.raises(ValueError):
         result_message(REPAIR, INCIDENT, PASSED_ATTEMPT | {"candidate_sha": "a" * 40})
+
+
+def test_waiting_for_a_human_still_speaks_for_the_preview_pass() -> None:
+    """A preview pass does not expire when the repair parks on a human."""
+    waiting = REPAIR | {"state": AWAITING_MERGE}
+    assert result_problem(waiting, PASSED_ATTEMPT) == ""
+    # Only the attempt that graded the preview may speak for an unmerged head.
+    assert "did not grade the preview" in result_problem(
+        waiting, PASSED_ATTEMPT | {"stage": "post_merge"}
+    )
 
 
 # --- what a block promises -------------------------------------------------

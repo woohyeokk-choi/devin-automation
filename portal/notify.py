@@ -1868,8 +1868,15 @@ def result_problem(
         if str(attempt.get("stage") or "preview") != "post_merge":
             return "the attempt graded the preview, not the merged commit"
         return ""
-    if state != VERIFIED:
-        return f"the repair is in state {repair.get('state')}, not {VERIFIED}"
+    if state not in (VERIFIED, AWAITING_MERGE):
+        return (
+            f"the repair is in state {repair.get('state')}, "
+            f"not {VERIFIED} or {AWAITING_MERGE}"
+        )
+    # Waiting for a human does not unmake the preview pass, but only the
+    # preview attempt may speak for a head nobody has merged.
+    if str(attempt.get("stage") or "preview") != "preview":
+        return "the attempt did not grade the preview"
     return ""
 
 
