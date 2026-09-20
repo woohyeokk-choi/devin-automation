@@ -721,3 +721,52 @@ def test_a_refusal_and_an_ambiguous_failure_are_told_apart(
 
     ambiguous = Notifier(log=log, bot=FakeBot(Ambiguous("ReadTimeout")))
     assert ambiguous.publish("2:b", "verified", "text", 2) == UNKNOWN
+
+
+def test_symptom_footage_may_be_captioned_for_the_screen_it_shows(
+    log: NotificationLog, clip: Path
+) -> None:
+    """A native Superset clip and a portal clip are both symptoms, not fixes."""
+    baseline = "b" * 40
+    capture = Recording(
+        url=IN_THREAD,
+        case="S1",
+        sha=baseline,
+        recorded_at="2026-09-20T00:55:00+00:00",
+        scope="native Explore on the baseline, builder VM",
+    )
+    bot = FakeBot("F0CNATIVE")
+    notifier = Notifier(log=log, bot=bot)
+
+    outcome = notifier.attach(
+        clip_upload_id(2, capture, clip),
+        clip,
+        capture,
+        REPAIR,
+        None,
+        symptom_of=baseline,
+        headline="Superset UI symptom replay — recorded after detection",
+    )
+
+    assert outcome["state"] == SENT and outcome["file_id"] == "F0CNATIVE"
+    comment = bot.uploads[0]["comment"]
+    assert comment.startswith("Superset UI symptom replay — recorded after detection")
+    assert baseline[:12] in comment
+
+
+def test_result_footage_cannot_be_recaptioned_into_something_else(
+    log: NotificationLog, clip: Path
+) -> None:
+    bot = FakeBot("F0123456789")
+    notifier = Notifier(log=log, bot=bot)
+
+    notifier.attach(
+        clip_upload_id(2, CAPTURE, clip),
+        clip,
+        CAPTURE,
+        REPAIR,
+        PASSED_ATTEMPT,
+        headline="After merge — verified",
+    )
+
+    assert bot.uploads[0]["comment"].startswith("Replay:")

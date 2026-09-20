@@ -783,6 +783,7 @@ class Notifier:
         *,
         simulated_record: bool = False,
         symptom_of: str = "",
+        headline: str = "",
     ) -> dict[str, str]:
         """Upload one existing local clip into its repair's thread.
 
@@ -854,11 +855,16 @@ class Notifier:
             else ""
         )
         if symptom_of:
-            headline = "Symptom replay — recorded after detection"
-        elif str(repair.get("state") or "") == MERGED:
-            headline = "After merge — verified"
+            headline = headline.strip() or "Symptom replay — recorded after detection"
         else:
-            headline = "Replay"
+            # Only symptom footage may be re-captioned: a caller-supplied
+            # headline on result footage is how a preview clip ends up
+            # reading as proof of a merge.
+            if str(repair.get("state") or "") == MERGED:
+                headline = "After merge — verified"
+            else:
+                headline = "Replay"
+        headline = escape(_short(headline.strip(), 80))
         comment = _labelled(
             f"{headline}: {escape(recording.case)} captured "
             f"{escape(recording.recorded_at)} against `{sha[:12]}` — "
@@ -2257,6 +2263,23 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="when the capture was taken, in UTC",
     )
+    parser.add_argument(
+        "--symptom-of",
+        default="",
+        help=(
+            "the full baseline commit this clip shows failing; makes the "
+            "upload symptom footage, checked against that baseline rather "
+            "than against an accepted head"
+        ),
+    )
+    parser.add_argument(
+        "--caption",
+        default="",
+        help=(
+            "headline for the upload comment; only symptom footage may be "
+            "re-captioned, and it stays a symptom either way"
+        ),
+    )
     args = parser.parse_args(argv)
     recording = (
         Recording(
@@ -2412,6 +2435,8 @@ def main(argv: list[str] | None = None) -> int:
                 repair,
                 attempts[-1] if attempts else None,
                 simulated_record=bool(repair.get("simulated")),
+                symptom_of=args.symptom_of,
+                headline=args.caption,
             )
             results.append({"repair": repair_id, **outcome})
             continue
