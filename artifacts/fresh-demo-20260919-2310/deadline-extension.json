@@ -1,0 +1,39 @@
+{
+  "repair_id": 1,
+  "change": "wall-clock deadline extended; nothing else",
+  "approval": "Woohyeok, 2026-09-20 ~01:17Z: extend ONLY existing fresh repair 1 deadline to 2026-09-20T02:17:00Z; keep 20 ACU cap, same session, issue 5 / PR 6, one coordinator.",
+  "original_deadline_utc": "2026-09-20T01:17:41.051266+00:00",
+  "new_deadline_utc": "2026-09-20T02:17:00+00:00",
+  "applied_at": "2026-09-20T01:17:41+00:00",
+  "acu_limit_unchanged": 20,
+  "before": {
+    "id": 1,
+    "state": "awaiting_merge",
+    "attempt": 1,
+    "follow_ups": 0,
+    "terminal_reason": null,
+    "acu_limit": 20,
+    "deadline_utc": "2026-09-20T01:17:41.051266+00:00",
+    "session_url": "https://app.devin.ai/sessions/e8b63e608d5a4397b114a296420695c7",
+    "issue_url": "https://github.com/woohyeokk-choi/superset/issues/5",
+    "agent_pr_url": "https://github.com/woohyeokk-choi/superset/pull/6",
+    "pr_head_sha": "7bb8de7b136f9afdc39d31b4c6809b3de467c461",
+    "media_state": "delivered",
+    "media_file_id": "F0C324CM3KQ"
+  },
+  "after": {
+    "id": 1,
+    "state": "awaiting_merge",
+    "attempt": 1,
+    "follow_ups": 0,
+    "terminal_reason": null,
+    "acu_limit": 20,
+    "deadline_utc": "2026-09-20T02:17:00+00:00",
+    "session_url": "https://app.devin.ai/sessions/e8b63e608d5a4397b114a296420695c7",
+    "issue_url": "https://github.com/woohyeokk-choi/superset/issues/5",
+    "agent_pr_url": "https://github.com/woohyeokk-choi/superset/pull/6",
+    "pr_head_sha": "7bb8de7b136f9afdc39d31b4c6809b3de467c461",
+    "media_state": "delivered",
+    "media_file_id": "F0C324CM3KQ"
+  }
+}
