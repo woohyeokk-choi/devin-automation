@@ -55,10 +55,13 @@ separately everywhere they appear.
 | Portal + operator viewer | `stack/docker-compose.portal.yml` | FastAPI, server-rendered Jinja, no frontend framework. `127.0.0.1:8090`. |
 | Event store | Host directory `$PORTAL_DATA_DIR`, bind-mounted at `/data` | SQLite at `/data/events.sqlite`; the identical safe JSON is also written to the container's stdout. The host coordinator opens the same files, so this is a bind mount and not a named volume. |
 
-The native Superset frontend is **not** built: at this revision the light stack
-serves no compiled assets, and the REST/MCP paths the scenarios exercise do not
-need it. The portal therefore renders real data and real chart settings itself
-through the same REST/MCP clients the scenarios use — nothing is mocked.
+The scenarios need no compiled frontend: they drive the REST and MCP paths,
+and the portal renders real data and real chart settings itself through the
+same clients — nothing is mocked. The native Superset UI is built separately,
+for viewing and for footage: the baseline stack on `127.0.0.1:8088` and the
+candidate preview on `127.0.0.1:8488` serve Explore with compiled assets, and
+the two native clips in the Slack thread were recorded there. Those stacks are
+temporary loopback environments on the builder machine, not deployments.
 
 ## Start it
 

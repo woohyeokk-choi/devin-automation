@@ -303,7 +303,13 @@ commit.
   sends is labelled *Superset demo automation*.
 - The two results above were announced to Slack by `portal.notify backfill`
   after the fact, marked *Historical result — repair ran earlier*; no Slack
-  message was part of either live run.
+  message was part of either of those two runs. That limitation is theirs
+  alone: in the later `fresh-demo-20260919-2310` run the coordinator posted
+  each transition while the run was in progress — investigating
+  2026-09-19T23:17:41Z (about 70 seconds after the failing check), pull
+  request 23:32:35Z, verified-awaiting-merge 23:39:45Z — and re-rendered
+  those three as Block Kit cards at 23:58Z. They are outbound status posts,
+  not paging or on-call alerting.
 - **Five messages reached the channel, not the three authorized.** Two
   simulated lifecycle lines (`ts 1789854423.113499`, `ts 1789854433.643299`,
   naming `simulated-repo` issue 1 / session `simulated-1`) were posted by the
