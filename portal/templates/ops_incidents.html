@@ -1,6 +1,56 @@
 {% extends "base.html" %}
 {% block body %}
 <div class="card">
+  <h2>This run</h2>
+  <p class="muted">
+    Run <code>{{ summary.run }}</code> — every number is a count of stored rows
+    in this state directory, not an estimate. A repair is one row, so retried
+    verification cannot make one repair read as two, and the {{ totals.events }}
+    evidence events below are events, never repairs.
+  </p>
+  <table>
+    <thead><tr><th>Measure</th><th>Count</th><th>What it counts</th></tr></thead>
+    <tbody>
+      <tr><td>Distinct incidents</td><td>{{ summary.incidents }}</td>
+        <td class="muted">One per failure family, however often it reproduced.</td></tr>
+      <tr><td>Repairs</td><td>{{ summary.repairs }}</td>
+        <td class="muted">Repair rows:
+          {% for state, count in summary.states %}<code>{{ state }}</code> {{ count }}{% if not loop.last %}, {% endif %}{% else %}none{% endfor %}.</td></tr>
+      <tr><td>Linked pull requests</td><td>{{ summary.linked_prs }}</td>
+        <td class="muted">Distinct pull request URLs read back from the sessions.</td></tr>
+      <tr><td>Independent preview passes</td><td>{{ summary.preview_passed }}</td>
+        <td class="muted">Repairs with a real (non-simulated) host-side pass at a
+          pull request head. Preview only: nothing merged or deployed.</td></tr>
+      <tr><td>Merge-verified</td><td>{{ summary.merge_verified }}</td>
+        <td class="muted">Repairs replayed and passed at an actual merge commit.</td></tr>
+      <tr><td>Awaiting a human</td><td>{{ summary.awaiting_merge }}</td>
+        <td class="muted">Preview passed; a person has to merge before anything further is claimed.</td></tr>
+      <tr><td>Attention / terminal</td><td>{{ summary.attention }}</td>
+        <td class="muted">Repairs parked for a human or stopped, plus
+          {{ summary.unsuccessful_verifications }} of {{ summary.verification_attempts }}
+          verification attempt(s) that did not pass,
+          {{ summary.processing_errors }} unclassified event(s) and
+          {{ summary.undelivered_notifications }} undelivered notification(s).</td></tr>
+      <tr><td>Budget</td><td>{{ summary.requested_acus }} ACU</td>
+        <td class="muted">Requested in the create request. Consumption reported by
+          the API: <strong>{{ summary.reported_acus }}</strong> — an unknown value is
+          not a free one, and the applied server-side cap cannot be read back.</td></tr>
+      <tr><td>Last recorded change</td>
+        <td>{{ summary.last_update_utc or '—' }}</td>
+        <td class="muted">
+          {% if summary.stale %}
+          <span class="pill bad">no fresh poll</span>
+          {% elif summary.last_update_utc %}
+          written {{ summary.quiet_for }} ago
+          {% endif %}
+          {{ summary.open_work }} repair(s) are in a state that still expects movement.
+        </td></tr>
+    </tbody>
+  </table>
+  {% for note in summary.notes %}<p class="muted">{{ note }}</p>{% endfor %}
+</div>
+
+<div class="card">
   <h2>Incidents</h2>
   <p class="muted">
     One incident per <strong>failure family</strong> — the same defect reproduced

@@ -614,6 +614,15 @@ class VerificationStore:
             ).fetchall()
         ]
 
+    def attempts(self) -> list[dict[str, Any]]:
+        """Every attempt in this state directory, oldest first."""
+        return [
+            dict(row)
+            for row in self._conn.execute(
+                "SELECT * FROM verifications ORDER BY id"
+            ).fetchall()
+        ]
+
     def get(self, verification_id: int) -> dict[str, Any] | None:
         row = self._conn.execute(
             "SELECT * FROM verifications WHERE id = ?", (verification_id,)

@@ -121,14 +121,19 @@
           {% endif %}
         </td></tr>
       <tr><th>Attempt</th><td>{{ repair.attempt }} · {{ repair.follow_ups }} follow-up(s) of 2</td></tr>
-      <tr><th>Budget</th><td>{{ repair.acu_limit }} ACU · deadline {{ repair.deadline_utc }}</td></tr>
+      <tr><th>Budget</th><td>{{ repair.acu_limit }} ACU requested · deadline {{ repair.deadline_utc }}
+          <span class="muted">— the limit carried by the create request; the cap the
+            provider applied cannot be read back</span></td></tr>
       <tr><th>Issue</th><td>{{ repair.issue_url or 'not connected' }}</td></tr>
       <tr><th>Session</th><td>{{ repair.session_url or 'not connected' }}</td></tr>
       <tr><th>Reported by the session</th>
         <td>
           {% if repair.agent_status %}
-          {{ repair.agent_status }} / {{ repair.agent_detail }} · {{ repair.agent_acus }} ACU
-          <span class="muted">— what the agent reports, never a verification result</span>
+          {{ repair.agent_status }} / {{ repair.agent_detail }} ·
+          {% if repair.agent_acus %}{{ repair.agent_acus }} ACU{% else %}consumption unknown{% endif %}
+          <span class="muted">— what the agent reports, never a verification result;
+            an unreported consumption is unknown, not free, and this row is as old as
+            the last poll, not a live reading</span>
           {% else %}not connected{% endif %}
         </td></tr>
       <tr><th>Pull request</th><td>{{ repair.agent_pr_url or 'not connected' }}{% if repair.pr_head_sha %} @ {{ repair.pr_head_sha }} <span class="muted">(head read from GitHub)</span>{% endif %}</td></tr>

@@ -28,6 +28,7 @@ from .worker import RepairWorker, build_controller
 from .incidents import IncidentStore
 from .notify import NotificationLog
 from .provenance import summary as provenance_summary
+from .summary import summarise
 from .security import (
     PROFILES,
     apply_session_cookies,
@@ -475,6 +476,14 @@ def ops_incidents(request: Request, _: str = Depends(ops_guard)) -> HTMLResponse
         "ops_incidents.html",
         request,
         incidents=listed,
+        summary=summarise(
+            run=settings.run_namespace,
+            incidents=listed,
+            repairs=repairs.list(),
+            attempts=verifications.attempts(),
+            processing_errors=incidents.processing_errors(),
+            notification_totals=notifications.totals(),
+        ),
         lifecycles={
             item["id"]: lifecycle(item, repairs.by_fingerprint(str(item["fingerprint"])))
             for item in listed
