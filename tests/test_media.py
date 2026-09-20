@@ -281,3 +281,22 @@ def test_the_post_merge_brief_asks_for_the_native_chart_and_measured_counts() ->
     assert "row badge" in flat
     assert "your own machine, not the verifier's" in flat
     assert f"post-merge-{'b' * 40}-" in text
+
+
+def test_the_post_merge_brief_names_the_chart_to_build_rather_than_any_chart() -> None:
+    """"The chart" could be the aggregate one, on a machine that lacks ours."""
+    from portal import brief
+
+    flat = " ".join(
+        brief.post_merge_message(
+            "b" * 40, "runtime-repair/demo", "https://example.invalid/pr/6", "a" * 40
+        ).split()
+    )
+    assert "Create the chart to record on your own machine" in flat
+    assert "`synthetic_orders` dataset" in flat
+    assert "`query_mode` set to `raw`" in flat
+    for column in ("`id`", "`region`", "`channel`", "`product`", "`revenue`"):
+        assert column in flat
+    assert "row limit of 10 and `revenue` ordered ascending" in flat
+    assert "order `revenue` descending" in flat
+    assert "do not use the aggregate chart" in flat

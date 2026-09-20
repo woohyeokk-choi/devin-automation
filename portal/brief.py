@@ -309,13 +309,21 @@ customer has to see the table they use:
 1. Build the frontend from this same merge commit's `superset-frontend` tree
    (`docker build --target superset-node` is the supported path) and serve
    those assets, so Explore actually renders.
-2. Open the chart in Superset's native Explore UI with the row limit control
-   visible, and show the starting state: the saved row limit and the number of
-   rows the table renders.
-3. Perform the same sort-only user action — change the ordering, send no row
-   limit at all.
-4. Reload the native chart and show three things on screen: the saved row
-   limit is unchanged, the rendered row count is unchanged, and the ordering
+2. Create the chart to record on your own machine; do not go looking for a
+   chart id from somewhere else, and do not use the aggregate chart the
+   incident was reported on — its rendered ordering is decided by a separate
+   mapping that this fix does not touch. Make a new table chart on the
+   `synthetic_orders` dataset with `query_mode` set to `raw`, the columns
+   `id`, `region`, `channel`, `product` and `revenue`, a row limit of 10 and
+   `revenue` ordered ascending. Leave the reported chart, the synthetic
+   fixture and the automation repository's checks alone.
+3. Open that chart in Superset's native Explore UI with the row limit control
+   visible, and show the starting state: the saved row limit of 10 and the
+   number of rows the table renders.
+4. Perform the same sort-only user action on it — order `revenue` descending
+   instead, and send no row limit at all.
+5. Reload the native chart and show three things on screen: the saved row
+   limit is still 10, the rendered row count is unchanged, and the ordering
    you asked for is the one displayed. Read the counts off Superset's own row
    badge rather than describing them.
 
