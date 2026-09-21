@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block body %}
+{% if note %}<div class="banner">{{ note }}</div>{% endif %}
+<div class="card">
+  <h2>{{ incident.title }}</h2>
+  <p class="muted"><code>{{ incident.fingerprint }}</code></p>
+  <table>
+    <tbody>
+      <tr><th>Scenario</th><td>{{ incident.scenario }} · family <code>{{ incident.family }}</code></td></tr>
+      <tr><th>Failed user actions</th><td>{{ incident.occurrence_count }}</td></tr>
+      <tr><th>Evidence events</th><td>{{ incident.event_count }}{% if incident.derived_event_count %} ({{ incident.derived_event_count }} from a preview/verification run){% endif %}</td></tr>
+      <tr><th>First / last seen</th><td class="muted">{{ incident.first_seen_at }} → {{ incident.last_seen_at }}</td></tr>
+      <tr><th>Actor profile</th><td>{{ incident.actor }}</td></tr>
+      <tr><th>Target repository</th><td><code>{{ incident.target_repo }}</code></td></tr>
+      <tr><th>Baseline SHA</th><td><code>{{ incident.baseline_sha }}</code> (provenance: {{ incident.revision_strength }})</td></tr>
+      <tr><th>Fixture revision</th><td><code>{{ incident.fixture_revision or 'unmeasured' }}</code></td></tr>
+      <tr><th>State</th><td><span class="pill {{ 'assertion_failed' if lifecycle.state == 'detected' else 'ok' }}">{{ lifecycle.state }}</span>{% if lifecycle.simulated %} <span class="muted">(SIMULATED run)</span>{% endif %}
+        <span class="muted">detected → candidate → verified_in_preview</span></td></tr>
+      <tr><th>Fork issue</th><td>{{ lifecycle.issue_url or 'not connected' }}</td></tr>
+      <tr><th>Repair session</th><td>{{ lifecycle.session_url or 'not connected' }}</td></tr>
+      <tr><th>Pull request</th><td>{{ lifecycle.pr_url or 'not connected' }}{% if lifecycle.pr_head_sha %} @ <code>{{ lifecycle.pr_head_sha }}</code>{% endif %}</td></tr>
+      <tr><th>Independent verification</th><td>{{ lifecycle.verification or 'not run' }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Contract violations</h2>
+  <table>
+    <thead><tr><th>Assertion</th><th>Expected</th><th>Observed</th><th>Operation</th><th>Trace/step</th></tr></thead>
+    <tbody>
+      {% for event in incident.events if event.assertion and not event.assertion.holds %}
+      <tr>
+        <td><code>{{ event.assertion.name }}</code></td>
+        <td>{{ event.assertion.expected }}</td>
+        <td>{{ event.assertion.observed }}</td>
+        <td>{{ event.operation }}</td>
+        <td><a href="/ops/traces/{{ event.trace_id }}">{{ event.trace_id }}</a>/{{ event.step_index }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Browser telemetry</h2>
+  <p class="muted">What a scheduled read-only scan of the saved chart captured from the product's own console. Severity is the browser's, unchanged.</p>
+  <table>
+    <thead><tr><th>Severity</th><th>Diagnostic</th><th>Seen in scan</th><th>Chart / route</th><th>Visible values</th><th>Requests</th><th>Trace/step</th></tr></thead>
+    <tbody>
+      {% for event in incident.events if event.outcome == 'telemetry' %}
+      {% set body = event.output or {} %}
+      <tr>
+        <td><span class="pill {{ 'assertion_failed' if body.severity == 'error' else 'ok' }}">{{ body.severity }}</span> <span class="muted">{{ body.classification }}</span></td>
+        <td><code>{{ body.diagnostic }}</code>{% if body.module %}<br><span class="muted">{{ body.module }}</span>{% endif %}</td>
+        <td>{{ body.occurrences_in_scan }}</td>
+        <td>{{ (body.page or {}).chart }}<br><span class="muted">{{ (body.page or {}).route }}</span></td>
+        <td><code>{{ (body.page or {}).visible_values }}</code></td>
+        <td class="muted">{% for req in body.requests or [] %}{{ req.method }} {{ req.path }} → {{ req.status }}<br>{% endfor %}</td>
+        <td><a href="/ops/traces/{{ event.trace_id }}">{{ event.trace_id }}</a>/{{ event.step_index }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="muted">No browser telemetry on this incident.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Traces</h2>
+  <table>
+    <thead><tr><th>Trace</th><th>Started (UTC)</th><th>Evidence events</th><th>Role</th></tr></thead>
+    <tbody>
+      {% for item in incident.traces %}
+      <tr>
+        <td><a href="/ops/traces/{{ item.trace_id }}">{{ item.trace_id }}</a></td>
+        <td class="muted">{{ item.started_at }}</td>
+        <td>{{ item.evidence }}</td>
+        <td>{{ item.role }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Handoff bundle</h2>
+  <p class="muted">
+    Built from stored evidence only, sanitized by the same allowlist as the log:
+    repository and fixture setup, the exact same-tab steps, every event and a
+    checksummed manifest.
+  </p>
+  <form method="post" action="/ops/incidents/{{ incident.id }}/export">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Write the handoff bundle</button>
+  </form>
+  <p>
+    {% for name in bundle_files %}
+    <a href="/ops/incidents/{{ incident.id }}/files/{{ name }}">{{ name }}</a>{% if not loop.last %} · {% endif %}
+    {% endfor %}
+  </p>
+</div>
+
+<div class="card">
+  <h2>Repair</h2>
+  {% if not repair %}
+  <p class="muted">No repair has been proposed for this incident.</p>
+  {% else %}
+  <table>
+    <tbody>
+      <tr><th>State</th><td>{{ repair.state }}{% if repair.simulated %} <span class="muted">(SIMULATED run)</span>{% endif %}</td></tr>
+      <tr><th>Dispatch</th>
+        <td>
+          {% if lifecycle.dispatched %}
+          sent
+          <span class="muted">— by the host coordinator, which holds the credentials.
+          This portal runs with AUTO_REPAIR_ENABLED={{ 'true' if auto_repair_enabled else 'false' }}.</span>
+          {% elif auto_repair_enabled %}enabled
+          {% else %}
+          <span class="muted">AUTO_REPAIR_ENABLED=false — nothing was sent; the exact bodies below are what would be.</span>
+          {% endif %}
+        </td></tr>
+      <tr><th>Attempt</th><td>{{ repair.attempt }} · {{ repair.follow_ups }} follow-up(s) of 2</td></tr>
+      <tr><th>Budget</th><td>{{ repair.acu_limit }} ACU requested · deadline {{ repair.deadline_utc }}
+          <span class="muted">— the limit carried by the create request; the cap the
+            provider applied cannot be read back</span></td></tr>
+      <tr><th>Issue</th><td>{{ repair.issue_url or 'not connected' }}</td></tr>
+      <tr><th>Session</th><td>{{ repair.session_url or 'not connected' }}</td></tr>
+      <tr><th>Reported by the session</th>
+        <td>
+          {% if repair.agent_status %}
+          {{ repair.agent_status }} / {{ repair.agent_detail }} ·
+          {% if repair.agent_acus %}{{ repair.agent_acus }} ACU{% else %}consumption unknown{% endif %}
+          <span class="muted">— what the agent reports, never a verification result;
+            an unreported consumption is unknown, not free, and this row is as old as
+            the last poll, not a live reading</span>
+          {% else %}not connected{% endif %}
+        </td></tr>
+      <tr><th>Pull request</th><td>{{ repair.agent_pr_url or 'not connected' }}{% if repair.pr_head_sha %} @ {{ repair.pr_head_sha }} <span class="muted">(head read from GitHub)</span>{% endif %}</td></tr>
+      <tr><th>Independent verification</th><td>{{ repair.verification or 'not verified' }}</td></tr>
+      {% if repair.attention %}<tr><th>Needs attention</th><td>{{ repair.attention }}</td></tr>{% endif %}
+      {% if repair.terminal_reason %}<tr><th>Terminal reason</th><td>{{ repair.terminal_reason }}</td></tr>{% endif %}
+    </tbody>
+  </table>
+
+  <h3>Proposed issue: {{ repair.issue_title }}</h3>
+  <pre>{{ repair.issue_body }}</pre>
+  <h3>Proposed Devin request body</h3>
+  <pre>{{ repair.session_request }}</pre>
+
+  {% if intents %}
+  <h3>Creation intents</h3>
+  <table>
+    <thead><tr><th>Kind</th><th>Marker</th><th>State</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for item in intents %}
+      <tr><td>{{ item.kind }}</td><td>{{ item.marker }}</td><td>{{ item.state }}</td><td>{{ item.detail or '—' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Independent verification</h2>
+  <p class="muted">
+    Replayed by the pinned automation validator against the candidate commit in
+    its own isolated stack. A pass here is <strong>verified in preview</strong>
+    only: nothing is merged, deployed or production-ready. Agent-reported
+    readiness above is not a verification result.
+    Real (non-simulated) passes recorded so far: {{ verified_total }}.
+  </p>
+  {% if not attempts %}
+  <p class="muted">No verification has been attempted for this incident.</p>
+  {% endif %}
+  {% for attempt in attempts %}
+  <div class="attempt">
+    <h3>
+      Attempt {{ loop.index }} — {{ attempt.verdict }}
+      {% if attempt.simulated %}<span class="muted">(SIMULATED — excluded from verified counts)</span>{% endif %}
+      {% if attempt.check_count %}<span class="muted">· {{ attempt.check_count }} checks</span>{% endif %}
+    </h3>
+    <table>
+      <tbody>
+        <tr><th>Ran (UTC)</th><td class="muted">{{ attempt.started_at }} → {{ attempt.finished_at }}</td></tr>
+        <tr><th>Candidate SHA</th><td><code>{{ attempt.candidate_sha or 'unknown' }}</code></td></tr>
+        <tr><th>Validator ref</th><td><code>{{ attempt.validator_ref }}</code></td></tr>
+        <tr><th>Cases</th><td>{{ attempt.cases }}</td></tr>
+        <tr><th>Fixture / config</th><td class="muted">{{ attempt.fixture_rev or '—' }} / {{ attempt.config_rev or '—' }}</td></tr>
+        {% if attempt.reason %}<tr><th>Reason</th><td>{{ attempt.reason }}</td></tr>{% endif %}
+        <tr><th>Full record</th>
+          <td><a href="/ops/verifications/{{ attempt.id }}/report">verification-{{ attempt.id }}.json</a>
+            <span class="muted">· written to {{ attempt.artifact_path or 'no file' }}</span></td></tr>
+      </tbody>
+    </table>
+    {% for case in attempt.case_results %}
+    <h4>{{ case.case }} — {{ case.verdict }}{% if case.blocked_reason %}: {{ case.blocked_reason }}{% endif %}</h4>
+    {% if case.checks %}
+    <table>
+      <thead><tr><th>Assertion</th><th>Kind</th><th>Expected</th><th>Observed</th><th>Holds</th></tr></thead>
+      <tbody>
+        {% for check in case.checks %}
+        <tr>
+          <td><code>{{ check.name }}</code></td>
+          <td class="muted">{{ check.kind }}</td>
+          <td>{{ check.expected }}</td>
+          <td>{{ check.observed }}{% if check.note %} <span class="muted">({{ check.note }})</span>{% endif %}</td>
+          <td><span class="pill {{ 'ok' if check.holds else 'assertion_failed' }}">{{ 'yes' if check.holds else 'NO' }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% endfor %}
+    {% if attempt.failures and attempt.failures != '[]' %}
+    <pre>{{ attempt.failures }}</pre>
+    {% endif %}
+    {% if attempt.commands and attempt.commands != '[]' %}
+    <pre>{{ attempt.commands }}</pre>
+    {% endif %}
+    {% if attempt.provenance and attempt.provenance != '{}' %}
+    <pre>{{ attempt.provenance }}</pre>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+{% if incident.processing_errors %}
+<div class="card">
+  <h2>Processing errors</h2>
+  <table>
+    <thead><tr><th>Time (UTC)</th><th>Event</th><th>Reason</th></tr></thead>
+    <tbody>
+      {% for item in incident.processing_errors %}
+      <tr><td class="muted">{{ item.ts_utc }}</td><td>{{ item.event_id or '—' }}</td><td>{{ item.reason }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

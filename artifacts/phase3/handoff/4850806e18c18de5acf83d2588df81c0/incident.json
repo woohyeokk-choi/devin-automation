@@ -1,0 +1,37 @@
+{
+  "id": 2,
+  "fingerprint": "4850806e18c18de5acf83d2588df81c0",
+  "family": "omitted_row_limit_is_reset",
+  "scenario": "S1",
+  "title": "An MCP chart update resets fields the caller omitted",
+  "actor": "analyst",
+  "target_repo": "woohyeokk-choi/superset",
+  "baseline_sha": "394bca55c792b7b3547e23f6e175a7cb0f0757e8",
+  "revision_strength": "running-code-hash+mount-match",
+  "fixture_revision": "sha256:67ff039835f9890c",
+  "state": "detected",
+  "occurrence_count": 2,
+  "first_seen_at": "2026-09-19T16:06:39.607+00:00",
+  "last_seen_at": "2026-09-19T16:12:43.434+00:00",
+  "issue_url": null,
+  "session_url": null,
+  "pr_url": null,
+  "verification": null,
+  "event_count": 2,
+  "derived_event_count": 0,
+  "traces": [
+    {
+      "trace_id": "trace_efa81ed0312e",
+      "started_at": "2026-09-19T16:06:39.607+00:00",
+      "evidence": 1,
+      "role": "failure"
+    },
+    {
+      "trace_id": "trace_3b1f31408a47",
+      "started_at": "2026-09-19T16:12:43.434+00:00",
+      "evidence": 1,
+      "role": "failure"
+    }
+  ],
+  "processing_errors": []
+}

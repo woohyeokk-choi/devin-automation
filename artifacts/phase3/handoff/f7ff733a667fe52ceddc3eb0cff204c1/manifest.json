@@ -1,0 +1,32 @@
+{
+  "generated_at": "2026-09-19T16:15:59.865+00:00",
+  "incident_fingerprint": "f7ff733a667fe52ceddc3eb0cff204c1",
+  "target_repo": "woohyeokk-choi/superset",
+  "baseline_sha": "394bca55c792b7b3547e23f6e175a7cb0f0757e8",
+  "provenance_strength": "running-code-hash+mount-match",
+  "fixture_revision": "sha256:67ff039835f9890c",
+  "versions": {
+    "portal_run_id": "local",
+    "environment_kind": "baseline-light",
+    "measured_at": "2026-09-19T15:37:55.286207+00:00",
+    "running_code_sha256": "sha256:dd5e2a4160bc7d76",
+    "container_image_id": "sha256:fe8a81c1d521"
+  },
+  "files": [
+    {
+      "name": "incident.json",
+      "bytes": 1832,
+      "sha256": "ec3491ed0c27e4c4c8873efdc0447b591bafb991e33b0e704b56b98e2d5f7bf1"
+    },
+    {
+      "name": "events.redacted.jsonl",
+      "bytes": 8035,
+      "sha256": "f60a986e9179a606875ba19d0049c95267b52bd8d619c6beec6f9ac980bde4bd"
+    },
+    {
+      "name": "reproduction.md",
+      "bytes": 3509,
+      "sha256": "f41eb8b3dde67d1a500ab390c15c6cb5b012d707aff1b38fc96a1f0a78b5bc03"
+    }
+  ]
+}

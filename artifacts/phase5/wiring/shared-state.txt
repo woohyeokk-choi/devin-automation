@@ -1,0 +1,18 @@
+portal wrote ['proposed']
+{
+  "state_dir": "/home/ubuntu/repos/devin-automation/runtime/state",
+  "container_user": "1000:1000",
+  "portal_repairs": [
+    "dispatched"
+  ],
+  "coordinator_actions": [
+    "dispatched"
+  ],
+  "trace_events": {
+    "shared-trace": 2
+  },
+  "prompt_has_request_summary": true,
+  "prompt_has_gap_notice": false,
+  "devin_sessions": 1
+}
+shared state check: PASS

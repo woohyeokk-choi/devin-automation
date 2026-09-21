@@ -1,0 +1,9 @@
+{
+  "built_from_sha": "394bca55c792b7b3547e23f6e175a7cb0f0757e8",
+  "source": "/home/ubuntu/b-assetbuild/superset/static/assets",
+  "files": 324,
+  "bundle_hash": "sha256:76ac3b3151d3ca4c",
+  "built_at": "2026-09-20T19:18:33.951299+00:00",
+  "image": "node:24-bookworm",
+  "note": "rehearsal of IsolatedStack._build_frontend on a worktree at the baseline commit"
+}

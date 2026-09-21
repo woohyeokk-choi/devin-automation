@@ -1,0 +1,70 @@
+{
+  "strength": "running-code-hash+mount-match",
+  "measured_at": "2026-09-19T17:09:27.352273+00:00",
+  "container": {
+    "name": "phase5check-superset-light-1",
+    "id": "ecd96ca48c5c",
+    "image_id": "sha256:41350365ffa9",
+    "image": "phase5check-superset-light",
+    "compose_project": "phase5check",
+    "compose_service": "superset-light",
+    "started_at": "2026-09-19T17:09:01.874500955Z",
+    "mounts": [
+      {
+        "type": "bind",
+        "source": "/home/ubuntu/phase5-bootstrap/superset/docker",
+        "destination": "/app/docker",
+        "rw": true
+      },
+      {
+        "type": "bind",
+        "source": "/home/ubuntu/phase5-bootstrap/superset/superset",
+        "destination": "/app/superset",
+        "rw": true
+      },
+      {
+        "type": "bind",
+        "source": "/home/ubuntu/phase5-bootstrap/superset/superset-frontend",
+        "destination": "/app/superset-frontend",
+        "rw": true
+      },
+      {
+        "type": "volume",
+        "source": "/var/lib/docker/volumes/phase5check_superset_home_light/_data",
+        "destination": "/app/superset_home",
+        "rw": true
+      },
+      {
+        "type": "bind",
+        "source": "/home/ubuntu/phase5-bootstrap/superset/tests",
+        "destination": "/app/tests",
+        "rw": true
+      }
+    ]
+  },
+  "source": {
+    "code_dir_in_container": "/app/superset",
+    "running_code_sha256": "sha256:dd5e2a4160bc7d76",
+    "mount_source": "/home/ubuntu/phase5-bootstrap/superset/superset",
+    "mounted": true,
+    "host_tree_sha256": "sha256:dd5e2a4160bc7d76",
+    "checkout_matches_running_code": true,
+    "checkout_sha": "394bca55c792b7b3547e23f6e175a7cb0f0757e8",
+    "checkout_describe": "baseline-394bca5",
+    "checkout_dirty": false
+  },
+  "fixtures": {
+    "table": "public.synthetic_orders",
+    "rows": 600,
+    "revision": "sha256:67ff039835f9890c"
+  },
+  "automation": {
+    "repo": "woohyeokk-choi/devin-automation",
+    "path": "/home/ubuntu/phase5-bootstrap/devin-automation",
+    "checkout_sha": "c7ba960acd5d6646a623bad5f0e516a7b5040536",
+    "checkout_branch": "HEAD",
+    "checkout_dirty": false,
+    "tree_sha256": "sha256:e11ab7fd1ae64589"
+  },
+  "claim": "Measured: container identity and a hash of the Python tree inside it. checkout_matches_running_code compares that hash with the host path the mount points at; it is false or null when the code is baked into the image or the path is not readable from here."
+}

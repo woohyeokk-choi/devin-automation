@@ -1,0 +1,95 @@
+# Overlay for the Superset light stack used by the runtime-repair scenarios.
+#
+# Two additions, both kept out of the Superset fork so the checkout stays
+# byte-identical to the revision under test:
+#   1. publish the Flask port of `superset-light` (docker-compose-light.yml
+#      publishes only the frontend dev server);
+#   2. run the MCP service as an explicit sidecar — the baseline revision has no
+#      MCP service in any compose file, and scenario S1 drives it.
+#
+# The MCP service authenticates as an admin development user, so it is bound to
+# the loopback interface only and is never published to a shared preview.
+#
+# Paths come from the environment (see stack/.env.example) because Compose
+# resolves relative paths against the project directory (the Superset
+# checkout), not against this file.
+#
+# Usage (from the Superset checkout):
+#   set -a; . <automation>/stack/.env.example; set +a
+#   docker compose -f docker-compose-light.yml \
+#     -f "$AUTOMATION_DIR/stack/docker-compose.ports.yml" \
+#     up -d superset-light superset-mcp-light
+services:
+  superset-light:
+    ports:
+      - "${SUPERSET_PORT_BIND:-127.0.0.1}:${SUPERSET_PORT_HOST:-8088}:8088"
+
+  superset-mcp-light:
+    # the same image as `superset-light`, which Compose names after the project,
+    # so an isolated namespace has to say so. The build stanza repeats
+    # `x-common-build` from docker-compose-light.yml (YAML anchors do not cross
+    # files) so a fresh host can start this service without pulling.
+    build:
+      context: .
+      target: ${SUPERSET_BUILD_TARGET:-dev}
+      cache_from:
+        - apache/superset-cache:3.11-slim-trixie
+      args:
+        DEV_MODE: "true"
+        INCLUDE_CHROMIUM: ${INCLUDE_CHROMIUM:-false}
+        INCLUDE_FIREFOX: ${INCLUDE_FIREFOX:-false}
+        BUILD_TRANSLATIONS: ${BUILD_TRANSLATIONS:-false}
+    image: ${SUPERSET_LIGHT_IMAGE:-superset-superset-light}
+    command: ["superset", "mcp", "run", "--host", "0.0.0.0", "--port", "5008"]
+    restart: unless-stopped
+    user: root
+    env_file:
+      - path: ${SUPERSET_DIR:?set SUPERSET_DIR}/docker/.env
+        required: true
+      - path: ${SUPERSET_DIR:?set SUPERSET_DIR}/docker/.env-local
+        required: false
+    depends_on:
+      superset-light:
+        condition: service_started
+    ports:
+      # loopback only: this development endpoint runs as an admin user
+      - "127.0.0.1:${SUPERSET_MCP_PORT_HOST:-5008}:5008"
+    healthcheck:
+      # The image's own HEALTHCHECK runs docker/docker-healthcheck.sh, which
+      # curls the *web* application's /health on SUPERSET_PORT. This sidecar
+      # serves MCP on 5008 and has no such route, so the container reported
+      # `unhealthy` while answering every request correctly. Probe the thing
+      # that actually runs here: a side-effect-free JSON-RPC `initialize`
+      # against the MCP listener, which is only answered once the tool
+      # registry is up.
+      test:
+        - CMD-SHELL
+        - >-
+          curl -sf -X POST http://localhost:5008/mcp
+          -H 'Content-Type: application/json'
+          -H 'Accept: application/json, text/event-stream'
+          -H 'MCP-Protocol-Version: 2025-06-18'
+          -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"healthcheck","version":"1"}}}'
+          | grep -q '"serverInfo"'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    volumes:
+      - ${SUPERSET_DIR:?set SUPERSET_DIR}/docker:/app/docker
+      - ${SUPERSET_DIR:?set SUPERSET_DIR}/superset:/app/superset
+      # Only the one non-secret config file, not the whole stack directory:
+      # that directory also holds stack/.env on a developer host, and this
+      # service runs candidate code in verification runs.
+      - ${AUTOMATION_DIR:?set AUTOMATION_DIR}/stack/superset_config_mcp.py:/app/automation_stack/superset_config_mcp.py:ro
+      - superset_home_light:/app/superset_home
+    environment:
+      DATABASE_HOST: db-light
+      DATABASE_DB: superset_light
+      POSTGRES_DB: superset_light
+      SUPERSET_CONFIG_PATH: /app/automation_stack/superset_config_mcp.py
+      PYTHONPATH: /app/pythonpath:/app/docker/pythonpath_dev:/app/automation_stack
+
+volumes:
+  superset_home_light:
+    external: false

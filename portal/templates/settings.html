@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block body %}
+<p class="muted">{% if note %}Last action: {{ note }} · {% endif %}
+  <a href="/ops/traces/{{ trace_id }}">trace {{ trace_id }}</a></p>
+
+{% if denied_reason %}
+<div class="card"><h2>Not available for your role</h2><p>{{ denied_reason }}</p>
+<p class="muted">Recorded as <span class="pill expected_denial">expected_denial</span>.</p></div>
+{% endif %}
+
+{% if blocked_reason %}
+<div class="card"><h2 class="bad">Chart unavailable</h2><p>{{ blocked_reason }}</p>
+<p class="muted">Recorded as <span class="pill blocked">blocked</span>.</p></div>
+{% endif %}
+
+{% if chart %}
+<div class="card">
+  <h2>{{ chart.name }}</h2>
+  <p class="muted">Settings read back from Superset after every change — this is the saved
+  chart, not a local copy.</p>
+  <table>
+    <tr><th>Chart id</th><td>{{ chart.id }}{% if chart_url %} · <a href="{{ chart_url }}" target="_blank" rel="noopener">open this chart in Superset</a>{% endif %}</td></tr>
+    <tr><th>Rows shown (row limit)</th><td><strong>{{ chart.row_limit }}</strong></td></tr>
+    <tr><th>Colour scheme</th><td>{{ chart.color_scheme }}</td></tr>
+    <tr><th>Sorted by</th><td>{{ chart.sort_by }} ({{ 'descending' if chart.order_desc else 'ascending' }})</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Change how this chart is sorted</h2>
+  <form method="post" action="/settings/sort">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="descending">Order</label>
+    <select name="descending" id="descending">
+      <option value="true" {% if chart.order_desc %}selected{% endif %}>highest revenue first</option>
+      <option value="false" {% if chart.order_desc is not none and not chart.order_desc %}selected{% endif %}>lowest revenue first</option>
+    </select>
+    <label for="explicit_row_limit">Row limit (optional)</label>
+    <input type="text" name="explicit_row_limit" id="explicit_row_limit" placeholder="leave blank to keep">
+    <button type="submit">Apply</button>
+  </form>
+  <p class="muted">Leaving the row limit blank means “don't touch it”: the request below is
+  what this portal sends to Superset's MCP <code>update_chart</code> tool, and it carries no
+  <code>row_limit</code> field at all. Nothing here rewrites one in.</p>
+  <pre>{{ sort_request }}</pre>
+  <p class="muted">After applying, read the saved settings above and reload the chart in
+  Superset: those are the product's own values, not this page's opinion.</p>
+</div>
+
+<div class="card">
+  <h2>Prepare this chart for another run</h2>
+  <form method="post" action="/ops/fixtures/reset">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="back_to" value="/settings">
+    <button type="submit">Reset to {{ chart_row_limit }} rows, highest revenue first</button>
+  </form>
+  <p class="muted">Operator only, and only this deployment's own chart
+  <code>{{ chart.name }}</code> — the same explicit update a customer could make by hand,
+  recorded in the log like any other action.</p>
+</div>
+{% endif %}
+{% endblock %}

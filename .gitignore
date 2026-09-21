@@ -14,3 +14,8 @@ venv/
 node_modules/
 logs/
 *.log
+
+# measured at runtime; the directory is mounted into the portal container
+runtime/*
+!runtime/.gitkeep
+stack/.env

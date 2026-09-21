@@ -1,0 +1,83 @@
+{
+  "stack": {
+    "compose_files": [
+      "/home/ubuntu/repos/superset/docker-compose-light.yml",
+      "/home/ubuntu/repos/devin-automation/stack/docker-compose.ports.yml"
+    ],
+    "services": [
+      "db-light",
+      "superset-light",
+      "superset-mcp-light"
+    ],
+    "build_target": "dev (SUPERSET_BUILD_TARGET default)",
+    "image": "superset-superset-light:latest",
+    "frontend_build_started": false,
+    "redis": "not used by the light stack",
+    "superset_url": "http://localhost:8088",
+    "mcp_url": "http://localhost:5008/mcp"
+  },
+  "runtime": {
+    "container_python": "Python 3.11.14",
+    "mcp_container_python": "Python 3.11.14",
+    "fastmcp": "3.4.7",
+    "superset_config_path": "/app/docker/pythonpath_dev/superset_config_docker_light.py",
+    "cache_config": {
+      "CACHE_TYPE": "SimpleCache",
+      "CACHE_DEFAULT_TIMEOUT": 300,
+      "CACHE_KEY_PREFIX": "superset_light_"
+    },
+    "data_cache_config": {
+      "CACHE_TYPE": "SimpleCache",
+      "CACHE_DEFAULT_TIMEOUT": 300,
+      "CACHE_KEY_PREFIX": "superset_light_"
+    },
+    "explore_form_data_cache_config": {
+      "CACHE_TYPE": "superset.extensions.metastore_cache.SupersetMetastoreCache",
+      "CACHE_DEFAULT_TIMEOUT": 604800,
+      "REFRESH_TIMEOUT_ON_RETRIEVAL": true,
+      "CODEC": "JsonKeyValueCodec",
+      "CACHE_KEY_PREFIX": "EXPLORE_FORM_DATA_CACHE_CONFIG"
+    },
+    "filter_state_cache_config": {
+      "CACHE_TYPE": "superset.extensions.metastore_cache.SupersetMetastoreCache",
+      "CACHE_DEFAULT_TIMEOUT": 7776000,
+      "REFRESH_TIMEOUT_ON_RETRIEVAL": true,
+      "CODEC": "JsonKeyValueCodec",
+      "CACHE_KEY_PREFIX": "FILTER_STATE_CACHE_CONFIG"
+    },
+    "results_backend": "FileSystemCache"
+  },
+  "fixtures": {
+    "database_connection": "Synthetic Analytics",
+    "table": "public.synthetic_orders",
+    "rows": 600,
+    "dataset_columns": [
+      "id",
+      "order_ts",
+      "region",
+      "channel",
+      "product",
+      "units",
+      "revenue"
+    ],
+    "seed_command": "python3 scripts/seed_synthetic.py --reset",
+    "restricted_user": "restricted_analyst (role Gamma, created by the N1 scenario)"
+  },
+  "commands": {
+    "start_stack": "cd /home/ubuntu/repos/superset && docker compose -f docker-compose-light.yml -f /home/ubuntu/repos/devin-automation/stack/docker-compose.ports.yml up -d superset-light superset-mcp-light",
+    "seed": "cd /home/ubuntu/repos/devin-automation && python3 scripts/seed_synthetic.py --reset",
+    "s2": "python3 scenarios/s2_form_data_key_reuse.py",
+    "s1": "python3 scenarios/s1_mcp_update_resets_fields.py",
+    "n1": "python3 scenarios/n1_permission_denied_control.py",
+    "manifest": "python3 scripts/capture_manifest.py"
+  },
+  "revision": {
+    "superset_checkout": "/home/ubuntu/repos/superset",
+    "superset_sha": "394bca55c792b7b3547e23f6e175a7cb0f0757e8",
+    "superset_describe": "baseline-394bca5",
+    "superset_dirty": "no",
+    "automation_sha": "48487ef758340006b8ee843951d6c608aab2f6a1"
+  },
+  "verification_note": "docker-compose-light.yml bind-mounts ./superset and ./docker into the container, so an image rebuilt while the baseline source is mounted still executes baseline code. PR verification must run against an isolated checkout of the exact PR SHA (separate clone + separate compose project) or with those mounts removed; the revision block above records which source was actually executed.",
+  "auto_repair_enabled": false
+}

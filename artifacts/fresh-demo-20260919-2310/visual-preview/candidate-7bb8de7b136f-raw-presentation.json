@@ -1,0 +1,159 @@
+{
+  "label": "PREVIEW - unmerged candidate, supplemental visual check",
+  "candidate_sha": "7bb8de7b136f9afdc39d31b4c6809b3de467c461",
+  "project": "candidate7bb8de7b136f",
+  "base_url": "http://127.0.0.1:8488",
+  "checkout": "/home/ubuntu/live-pilot/raw-preview/candidate7bb8de7b136f",
+  "running_source": "7bb8de7b136f9afdc39d31b4c6809b3de467c461",
+  "chart_id": 105,
+  "dataset_id": 22,
+  "chart_name": "Order revenue - 10-row view (presentation)",
+  "query_mode": "raw",
+  "columns": [
+    "id",
+    "region",
+    "channel",
+    "product",
+    "revenue"
+  ],
+  "sort_only_request": {
+    "identifier": 105,
+    "generate_preview": false,
+    "config": {
+      "chart_type": "table",
+      "query_mode": "raw",
+      "columns": [
+        {
+          "name": "id"
+        },
+        {
+          "name": "region"
+        },
+        {
+          "name": "channel"
+        },
+        {
+          "name": "product"
+        },
+        {
+          "name": "revenue"
+        }
+      ],
+      "sort_by": [
+        {
+          "column": "revenue",
+          "ascending": false
+        }
+      ]
+    }
+  },
+  "before": {
+    "saved": {
+      "row_limit": 10,
+      "query_mode": "raw",
+      "order_by_cols": [
+        "[\"revenue\", true]"
+      ]
+    },
+    "rows": 10,
+    "first_revenues": [
+      10.0,
+      11.0,
+      12.0,
+      13.0,
+      14.0
+    ],
+    "ascending": true,
+    "descending": false
+  },
+  "after": {
+    "saved": {
+      "row_limit": 10,
+      "query_mode": "raw",
+      "order_by_cols": [
+        "[\"revenue\", false]"
+      ]
+    },
+    "rows": 10,
+    "first_revenues": [
+      509.0,
+      509.0,
+      508.0,
+      508.0,
+      507.0
+    ],
+    "ascending": false,
+    "descending": true
+  },
+  "row_limit_held": true,
+  "rows_held": true,
+  "requested_order_applied": true,
+  "provenance": {
+    "measured_at": "2026-09-20T01:06:34.043+00:00",
+    "automation_ref": "9652581",
+    "compose_project": "candidate7bb8de7b136f",
+    "checkout": {
+      "path": "/home/ubuntu/live-pilot/raw-preview/candidate7bb8de7b136f",
+      "source_sha": "7bb8de7b136f9afdc39d31b4c6809b3de467c461",
+      "clean": true,
+      "code_hash": "ed570f35834fd4c2f1c7c2b8140f829a"
+    },
+    "config_revision": "491043576833080a",
+    "fixture": {
+      "kind": "content",
+      "rows": 60,
+      "grouping": [
+        "region",
+        "channel",
+        "product"
+      ],
+      "digest": "47bea47eb499e2b929604bd1a5863a58",
+      "description": "sha256 of the region/channel/product revenue aggregate the chart-data API returns for the fixture; `rows` counts that projection, not the seeded records"
+    },
+    "web": {
+      "service": "superset-light",
+      "container_id": "271f73d4560d",
+      "image_id": "sha256:89ba778eeb35d029a537f41be4f05d4148bc4d0a6407a963e311a879f1e1123d",
+      "state": "running",
+      "health": "healthy",
+      "source_mount": "/home/ubuntu/live-pilot/raw-preview/candidate7bb8de7b136f/superset",
+      "config_path": "/app/docker/pythonpath_dev/superset_config_docker_light.py",
+      "code_hash": "ed570f35834fd4c2f1c7c2b8140f829a",
+      "source_sha": "7bb8de7b136f9afdc39d31b4c6809b3de467c461",
+      "clean": true
+    },
+    "mcp": {
+      "service": "superset-mcp-light",
+      "container_id": "764b646d4c32",
+      "image_id": "sha256:89ba778eeb35d029a537f41be4f05d4148bc4d0a6407a963e311a879f1e1123d",
+      "state": "running",
+      "health": "healthy",
+      "source_mount": "/home/ubuntu/live-pilot/raw-preview/candidate7bb8de7b136f/superset",
+      "config_path": "/app/automation_stack/superset_config_mcp.py",
+      "code_hash": "ed570f35834fd4c2f1c7c2b8140f829a",
+      "source_sha": "7bb8de7b136f9afdc39d31b4c6809b3de467c461",
+      "clean": true
+    }
+  },
+  "frontend_assets": {
+    "served_from": "/home/ubuntu/live-pilot/assets-394bca55 (docker build --target superset-node at 394bca55)",
+    "candidate_frontend_tree": "ece7678a1c2b5a6d1f8c76039c3f83a9c9a312b4",
+    "baseline_frontend_tree": "ece7678a1c2b5a6d1f8c76039c3f83a9c9a312b4",
+    "identical": true,
+    "note": "PR #6 touches only superset/mcp_service; the frontend tree object is byte-identical, so the compiled baseline bundle is the candidate's bundle."
+  },
+  "native_ui": {
+    "url_path": "/explore/?slice_id=105",
+    "screenshot": "candidate-7bb8de7b136f-05-after-sort-only.png",
+    "row_limit_control": 10,
+    "row_badge": "10 rows",
+    "ordering_control": "revenue [desc]",
+    "first_revenues_on_screen": [
+      509,
+      509,
+      508,
+      508,
+      507
+    ]
+  }
+}

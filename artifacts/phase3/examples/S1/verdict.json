@@ -1,0 +1,19 @@
+{
+  "scenario": "S1",
+  "traces": {
+    "explicit_row_limit_control": "trace_0a0bf5061d7d",
+    "sort_only_change": "trace_efa81ed0312e",
+    "read_back": "trace_5d16cae7a820"
+  },
+  "events": 25,
+  "baseline_defect_reproduced": [
+    "row_limit_survives_an_unrelated_change"
+  ],
+  "expected_denials": 0,
+  "harness_failures": [],
+  "blocked_steps": [],
+  "missing_evidence": [],
+  "fixture_reset_verified": true,
+  "not_applicable": [],
+  "harness_healthy": true
+}

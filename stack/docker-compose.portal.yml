@@ -1,0 +1,100 @@
+# The synthetic-analytics portal and its operator log viewer.
+#
+# It joins the Superset light stack's network so it reaches Superset and the
+# MCP sidecar by service name — the admin MCP endpoint never has to be
+# published for the portal to work.
+#
+# State lives on a host bind mount, not a named volume, because the trusted
+# host coordinator (`python3 -m portal.coordinator run`) opens the very same
+# SQLite files: that shared directory is how a proposal the portal writes
+# reaches the process that owns git, Docker and the credentials. What must
+# not happen is two directories, which silently gives two queues.
+#
+# Both processes WRITE those files, so they run as the same user — SQLite
+# files created by one at the default 0644 are otherwise read-only to the
+# other, and the first write from the coordinator fails. Point the container
+# at the coordinator's account:
+#
+#   export PORTAL_DATA_DIR=$PWD/runtime/state
+#   export PORTAL_UID=$(id -u) PORTAL_GID=$(id -g)
+#   mkdir -p "$PORTAL_DATA_DIR" && chmod 0700 "$PORTAL_DATA_DIR"
+#
+# and start the coordinator with that same PORTAL_DATA_DIR as its host path,
+# while the container keeps seeing /data. Leaving PORTAL_UID unset keeps the
+# image's own uid 10001, which then also has to own the directory and run
+# the coordinator.
+#
+# Only the portal is mounted here. The coordinator's credentials
+# (GITHUB_TOKEN, DEVIN_API_KEY) stay in the coordinator's environment, the
+# Docker socket is mounted nowhere, and this container stays
+# AUTO_REPAIR_ENABLED=false.
+#
+# The portal's upstream URLs come from the *_CONTAINER_* variables: the plain
+# SUPERSET_BASE_URL/SUPERSET_MCP_URL are the host's loopback view, used by the
+# seed and scenario scripts, and are not reachable from inside this container.
+#
+# Usage (from the automation checkout):
+#   cp stack/.env.example stack/.env && $EDITOR stack/.env
+#   set -a; . stack/.env; set +a
+#   docker compose -f stack/docker-compose.portal.yml up -d --build
+services:
+  portal:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: runtime-repair-portal
+    restart: unless-stopped
+    user: "${PORTAL_UID:-10001}:${PORTAL_GID:-10001}"
+    ports:
+      - "${PORTAL_PORT_BIND:-127.0.0.1}:${PORTAL_PORT_HOST:-8090}:8090"
+    environment:
+      SUPERSET_BASE_URL: ${SUPERSET_CONTAINER_BASE_URL:-http://superset-light:8088}
+      SUPERSET_MCP_URL: ${SUPERSET_CONTAINER_MCP_URL:-http://superset-mcp-light:5008/mcp}
+      SUPERSET_USERNAME: ${SUPERSET_USERNAME:-admin}
+      SUPERSET_PASSWORD: ${SUPERSET_PASSWORD:-admin}
+      SUPERSET_RESTRICTED_USERNAME: ${SUPERSET_RESTRICTED_USERNAME:-restricted_analyst}
+      SUPERSET_RESTRICTED_PASSWORD: ${SUPERSET_RESTRICTED_PASSWORD:-restricted-analyst-local}
+      PORTAL_ENVIRONMENT_KIND: ${PORTAL_ENVIRONMENT_KIND:-baseline-light}
+      PORTAL_RUN_ID: ${PORTAL_RUN_ID:-local}
+      # A deliberate re-run of an already repaired incident names itself here.
+      # Both processes must agree: the state records the first namespace it
+      # is opened with, and the coordinator refuses a state that says another.
+      PORTAL_RUN_NAMESPACE: ${PORTAL_RUN_NAMESPACE:-}
+      PORTAL_OPS_USERNAME: ${PORTAL_OPS_USERNAME:-operator}
+      PORTAL_OPS_PASSWORD: ${PORTAL_OPS_PASSWORD:-operator-local}
+      PORTAL_DEMO_USERNAME: ${PORTAL_DEMO_USERNAME:-demo}
+      PORTAL_DEMO_PASSWORD: ${PORTAL_DEMO_PASSWORD:-demo-local}
+      PORTAL_COOKIE_SECRET: ${PORTAL_COOKIE_SECRET:-portal-local-dev-secret}
+      PORTAL_TARGET_REPO: ${PORTAL_TARGET_REPO:-woohyeokk-choi/superset}
+      # When set, an event whose measured baseline differs is not dispatchable.
+      PORTAL_BASELINE_SHA: ${PORTAL_BASELINE_SHA:-}
+      # Only a preview/verification deployment sets this, and only here:
+      # parent scope is never accepted from a browser field.
+      PORTAL_PARENT_INCIDENT: ${PORTAL_PARENT_INCIDENT:-}
+      PORTAL_DATA_DIR: /data
+      # A retained demo of another commit measures itself and passes
+      # /data/provenance.json here: reporting the live deployment's
+      # measurement on a different stack's pages would be a true file
+      # about the wrong containers.
+      PORTAL_PROVENANCE_PATH: ${PORTAL_PROVENANCE_PATH:-/provenance/provenance.json}
+      # Fixed, not passed through: dispatch belongs to the coordinator, which
+      # is the only process holding credentials, git and Docker. Sourcing a
+      # shared .env must not turn this container into a second dispatcher.
+      AUTO_REPAIR_ENABLED: "false"
+    volumes:
+      - ${PORTAL_DATA_DIR:?set PORTAL_DATA_DIR to the host state directory the coordinator also opens}:/data
+      # measured by scripts/capture_provenance.py on the host, for the
+      # containers this portal actually talks to
+      - ${PORTAL_PROVENANCE_DIR:-${AUTOMATION_DIR:?set AUTOMATION_DIR}/runtime}:/provenance:ro
+    networks:
+      - superset
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  superset:
+    name: ${SUPERSET_NETWORK:-superset_default}
+    external: true

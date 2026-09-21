@@ -1,0 +1,35 @@
+# recorded 2026-09-19T21:25:14Z on the host, from a clean clone
+
+$ git clone --branch devin/1789830208-phase1-baseline-reproductions https://github.com/woohyeokk-choi/devin-automation.git clean
+$ git -C clean rev-parse HEAD
+79c9c94ab6b0df213b57612928cf32ffc930f20f
+$ git -C clean status --porcelain | wc -l
+0
+
+$ docker build -q -t phase7-sim-portal .
+sha256:64da1872be7d6d2fab0f561f19aa0a2bd9e6fa9ed1c6de159a527dce8b7835ad
+
+$ PORTAL_IMAGE=phase7-sim-portal PORTAL_DATA_DIR=/home/ubuntu/phase7/simstate2 PORTAL_UID=$(id -u) PORTAL_GID=$(id -g) python3 scripts/check_shared_state.py
+portal wrote ['proposed']
+{
+  "state_dir": "/home/ubuntu/phase7/simstate2",
+  "container_user": "1000:1000",
+  "portal_repairs": [
+    "dispatched"
+  ],
+  "coordinator_actions": [
+    "dispatched"
+  ],
+  "trace_events": {
+    "shared-trace": 2
+  },
+  "prompt_has_request_summary": true,
+  "prompt_has_gap_notice": false,
+  "devin_sessions": 1
+}
+shared state check: PASS
+(exit 0)
+
+$ PORTAL_DATA_DIR=<the live state directory> python3 scripts/check_shared_state.py
+refusing to run against existing state ['events.sqlite', 'incidents.sqlite', 'repairs.sqlite', 'verifications.sqlite'] in /home/ubuntu/repos/devin-automation/runtime/live-state
+(exit 2)

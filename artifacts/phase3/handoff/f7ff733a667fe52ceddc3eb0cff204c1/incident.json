@@ -1,0 +1,67 @@
+{
+  "id": 1,
+  "fingerprint": "f7ff733a667fe52ceddc3eb0cff204c1",
+  "family": "discarded_form_data_key_is_reused",
+  "scenario": "S2",
+  "title": "A discarded exploration link comes back pointing at new state",
+  "actor": "analyst",
+  "target_repo": "woohyeokk-choi/superset",
+  "baseline_sha": "394bca55c792b7b3547e23f6e175a7cb0f0757e8",
+  "revision_strength": "running-code-hash+mount-match",
+  "fixture_revision": "sha256:67ff039835f9890c",
+  "state": "detected",
+  "occurrence_count": 7,
+  "first_seen_at": "2026-09-19T16:06:38.264+00:00",
+  "last_seen_at": "2026-09-19T16:11:13.407+00:00",
+  "issue_url": null,
+  "session_url": null,
+  "pr_url": null,
+  "verification": null,
+  "event_count": 7,
+  "derived_event_count": 0,
+  "traces": [
+    {
+      "trace_id": "trace_89665110e283",
+      "started_at": "2026-09-19T16:06:38.264+00:00",
+      "evidence": 1,
+      "role": "failure"
+    },
+    {
+      "trace_id": "trace_fc65cf751801",
+      "started_at": "2026-09-19T16:06:38.561+00:00",
+      "evidence": 1,
+      "role": "failure"
+    },
+    {
+      "trace_id": "trace_4ade127bc544",
+      "started_at": "2026-09-19T16:09:05.491+00:00",
+      "evidence": 1,
+      "role": "failure"
+    },
+    {
+      "trace_id": "trace_9edbbca3b552",
+      "started_at": "2026-09-19T16:10:22.065+00:00",
+      "evidence": 1,
+      "role": "failure"
+    },
+    {
+      "trace_id": "trace_5096a91702f1",
+      "started_at": "2026-09-19T16:10:28.114+00:00",
+      "evidence": 1,
+      "role": "failure"
+    },
+    {
+      "trace_id": "trace_f73a24e4a94b",
+      "started_at": "2026-09-19T16:11:08.340+00:00",
+      "evidence": 1,
+      "role": "failure"
+    },
+    {
+      "trace_id": "trace_45df9fecf460",
+      "started_at": "2026-09-19T16:11:13.407+00:00",
+      "evidence": 1,
+      "role": "failure"
+    }
+  ],
+  "processing_errors": []
+}

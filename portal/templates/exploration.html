@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block body %}
+<p class="muted"><a href="/">← Dashboard</a> · <a href="/ops/traces/{{ trace_id }}">trace {{ trace_id }}</a></p>
+
+<div class="card">
+  <h2>Saved exploration <code>{{ key }}</code></h2>
+  {% if blocked_reason %}
+    <p class="bad">{{ blocked_reason }}</p>
+  {% elif outcome.status == 404 %}
+    <p>This exploration no longer exists. <span class="pill ok">expected after discarding</span></p>
+  {% else %}
+    {% set local = outcome.local %}
+    {% if local and local.discarded_at %}
+      <p class="bad"><strong>This link was discarded, but it still opens.</strong>
+      It now shows a different exploration than the one that was saved under it.</p>
+      <table>
+        <tr><th>What was saved here</th><td>{{ local.spec }}</td></tr>
+        <tr><th>What it shows now</th><td>{{ outcome.spec }}</td></tr>
+      </table>
+    {% elif local and outcome.spec != local.spec %}
+      <p class="bad"><strong>This link does not show what was saved under it.</strong></p>
+      <table>
+        <tr><th>Saved</th><td>{{ local.spec }}</td></tr>
+        <tr><th>Shown</th><td>{{ outcome.spec }}</td></tr>
+      </table>
+    {% else %}
+      <p class="ok">Shows the saved exploration: {{ outcome.spec }}</p>
+    {% endif %}
+  {% endif %}
+
+  {% if rows %}
+  <table>
+    <thead><tr>{% for column in rows[0].keys() %}<th>{{ column }}</th>{% endfor %}</tr></thead>
+    <tbody>
+      {% for row in rows %}<tr>{% for value in row.values() %}<td>{{ value }}</td>{% endfor %}</tr>{% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endblock %}

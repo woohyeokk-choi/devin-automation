@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block body %}
+
+<p class="muted">{% if note %}Last action: {{ note }} · {% endif %}
+  <a href="/ops/traces/{{ trace_id }}">trace {{ trace_id }}</a></p>
+
+{% if denied_reason %}
+<div class="card">
+  <h2>Not available for your role</h2>
+  <p>Loading this page: {{ denied_reason }}</p>
+  <p class="muted">Other actions on this page are refused for the same reason, and each
+  attempt is recorded on its own trace with its own message. Every refusal is recorded as
+  <span class="pill expected_denial">expected_denial</span> — the permission system is
+  working, so nothing is escalated.</p>
+</div>
+{% endif %}
+
+{% if blocked_reason %}
+<div class="card">
+  <h2 class="bad">Data unavailable</h2>
+  <p>{{ blocked_reason }}</p>
+  <p class="muted">This is recorded as <span class="pill blocked">blocked</span> — a setup or
+  connectivity failure, never a product verdict.</p>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Revenue explorer</h2>
+  <form method="get" action="/">
+    <label for="dimension">Break down by</label>
+    <select name="dimension" id="dimension">
+      {% for dim in dimensions %}
+      <option value="{{ dim }}" {% if dim == spec.dimension %}selected{% endif %}>{{ dim }}</option>
+      {% endfor %}
+    </select>
+    <label for="sort">Sort</label>
+    <select name="sort" id="sort">
+      {% for key, label in sorts.items() %}
+      <option value="{{ key }}" {% if key == spec.sort %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <label for="row_limit">Rows</label>
+    <input type="number" name="row_limit" id="row_limit" min="1" max="500" value="{{ spec.row_limit }}">
+    <button type="submit">Run</button>
+  </form>
+
+  {% if rows %}
+  <table>
+    <thead><tr>{% for column in rows[0].keys() %}<th>{{ column }}</th>{% endfor %}</tr></thead>
+    <tbody>
+      {% for row in rows %}<tr>{% for value in row.values() %}<td>{{ value }}</td>{% endfor %}</tr>{% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">{{ rows|length }} rows from Superset's chart data API.</p>
+  {% elif not blocked_reason and not denied_reason %}
+  <p class="muted">No rows returned.</p>
+  {% endif %}
+
+  <form class="inline" method="post" action="/explorations">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="dimension" value="{{ spec.dimension }}">
+    <input type="hidden" name="sort" value="{{ spec.sort }}">
+    <input type="hidden" name="row_limit" value="{{ spec.row_limit }}">
+    <button type="submit">Save this exploration &amp; get a link</button>
+  </form>
+  <form class="inline" method="post" action="/tabs/new">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="secondary" type="submit">Start over in a fresh workspace (like a new browser tab)</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>My saved explorations</h2>
+  {% if explorations %}
+  <table>
+    <thead><tr><th>Link</th><th>What it should show</th><th>State</th><th></th></tr></thead>
+    <tbody>
+      {% for item in explorations %}
+      <tr>
+        <td><a href="/explorations/{{ item.key }}">{{ item.key }}</a></td>
+        <td>{{ item.label }}<br><span class="muted">{{ item.spec }}</span></td>
+        <td>
+          {% if item.discarded_at %}<span class="pill">discarded</span>
+          {% else %}<span class="pill ok">active</span>{% endif %}
+        </td>
+        <td>
+          {% if not item.discarded_at %}
+          <form class="inline" method="post" action="/explorations/{{ item.key }}/discard">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="secondary" type="submit">Discard</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">Open an older link after discarding one to see whether it still shows
+  what you saved.</p>
+  {% else %}
+  <p class="muted">Nothing saved yet.</p>
+  {% endif %}
+</div>
+{% endblock %}

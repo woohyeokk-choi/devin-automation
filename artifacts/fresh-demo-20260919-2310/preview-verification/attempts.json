@@ -1,0 +1,18 @@
+{
+  "repair_id": 1,
+  "total": 1,
+  "blocked": 0,
+  "passed": 1,
+  "attempts": [
+    {
+      "id": 1,
+      "verdict": "passed",
+      "candidate_sha": "7bb8de7b136f9afdc39d31b4c6809b3de467c461",
+      "started_at": "2026-09-19T23:38:07.796+00:00",
+      "finished_at": "2026-09-19T23:39:45.260+00:00",
+      "reason": "",
+      "failures": [],
+      "artifact": true
+    }
+  ]
+}

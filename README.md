@@ -1,14 +1,839 @@
 # devin-automation
 
-Automation controller for the **Devin Runtime Repair** project: a synthetic-data
-analytics portal backed by a fork of Apache Superset, where failing user actions
-become deduplicated incidents that drive API-created Devin repair sessions and
-independent verification.
+**A defect in a running product becomes a verified candidate fix, with Devin
+doing the repair work and a separate program deciding whether to believe it.**
 
-Target repository: [`woohyeokk-choi/superset`](https://github.com/woohyeokk-choi/superset)
-(baseline `394bca55c792b7b3547e23f6e175a7cb0f0757e8`).
+The product is a synthetic-data analytics portal built on a fork of Apache
+Superset ([`woohyeokk-choi/superset`](https://github.com/woohyeokk-choi/superset),
+baseline `394bca55c792b7b3547e23f6e175a7cb0f0757e8`). This repository is
+everything around it: the portal, the incident engine, the repair controller
+and the independent validator.
 
-The single living plan — decisions, phase status, commands and blockers — is in
-[docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md).
+### The loop
 
-Status: Phase 0 (planning). No application code yet. `AUTO_REPAIR_ENABLED=false`.
+1. **A real user action fails.** Not a stack trace and not a 403: an external
+   caller sends Superset's MCP `update_chart` a *sort-only* change, and the
+   saved row limit it never mentioned is silently replaced by the schema
+   default. A **registered behaviour check** on the product's own read-back
+   catches it — the contract, not the crash.
+2. **The failure becomes one incident.** Sanitized structured events are
+   fingerprinted into a failure family, so the same defect reproduced ten
+   times is still one incident (`portal/incidents.py`).
+3. **Devin performs the repair.** A trusted host controller opens a fork issue
+   and creates exactly **one Devin API session** per incident (durable intent,
+   single-flight claim, budget and deadline). The session reproduces the
+   defect, fixes Superset and opens a pull request. No human wrote the patch
+   (`portal/controller.py`).
+4. **Something else decides whether it worked.** A pinned validator, running
+   from a trusted checkout the session cannot touch, rebuilds the stack at the
+   **exact PR head**, measures the running code hash inside each container and
+   replays the registered checks plus permission controls
+   (`portal/verification.py`).
+5. **A human still merges.** A pass means `verified_in_preview` — never merged,
+   never deployed. The lifecycle stops at `awaiting_merge` on purpose.
+
+### What actually ran (S1, the recorded story)
+
+A sort-only MCP update reset the saved row limit `137 → 1000`. That produced
+fork issue [#5](https://github.com/woohyeokk-choi/superset/issues/5), API
+session [`e8b63e60…`](https://app.devin.ai/sessions/e8b63e608d5a4397b114a296420695c7)
+and PR [#6](https://github.com/woohyeokk-choi/superset/pull/6) @
+`7bb8de7b136f9afdc39d31b4c6809b3de467c461`, which passed **13 independent
+checks** at that exact head. It is **open, unmerged, zero merge-verified**:
+nothing is deployed and no post-merge evidence exists.
+
+A separate disposable chart (`Order revenue - live demonstration`, chart 10,
+row limit 10) exists only to make the same defect visible on screen — a
+sort-only update takes it to limit `1000`, about 600 rendered rows. It is a
+**local demonstration replay with dispatch disabled**, not the `137 → 1000`
+incident above, and the two are never counted together.
+
+Earlier repairs [#2](https://github.com/woohyeokk-choi/superset/pull/2) and
+[#4](https://github.com/woohyeokk-choi/superset/pull/4) reached
+`verified_in_preview` the same way and are also open; the scheduled browser
+monitor (B1, below) is **optional and never dispatched**. Neither is part of
+the main result.
+
+### Reviewer links
+
+| | |
+| --- | --- |
+| Part 1/2/3 map, links, one-command no-key run | [docs/submission.md](docs/submission.md) |
+| Numbers with their caveats | [docs/results.md](docs/results.md) |
+| Decisions, phase history, blockers | [docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md) |
+| Stored evidence | [artifacts/](artifacts/) |
+| Devin's create/manage boundary | [`portal/controller.py`](portal/controller.py) |
+| The exact-SHA gate | [`portal/verification.py`](portal/verification.py) |
+
+### Run it with no credentials
+
+```bash
+git clone https://github.com/woohyeokk-choi/devin-automation.git
+cd devin-automation
+docker build -t runtime-repair-portal .
+PORTAL_DATA_DIR=$PWD/runtime/sim PORTAL_UID=$(id -u) PORTAL_GID=$(id -g) \
+  python3 scripts/check_shared_state.py     # "shared state check: PASS"
+```
+
+That path runs the real portal image under `--network none` against
+`FakeGitHub`/`FakeDevin`: everything it reports is **simulated** and no request
+leaves the machine. Live historical output, local replays and simulation are
+labelled separately everywhere they appear. The full live stack is under
+[Start it](#start-it); credentials are needed only by the host coordinator,
+and only when live dispatch is deliberately enabled.
+
+### What this does not claim
+
+Nothing is merged or deployed; no upstream CI ran on either candidate; human
+touch time, cost per repair and any ROI or productivity figure were **not
+measured**; the API reported `acus_consumed: 0.0`, which is recorded as an
+unknown value rather than as "free". Two defects on one fork with a synthetic
+fixture establish no rate on real customer incidents.
+
+---
+
+## What runs here
+
+| Piece | Where | Notes |
+| --- | --- | --- |
+| Superset light stack | `docker-compose-light.yml` + `stack/docker-compose.ports.yml` | Web on `127.0.0.1:8088`. The MCP sidecar is a development endpoint that authenticates as an admin user, so it is bound to `127.0.0.1:5008` and is never published. |
+| Portal + operator viewer | `stack/docker-compose.portal.yml` | FastAPI, server-rendered Jinja, no frontend framework. `127.0.0.1:8090`. |
+| Event store | Host directory `$PORTAL_DATA_DIR`, bind-mounted at `/data` | SQLite at `/data/events.sqlite`; the identical safe JSON is also written to the container's stdout. The host coordinator opens the same files, so this is a bind mount and not a named volume. |
+
+The scenarios need no compiled frontend: they drive the REST and MCP paths,
+and the portal renders real data and real chart settings itself through the
+same clients — nothing is mocked. The native Superset UI is built separately,
+for viewing and for footage: the baseline stack on `127.0.0.1:8088` and the
+candidate preview on `127.0.0.1:8488` serve Explore with compiled assets, and
+the two native clips in the Slack thread were recorded there. Those stacks are
+temporary loopback environments on the builder machine, not deployments.
+
+### Showing the defect happen, rather than its aftermath
+
+A second, disposable portal deployment can be pointed at the same baseline
+Superset to demonstrate the failure live on its own chart. Three settings
+shape it, and all three keep their existing defaults so the recorded run is
+unchanged:
+
+| Setting | Default | Presentation value |
+| --- | --- | --- |
+| `PORTAL_CHART_ROW_LIMIT` | `137` | `10` — small enough that the limit is visible in the rendered chart |
+| `PORTAL_CHART_QUERY_MODE` | `aggregate` | `raw` — one row per order, so a row limit changes what is on screen |
+| `PORTAL_SUPERSET_PUBLIC_URL` | empty | the host-visible Superset address, which turns the chart id on `/settings` into a link to the same saved chart |
+
+With `PORTAL_CHART_NAME` set to its own chart, the deployment creates, resets
+and updates only that chart. Applying a sort with the row limit left blank
+sends the real MCP `update_chart` shown on the page — which carries no
+`row_limit` field — and Superset replaces the saved `10` with `1000`, about
+600 rows. Run it with `AUTO_REPAIR_ENABLED=false` and without a parent
+incident configured: its failures are then refused as incidents by design, so
+a demonstration cannot open an issue, create a session or post to Slack.
+
+## Start it
+
+Two checkouts are needed — this repository and the Superset fork at the
+baseline revision:
+
+```bash
+git clone https://github.com/woohyeokk-choi/devin-automation.git
+git clone https://github.com/woohyeokk-choi/superset.git
+git -C superset checkout 394bca55c792b7b3547e23f6e175a7cb0f0757e8
+```
+
+Requires Docker with the Compose plugin and Python 3.11 on the host. Nothing
+below needs a credential; the only secrets in the whole project belong to the
+coordinator, and only when live dispatch is enabled.
+
+```bash
+# from the automation checkout
+cp stack/.env.example stack/.env        # then edit: checkout paths, ports,
+$EDITOR stack/.env                      # SUPERSET_NETWORK for your namespace
+set -a; . stack/.env; set +a            # the edited file, never the example
+
+# 1. Superset + MCP sidecar (from the Superset checkout).
+#    In an isolated Compose namespace also set COMPOSE_PROJECT_NAME and
+#    SUPERSET_LIGHT_IMAGE=<project>-superset-light, because Compose names the
+#    image it builds after the project.
+cd "$SUPERSET_DIR"
+docker compose -f docker-compose-light.yml \
+  -f "$AUTOMATION_DIR/stack/docker-compose.ports.yml" \
+  up -d superset-light superset-mcp-light
+curl -fsS "$SUPERSET_BASE_URL/health"   # the HOST view: loopback, not a service name
+
+# 2. host prerequisites, then the synthetic fixture (idempotent; it only
+#    touches disposable fixture records). The seed, the provenance capture and
+#    the scenarios all run on the host and use the loopback URLs above; the
+#    SUPERSET_CONTAINER_* URLs in the same file are the portal container's view.
+cd "$AUTOMATION_DIR"
+python3 -m pip install -r requirements.txt
+python3 scripts/seed_synthetic.py
+
+# 3. measured provenance for the running containers
+python3 scripts/capture_provenance.py   # writes runtime/provenance.json
+
+# 4. the shared state directory must exist, be owned by you and be exported
+#    BEFORE Compose starts: the compose file requires PORTAL_DATA_DIR and the
+#    container runs as PORTAL_UID:PORTAL_GID, so a directory created later (or
+#    created by the container as uid 10001) leaves one of the two processes
+#    unable to write the SQLite files.
+export PORTAL_DATA_DIR=$PWD/runtime/state
+export PORTAL_UID=$(id -u) PORTAL_GID=$(id -g)
+mkdir -p "$PORTAL_DATA_DIR" && chmod 0700 "$PORTAL_DATA_DIR"
+
+# 5. portal + operator viewer
+docker compose -f stack/docker-compose.portal.yml up -d --build
+curl -s http://127.0.0.1:8090/healthz
+```
+
+All three ports bind to `127.0.0.1`; nothing is published. To watch it from
+another machine, forward the port over SSH rather than changing the bind.
+
+### Where things are written
+
+| What | Where |
+| --- | --- |
+| Structured events | `$PORTAL_DATA_DIR/events.sqlite`, and the same safe JSON on the container's stdout (`docker compose -f stack/docker-compose.portal.yml logs -f portal`) |
+| Incidents, repairs, verifications | `$PORTAL_DATA_DIR/{incidents,repairs,verifications}.sqlite` |
+| Verification reports | `$PORTAL_DATA_DIR/artifacts/repair-<id>/<sha>-<timestamp>.json` |
+| Coordinator lock | `$PORTAL_DATA_DIR/coordinator.lock` |
+| Slack delivery ledger | `$PORTAL_DATA_DIR/notifications.sqlite` (messages, per-repair threads, clip uploads) |
+| Handoff bundles | `$PORTAL_DATA_DIR/handoff/<fingerprint>/`, downloadable from the console |
+| Operator UI | `/ops` (events), `/ops/incidents` (incidents, repairs, verification attempts), `/ops/notifications` (Slack delivery ledger), `/ops/export.jsonl` (redacted export) |
+| Candidate checkouts | `$PORTAL_VERIFICATION_WORKSPACE` (default `runtime/candidates`), removed after each attempt |
+| Published evidence | `artifacts/` in this repository |
+
+### Known setup pitfalls
+
+- `PORTAL_DATA_DIR` is required by the compose file (`${PORTAL_DATA_DIR:?}`) —
+  Compose fails fast rather than silently creating a named volume the host
+  cannot read.
+- If `PORTAL_UID`/`PORTAL_GID` do not match the owner of that directory, the
+  first cross-process write fails with a permission error, not a data error.
+- Compose names a built image after its project, so in an isolated namespace
+  set `COMPOSE_PROJECT_NAME` *and* `SUPERSET_LIGHT_IMAGE=<project>-superset-light`.
+- The MCP sidecar is ready when the MCP protocol answers (`initialize`, then
+  `tools/list`); the web container's `/health` says nothing about it.
+- Verification needs free ports: with the demo stack up, pass
+  `PORTAL_VERIFICATION_WEB_PORT` / `PORTAL_VERIFICATION_MCP_PORT`.
+- Container-created bytecode under a candidate checkout is root-owned;
+  teardown handles it, but a manual `rm -rf` may need `sudo`.
+
+### Cleanup
+
+Scoped to this project only — never `docker system prune`:
+
+```bash
+docker compose -f stack/docker-compose.portal.yml down            # portal
+cd "$SUPERSET_DIR" && docker compose -f docker-compose-light.yml \
+  -f "$AUTOMATION_DIR/stack/docker-compose.ports.yml" down        # baseline
+docker compose -p candidate<sha12> down -v                        # a candidate
+```
+
+The verifier removes its own candidate project, checkout and volumes after
+every attempt; the command above is for one it did not get to. Leave
+`$PORTAL_DATA_DIR` alone unless you mean to discard the recorded history.
+
+Tests: `pip install -r requirements-dev.txt && python3 -m pytest tests -q`.
+
+## Portal
+
+| Route | Purpose |
+| --- | --- |
+| `/` | Synthetic revenue table, profile switcher, save / start-another exploration. |
+| `/explorations/{key}` | Open a saved exploration link (the S2 stale-link surface). |
+| `/settings` | Chart settings read-back and table-sort change (the S1 surface). |
+| `/ops`, `/ops/traces/{id}`, `/ops/export.jsonl` | Operator event viewer, trace detail, JSONL export. HTTP Basic (`PORTAL_OPS_USERNAME` / `PORTAL_OPS_PASSWORD`). |
+| `/ops/incidents`, `/ops/incidents/{id}` | Incident console: one row per failure family, with counts, revisions and trace history (operator-only). |
+| `POST /ops/incidents/{id}/export`, `/ops/incidents/{id}/files/{name}` | Write and download the handoff bundle (operator-only, CSRF-protected). |
+| `POST /ops/fixtures/reset` | Deterministic fixture reset (operator-only). |
+
+Everything except `/healthz` is behind the demo gate (`PORTAL_DEMO_USERNAME` /
+`PORTAL_DEMO_PASSWORD`): an anonymous client cannot pick a profile, reach
+upstream or mint an event that an incident could later be built from. Profile
+cookies are signed; one that fails its signature or names an unknown profile is
+refused with 400 rather than falling back to the more capable `analyst`. Every
+state-changing form carries a CSRF token and cross-origin submissions are
+rejected. `tests/test_demo_gate.py` asserts each rejection *and* that the event
+store gained nothing.
+
+Every user action gets one `trace_id`; every upstream REST/MCP call inside it
+gets a `request_id` and a monotonic `step_index`. Outcomes are exactly one of:
+
+| Outcome | Meaning |
+| --- | --- |
+| `ok` | The contract held. |
+| `assertion_failed` | The call succeeded at the transport level but the state is wrong. HTTP 200 with wrong state is **never** turned into a fabricated 5xx. |
+| `expected_denial` | The permission system worked (N1). Nothing escalates. |
+| `blocked` | Unreachable service, missing fixture or failed setup — never reported as "not reproduced" or "verified". |
+| `error` | An upstream or tool call actually failed. |
+
+### Two kinds of failure
+
+A replay at this baseline is *supposed* to produce failed assertions, so the log
+keeps them apart and so does every summary:
+
+| Label | Meaning |
+| --- | --- |
+| baseline defect | A Superset contract this environment exists to reproduce (S2 key reuse, S1 row-limit reset). Marked `known_baseline_defect` on the assertion and shown as "known baseline defect — expected here". Superset stays untouched. |
+| harness failure | One of the portal's own checks (`subject: harness`), e.g. the fixture reset not reaching its documented state. These are the only assertion failures that mean the automation is broken. |
+
+`artifacts/examples/{S1,S2,N1}/verdict.json` carries the machine-readable split:
+`baseline_defect_reproduced`, `harness_failures`, `blocked_steps`,
+`expected_denials`, `not_applicable` and a single `harness_healthy` boolean.
+
+### Deterministic fixture reset
+
+A replay must not depend on what the previous run left behind, so
+`POST /ops/fixtures/reset` (button on `/ops`) forgets the portal's exploration
+records and restores **only** the demo chart to its documented starting state —
+row limit 137, highest revenue first, `googleCategory10c` — and asserts it got
+there before any scenario runs. Nothing else in Superset is touched.
+
+```bash
+# reset + replay S2/S1/N1 through the portal's own HTTP surface and export
+python3 scripts/export_examples.py
+```
+
+### Safety
+
+- Upstream Superset/MCP credentials stay server-side. The browser selects a
+  *profile* (`analyst` / `restricted_viewer`); it never supplies an upstream
+  identity, URL, tool name or SQL, and the portal proxies nothing arbitrary.
+- Sanitization runs **before** SQLite, stdout and export: small explicit
+  allowlists first, then recursive scrubbing of every surviving value and of
+  free-form exception text (cookies, bearer/API/CSRF tokens, passwords,
+  connection-URI credentials). Raw payloads are never stored.
+  `tests/test_redaction_canary.py` plants canary secrets in headers, nested
+  input, nested output and exception text and asserts they appear in none of
+  the three sinks.
+- All three ports bind to `127.0.0.1` only.
+- Secrets are passed as environment variables to the process that needs them
+  and to nothing else: demo/operator passwords and the upstream Superset
+  identity to the portal, `DEVIN_API_KEY`/`DEVIN_ORG_ID` to the coordinator.
+  Nothing is written to the repository, the state directory or an artifact,
+  and no credential is ever given to a candidate stack or a repair session.
+  GitHub needs **no broad personal access token**: the host adapter resolves a
+  fresh credential per request from the existing `gh` authentication, so a
+  two-hour repair outlives a one-hour installation token. `GITHUB_TOKEN` is
+  still honoured where a deployment outside this machine sets one.
+
+## Scheduled synthetic browser monitoring (B1)
+
+S1/S2 are contract assertions over REST/MCP. B1 is the other kind of signal:
+a real browser console event the product emits on its own, collected by a
+container that watches one saved chart on a schedule.
+
+**Scope, stated plainly.** The monitor drives *its own* Chromium inside its own
+container. It cannot read anybody else's browser, and nothing in this
+repository claims otherwise. The schedule decides *when to look*; an actually
+captured console event decides *whether an incident exists*. A clean scan
+writes a scan summary and nothing else — no warning, no incident, no session.
+
+**What the scan is allowed to do.** Sign in, open `/explore/?slice_id=<id>` for
+an already-saved chart, read what the console printed, leave. It changes no
+chart setting, saves nothing and seeds nothing. The fixture is created once
+(`python3 -m scenarios.b1_fixture` inside the Superset container) and the
+verifier's replay is a separate path. The container holds the Superset demo
+login and nothing else — no GitHub, Devin, Slack or Docker credential, and no
+inbound port, so there is no ingestion endpoint to attack. It reaches the
+coordinator only by writing sanitized rows into the shared state directory.
+
+The defect it watches is [apache/superset#44007](https://github.com/apache/superset/issues/44007)
+reproduced on baseline `394bca55`: a Table column with the `MEMORY_BINARY`
+format leaves values beyond the JavaScript safe-integer range as raw digits
+while the same format renders `4KiB`/`8KiB` for small ones, and the product
+logs `Formatter failed, falling back to raw value TypeError: Cannot convert a
+BigInt value to a number`. Severity is the browser's `warning`, kept as such:
+this is a handled formatter failure with a visible fallback, not an uncaught
+exception, an HTTP 500 or a chart crash. `POST /api/v1/chart/data` returns 200.
+Unlike the S1/S2 stack, the stack under a browser monitor must serve **built
+frontend assets**.
+
+```bash
+# one-time fixture, inside the running Superset container
+docker exec -e B1_DATABASE=examples -i <project>-superset-light-1 \
+    python3 - < scenarios/b1_fixture.py     # prints the two chart ids
+
+# the monitor (loops every MONITOR_INTERVAL_SECONDS)
+export MONITOR_CHART_ID=<defect chart id> PORTAL_DATA_DIR=... AUTOMATION_DIR=$PWD
+docker compose -f stack/docker-compose.monitor.yml up -d --build
+
+# a single scan, printed as JSON, nothing persisted beyond the event store
+docker compose -f stack/docker-compose.monitor.yml run --rm monitor \
+    python -m portal.monitor --once
+```
+
+### From a console event to an admitted incident
+
+| Stage | Rule |
+| --- | --- |
+| Collect | Only events the product emitted. The monitor never prints a warning of its own, and a bug-specific expected-value assertion is never the trigger — the replay test asserts values, the runtime source does not. |
+| Bound | At most 200 entries a scan, 1500 characters a message, 5 stack frames; request context keeps method, path and status with the query string stripped. No cookies, auth headers, form data or full HARs. |
+| Classify | `qualified` only for a registered signature (`portal/telemetry.py`) whose browser severity matches. Any other warning/error is `needs_attention` — visible, never dispatchable. Known deployment noise (preload hints, the service-worker 404) is `ignored`. |
+| Consolidate | A rerender burst is one finding with a count; repeated scans of the same chart stay one incident, by the same fingerprint rule as an assertion incident. |
+| Admit | `PORTAL_TELEMETRY_ADMISSION` is `dry_run` by default (recorded, blocked from dispatch), `enabled` (may become an eligible incident) or `disabled` (not admitted at all), with `PORTAL_TELEMETRY_RATE_LIMIT` admitted findings per rolling hour. The monitor cannot grant itself any of this: admission is the coordinator's setting. |
+
+Verification for this family is stricter than for S1/S2: the frontend defect
+means the candidate's **assets must be built from the candidate revision**, and
+`provenance_problem()` refuses an environment that reuses an unchanged baseline
+bundle or one built from another commit. The build runs in a Node toolchain
+image over the candidate checkout — the web image carries a Node runtime but
+no npm and no installed packages, and webpack shells out to `zstd` — and
+webpack writes into the same `superset/static/assets` the stack bind-mounts.
+The replay checks both a fresh and a second load of the saved chart, and the
+small-number control chart alongside.
+
+Live status: the monitor, the admission path and the validator run here; no B
+issue, Devin session or Slack post has been created — remote dispatch stays off
+until it is authorized. What those runs produced, including the validator
+failing on the unfixed baseline as it should, is in
+[`artifacts/b1-monitor`](artifacts/b1-monitor).
+
+## Incidents
+
+Registered semantic failures become incidents even though
+`AUTO_REPAIR_ENABLED=false` — that flag disables external repair *dispatch*,
+not observation. The console labels three different numbers explicitly:
+**incidents**, **failed user actions** (occurrences) and **evidence events**.
+
+| Rule | Behaviour |
+| --- | --- |
+| Failure family | Sibling assertions are one incident. S2's key reuse on save and the resurrected link on read are the same product defect seen twice; S1 is a separate family. The individual assertion and route survive as evidence. |
+| Fingerprint | `target repo + verified baseline SHA + failure family + actor profile`. Timestamps, trace/request/event ids, exploration keys and chart ids are deliberately excluded. An environment whose running code cannot be measured fingerprints as `unverified` instead of merging with the verified baseline. |
+| Delivery dedup | `event_id` is a primary key; replaying the same event is a no-op (`duplicate_event`), including across a restart and under concurrent delivery. |
+| Occurrence | One per *failed user action* (`incident_id, trace_id` is a composite key), so a second assertion in the same action does not double-count, and a genuine repeat increments exactly once. |
+| Never an incident | Expected N1 denials (two denial events from one attempt are still zero incidents), blocked setup, operational errors, unregistered assertions, and the portal's own harness checks. |
+| Derived environments | Events from a `preview`/`reproduction`/`verification` deployment attach to the parent incident named by `PORTAL_PARENT_INCIDENT` and add evidence only — they never create an incident, so a repair session's own reproduction cannot open a second repair job. The parent scope and environment kind come from server configuration; no browser field is trusted for either. |
+| State | `detected` → `candidate_fix` → `verified_in_preview`. Nothing self-promotes: a user's next attempt happening to work is not a fix. Issue, session, PR and verification fields read `not connected` until real data exists. |
+
+### Handoff bundle
+
+`POST /ops/incidents/{id}/export` writes four files from stored evidence only —
+`incident.json`, `events.redacted.jsonl`, `reproduction.md` and `manifest.json`
+(actual file list, byte sizes, SHA-256 per file, run/provenance versions,
+repository and baseline SHA). `reproduction.md` carries the executable
+repository/fixture setup and the exact same-tab steps, not just a localhost URL.
+Events pass the Phase 2 sanitizer a second time on the way in, because the
+bundle leaves the portal.
+
+## Repair controller
+
+An eligible incident is considered the moment it is recorded. With
+`AUTO_REPAIR_ENABLED=false` the controller stops one step short of the wire:
+it persists the exact issue body and the exact Devin v3 request body and shows
+both in protected incident detail. Nothing is sent, and no credential is read.
+
+| Rule | Behaviour |
+| --- | --- |
+| One repair at a time | A one-row `repair_slot` table is the claim. `INSERT OR IGNORE` picks the winner, so two connections, two workers or a restarted process contend in the database, not in one process's head. The claim is taken before the first remote write and spans creation, dispatch, candidate and verification. |
+| Unknown outcomes | An ambiguous create, an unreadable session or a termination that may not have landed keeps the claim and leaves `needs_attention` on the record. Nothing is retried blindly and no second job can start under it. |
+| Budget | ACU and wall-clock are checked before anything is sent, follow-up messages included. The deadline starts at activation, not when a disabled proposal was written. At most two follow-ups, counted durably. A candidate is never terminated before verification can answer it. |
+| Candidate | GitHub, not the agent, must report the allowed repository, base `runtime-repair/baseline`, a head branch in `woohyeokk-choi/superset`, a full 40-character head SHA and an open, unmerged pull request. `candidate` is not success; only Phase 5 verification produces `verified_in_preview`. |
+| Live providers | `AUTO_REPAIR_ENABLED=true` builds the real clients from `GITHUB_TOKEN`, `DEVIN_API_KEY` and `DEVIN_ORG_ID`; missing or malformed values stop start-up. There is no simulated fallback, and simulated runs use their own database and `simulated-` ids. |
+| Off the request path | A request persists the event, admits the incident and writes a proposal — nothing more. `RepairWorker` is the only place repair work touches the network: it settles creation claims whose worker died, walks the repair holding the slot (dispatch, poll or verify) and claims the oldest queued proposal once the slot frees, so a second incident starts without another browser action and a customer never waits on api.github.com. Poll failures (401/403/429 included) become persisted state, never an exception in a customer request. |
+
+## Independent verification
+
+`candidate` means the agent opened a pull request. It is not success. What
+decides is `portal/verification.py`, built so the session under test cannot
+influence the answer.
+
+| Stage | Rule |
+| --- | --- |
+| Candidate | Re-read from GitHub: allowed host and repository, head branch inside `woohyeokk-choi/superset`, base `runtime-repair/baseline`, open, unmerged, full 40-character head SHA. |
+| Scope | Changed paths are judged before anything is built. Automation, validator, fixtures, auth/CSRF, workflows, dependencies and Docker bootstrap are forbidden. A scope rejection is `blocked` — no candidate code ran, so there is nothing to feed back as a product failure. |
+| Isolation | The exact head SHA is checked out on its own and brought up as its own Compose project, ports, database, cache, volumes and network. No Docker socket, no controller/GitHub/Devin credential in the environment or the mounts, and the stack refuses to start if a known secret name is present. |
+| Assertions | `portal/validator.py` at a pinned automation revision in the trusted checkout — never the candidate's copy. |
+| Verdict | `passed` only when every registered target and control check ran and held. Setup failure, empty traces, skipped checks, missing assertions, transport errors, a moved head or provenance that disagrees with the SHA under test are `blocked`, never a pass and never a product failure. The head is re-read before a verdict is accepted. |
+| Outcome | A pass is `verified_in_preview`. Not deployed, not merged, not production-ready. Simulated attempts are stored separately and excluded from the verified count. |
+| Feedback | Failures return the precise expected/observed lines to the same session, once per candidate SHA, at most twice, and only after the ACU and deadline checks. |
+
+### Who runs it
+
+The portal container deliberately cannot verify: it has no git, no Docker CLI
+and no repair credential, and it only observes events, records incidents and
+writes proposals. A trusted **host coordinator** owns git, Docker, the
+candidate workspace and the controller credentials, and drains the same
+durable SQLite state the portal writes to. Candidate containers get neither
+the Docker socket nor any credential.
+
+```bash
+python3 -m portal.coordinator check          # what this process can do
+python3 -m portal.coordinator baseline <superset-sha> --out result.json
+python3 -m portal.coordinator run            # drain proposals, poll, verify
+```
+
+Exactly one coordinator may own a state directory. `run` takes an advisory
+lock on `$PORTAL_DATA_DIR/coordinator.lock` and exits if another process
+holds it: the repair slot in SQLite keeps two workers off one repair, but a
+verification is a checkout and a Compose project named after the candidate
+commit, and a second loop would delete and recreate the first one's candidate
+mid-run — which surfaces as a checkout or init failure rather than as the
+deployment mistake it is. The kernel releases the lock when the process dies.
+
+Two things have to exist on the target fork before dispatch is enabled, and
+the controller creates neither at run time: **Issues** enabled, and a
+`runtime-repair` label for the issues it opens or reuses. Both are in place on
+`woohyeokk-choi/superset`; on another fork, create them first.
+
+#### The shared state directory
+
+"The same durable SQLite state" is one host directory, and the two processes
+have to agree on it:
+
+```bash
+export PORTAL_DATA_DIR=$PWD/runtime/state     # /data inside the container
+export PORTAL_UID=$(id -u) PORTAL_GID=$(id -g)
+mkdir -p "$PORTAL_DATA_DIR" && chmod 0700 "$PORTAL_DATA_DIR"
+
+set -a; . stack/.env; set +a
+docker compose -f stack/docker-compose.portal.yml up -d --build   # observes
+GITHUB_TOKEN=... DEVIN_API_KEY=... AUTO_REPAIR_ENABLED=true \
+  PORTAL_DATA_DIR=$PORTAL_DATA_DIR python3 -m portal.coordinator run
+```
+
+Both processes *write* those files, so the container runs as the coordinator's
+uid rather than the image's own 10001: files created at the default 0644 by
+one uid are read-only to the other, and the coordinator's first write fails.
+The portal is fixed at `AUTO_REPAIR_ENABLED=false` in the Compose file — the
+credentials, the git and Docker access and the dispatching all belong to the
+coordinator, and the Docker socket is mounted nowhere.
+
+#### Try the whole seam without a credential
+
+One command, no network, no account, nothing live — the real portal image
+under `--network none` plus the coordinator's own wiring against
+`FakeGitHub`/`FakeDevin`:
+
+```bash
+docker build -t runtime-repair-portal .
+PORTAL_DATA_DIR=$PWD/runtime/sim PORTAL_UID=$(id -u) PORTAL_GID=$(id -g) \
+  python3 scripts/check_shared_state.py     # prints "shared state check: PASS"
+```
+
+Everything it reports is **simulated**: the session id is `simulated-…`, the
+issue and pull request come from the fakes, and `FakeTransport` is the only
+transport involved, so no request leaves the machine. It refuses to run
+against a state directory that already holds SQLite files, which is what keeps
+a simulated dispatch out of a live queue — point it at a throwaway directory,
+never at the live state. `artifacts/phase7/simulation/` is a recorded run of
+exactly this command from a clean clone.
+
+It proves the seam end to end without a network: the real portal image (`--network none`) records a failure and a
+proposal in the bind mount, and the coordinator's own wiring claims it and
+dispatches it to simulated providers with the request trace intact —
+`artifacts/phase5/wiring/`.
+
+`baseline` is the live verification path with the baseline commit in place of
+a candidate: it calls `IsolatedStack.prepare()`, checks provenance, replays
+the validator through the prepared stack and tears the stack down. Point it at
+free ports if the demo stack is up:
+
+```bash
+PORTAL_VERIFICATION_WEB_PORT=8388 PORTAL_VERIFICATION_MCP_PORT=5308 \
+PORTAL_VERIFICATION_WORKSPACE=/tmp/candidates \
+python3 -m portal.coordinator baseline 394bca55c792b7b3547e23f6e175a7cb0f0757e8 \
+  --out baseline-result.json   # exit 0 passed, 1 product failure, 2 blocked
+```
+
+The validator also runs standalone, which is how it is proved to catch the
+defects it claims to. **Two** defects are reproduced here — S2's discarded
+form-data key and S1's row-limit reset — and they fail **three** target
+assertions, because S2 is visible both on save and on the stale link:
+
+```bash
+python3 -m portal.validator --case S2 --case S1 --case N1 \
+  --base-url http://127.0.0.1:8088 --mcp-url http://127.0.0.1:5008/mcp \
+  --out report.json     # exit 0 passed, 1 product-contract failed, 2 blocked
+```
+
+S1 runs only after MCP readiness is established in the MCP protocol itself
+(`initialize`, then `tools/list`) — the web container answering `/health` says
+nothing about a different process in a different container.
+
+### Provenance
+
+`scripts/capture_provenance.py` measures the running container: Compose
+project/service, container and image id, a hash of the Python tree **inside**
+the container, the host path its mount points at and that tree's hash, the
+checkout SHA and dirty flag, and the fixture content revision. When
+it cannot measure, the event says `unmeasured` — a host git HEAD is never
+presented as proof of what is running.
+
+The fixture revision digests the region/channel/product revenue aggregate the
+chart-data API returns, so its `rows` count is that grouped projection (60),
+not the 600 seeded records. It catches fixture content that would move a
+scenario's numbers rather than every possible row-level difference.
+
+## Status notifications (optional)
+
+`#superset-alerts` is the production-like **incident-response feed** for
+portal failures: an on-call reader watching whether a real user action broke
+and what happened about it. It is not a chat channel, and nothing listens
+there.
+
+`portal/notify.py` posts one short English line to Slack when the lifecycle
+actually moves: session started, pull request available,
+independent verification passed / blocked / failed, a same-session follow-up,
+needs-attention, and terminal stop. Polling, queueing and progress are silent,
+and an expected authenticated 403 never becomes an incident, so it can never
+become an alert.
+
+What each line is allowed to claim tracks what has actually been established:
+
+| Moment | Says |
+| --- | --- |
+| Incident admitted | *Suspected defect — investigation started* — failing action, expected vs observed, trace id, baseline SHA, occurrence count, why it was admitted, the bounded plan. An eligibility rule ran; nothing has reproduced anything. |
+| Pull request opened | *Pull request available (provisional)* — the exact head, and the session's own reproduction claim labelled as its claim. Nothing is accepted yet. |
+| Replay passed | The tested head, the attempt it came from, and *verified in isolated preview; not merged/deployed*. |
+| Replay blocked / failed | *not completed*, plus what happens next. A follow-up reuses the same session and budget. |
+
+A recording link is included only when one is passed to `backfill
+--recording` or `result --recording`, alongside `--recording-scope` (what the
+clip shows) and the head it was taken at; the notifier never invents a video,
+and withholds any link whose query string carries a signature or token,
+because a signed download URL is a credential. No recording of either
+repaired product exists — the existing clips are console walk-throughs on the
+unfixed baseline; see
+[docs/results.md](docs/results.md#video-evidence).
+
+The fresh run splits media into two stages: a symptom clip the repair session
+records of its own baseline reproduction, delivered automatically to the
+incident thread, and an after-merge clip that cannot be produced until a human
+merges the candidate and the deployment is rebuilt at GitHub's merge commit.
+The second one does not exist yet. The same defect is also shown in Superset's
+own Explore UI, as a labelled preview on the baseline and held at the candidate
+head, in `artifacts/fresh-demo-20260919-2310/visual-preview/`; see
+[docs/results.md](docs/results.md#the-fresh-runs-two-video-stages).
+
+### Two transports, one of them live
+
+The Web API client (`portal/slack_bot.py`, the official `slack_sdk`
+`WebClient`) is preferred whenever `SLACK_BOT_TOKEN` is configured; the
+incoming webhook is the explicit fallback used when it is not. They are never
+both live — `build_notifier` drops the webhook as soon as a bot exists, since
+two configured transports would post every line twice. `portal.notify status`
+reports which one is live as `transport`, never the credential.
+
+What the bot adds, and nothing more:
+
+- **One channel.** `C0C3X4BJ97S` (`#superset-alerts`) is a constant, not a
+  parameter: a token can post wherever its scopes reach, so a channel from a
+  caller, an event or a model is refused by both the client and the notifier
+  rather than followed.
+- **One thread per repair.** `chat_postMessage` replies under that repair's
+  parent `ts`, persisted in `notification_threads`. A repair with no parent
+  adopts its own first delivered message, and S1 and S2 never share a thread.
+  A new ledger starts empty: the two historical results an operator verified
+  in the channel (S2 `1789854458.454909`, S1 `1789854458.664169`) are adopted
+  only by running `portal.notify bootstrap` against `runtime/live-state`,
+  which matches each of them to the one stored non-simulated repair carrying
+  that case *and* that accepted head. A repair id is local to one database,
+  so another deployment's repair 1 never inherits this conversation, and an
+  ambiguous or absent match is reported rather than guessed. Slack history is
+  never scraped and those messages are never recreated.
+- **A source label.** Every message ends `_Superset demo automation_`, because
+  this custom app posts into the same channel an official integration could.
+- **No retries behind the ledger.** The client is built with
+  `retry_handlers=[]` and a bounded timeout, so the ledger's schedule stays
+  the only one.
+- **Clip uploads.** `files_upload_v2` for an existing local file (below).
+
+Scopes stay at `chat:write` and `files:write`. Nothing reads the channel, so
+no history, read or admin scope is requested, and the credential lives in the
+coordinator process alone — never a prompt, an issue body, an event, a
+candidate stack or a message body.
+
+```bash
+export SLACK_BOT_TOKEN='xoxb-…'                  # preferred; host process only
+export SLACK_WEBHOOK_URL='https://hooks.slack.com/services/...'   # fallback
+python3 -m portal.notify status                 # ledger, no network
+python3 -m portal.notify bootstrap              # adopt the verified parents, local only
+python3 -m portal.notify test                   # one marked connectivity line
+python3 -m portal.notify backfill --repair 1 --repair 2
+python3 -m portal.notify result --repair 1 \
+    --recording <url> --recording-case S2 \
+    --recording-sha <full sha the capture ran against> \
+    --recording-at 2026-09-19T22:15:30+00:00 \
+    --recording-scope 'baseline vs candidate replay'
+python3 -m portal.notify attach --repair 2 \
+    --clip artifacts/phase8/replay/S1-exact-sha-replay.mp4 \
+    --recording thread --recording-case S1 \
+    --recording-sha <full sha the capture ran against> \
+    --recording-at 2026-09-19T22:15:30+00:00 \
+    --recording-scope 'baseline failure then candidate pass'
+python3 -m portal.notify correction --text 'Integration correction: …'
+```
+
+`attach` uploads one **existing local file** into that repair's thread with
+`files_upload_v2`. A signed download URL is a credential and is never
+uploaded or published; only a path this operator names is. The same capture
+metadata as `result` is required and the capture's revision must equal the
+accepted head, so a clip of another commit is refused before any call.
+Matching the head is not acceptance, so `Notifier.attach` — the method, not
+only the CLI — also applies the `result` gate: a non-simulated repair in
+`verified_in_preview` with a stored attempt that actually passed on exactly
+that head. A candidate, a blocked verification or an attempt that measured
+another commit is refused before the reservation row is written, so no video
+can be presented as accepted proof on metadata alone.
+
+Slack's upload is three requests (`files.getUploadURLExternal`, a PUT to
+`files.slack.com`, `files.completeUploadExternal`), so partial failure is
+ordinary. A reservation row in `notification_uploads` — keyed by repair, the
+capture's revision and a digest of the file's bytes — is written *before* the
+first request and is never retried from, so a repeated run, a second operator
+or a restart adds nothing. The returned file id and state are persisted; a
+failure is `failed`, and anything the network left unresolved is `unknown`,
+which means *may or may not have been uploaded* and is never reported as
+delivered. As with messages, this is de-duplicated, not exactly-once.
+
+`correction` publishes one factual correction of something the channel was
+already told, keyed by the correction's own wording so running it again sends
+nothing. Channel history is never edited or deleted.
+
+`result` is the accepted-outcome follow-up, separate from `backfill` so a
+recording made after the historical summary was sent can still be published.
+It refuses unless a stored verification attempt passed on exactly the repair's
+recorded pull request head and the repair is `verified`, and its event id
+carries that head and a digest of the link, so the same link sends once and a
+later genuine recording sends once more. With no `--recording` the line says
+no recording is published for that head rather than implying footage exists.
+
+A supplied capture must state what it recorded — its case, the full revision
+it ran against and when it was taken — and that revision is compared to the
+accepted head. `--recording thread` is the capture published as a file in the
+repair's own thread: it has no link to give, so the line says so instead of
+borrowing one, and its metadata is checked exactly as strictly. The head is never borrowed from the repair the clip is
+attached to, so a capture of another revision, an incomplete one, an
+abbreviated sha or a signed download URL reads as `recording pending` with
+the reason instead of being presented as verified footage.
+
+- **Optional.** With neither `SLACK_BOT_TOKEN` nor `SLACK_WEBHOOK_URL`,
+  messages are recorded `disabled` and no request is made. A webhook URL must
+  be `https`, host `hooks.slack.com`, path under `/services/`; redirects are
+  refused, because a redirect would hand the body to whatever host the
+  response names.
+- **Host-only.** Both credentials are read by the coordinator process
+  (`portal/coordinator.py`) and nothing else: not the portal container, not a
+  child prompt, not a candidate stack. The console at `/ops/notifications` is
+  read-only over the ledger and never shows the URL, which `portal.redaction`
+  also scrubs by shape from any log, error or exported event.
+- **Durable ledger.** `notifications.sqlite` beside the other state, one row
+  per message keyed by a stable event id (`<repair>:<transition>[:<sha>]`,
+  `backfill:<repair>`, `<repair>:result:<sha>:<recording digest>`), so
+  repeated worker passes and repeated commands send nothing new. Delivery is
+  at most 4 attempts with 0/30/120/600s backoff;
+  ambiguous transport outcomes stop at `unknown` rather than risk a duplicate.
+- **Never part of the repair.** The worker announces only after the controller
+  has written its decision, and every notifier failure is swallowed into the
+  ledger; no delivery can change an outcome or start a session.
+- **A crash cannot lose a message.** Announcing after the write opens a window
+  where a process dies having committed an outcome and said nothing, and the
+  decision that carried it exists nowhere. On startup `RepairWorker.catch_up`
+  re-derives each repair's message from the stored row (`portal.notify
+  .reconcile`) and enqueues only event ids the ledger has never seen, so the
+  recovered message and the live one collapse into a single row. It announces
+  each repair's current state only — not its history — never writes to a
+  repair, and skips anything older than the ledger's one-off watermark, so
+  results that predate the notifier stay the `backfill` command's business.
+  `coordinator run` prints what it recovered as `recovered_notifications`.
+- `backfill` reads stored repair / incident / verification rows, prefixes
+  *Historical result — repair ran earlier*, and writes nothing back to that
+  history. It does not start dispatch and does not flood: only the repairs
+  named on the command line are sent, once.
+- **Simulated wiring cannot reach the channel.** `Transport` carries a
+  `simulated` marker and `portal.transport.is_simulated` fails closed, so a
+  transport that does not declare itself is treated as scripted.
+  `build_worker()` passes that state to `build_notifier`, and a simulated
+  notifier drops the webhook *and the bot* before any code reads them,
+  recording *simulated repair: real delivery refused*; a deliberately sandboxed destination is
+  prefixed `[SIMULATED]`.
+- **The record carries the same refusal.** Constructor wiring only protects
+  the process that holds it: a `backfill`, a `result` or a restarted
+  coordinator opens the same database with live configuration. A scripted
+  process stamps `simulated` on every repair row it writes or updates — even
+  one the portal proposed — and every delivery entry point (`_announce`,
+  `reconcile`, `backfill`, `result`) refuses such a row against a real
+  webhook or bot, recording it `disabled` rather than labelling and sending
+  it. An upload refuses the same rows at the same point.
+
+### Incident: five posts, two of them unintended
+
+Three posts were authorized (one connectivity test, one historical summary
+per accepted repair). Five were made. Before the runtime refusal above
+existed, `build_worker()` built the notifier unconditionally from the ambient
+`SLACK_WEBHOOK_URL`, so a test wired with FakeGitHub and FakeDevin still held
+a real transport and posted two simulated lifecycle lines naming
+`simulated-repo` issue 1 and session `simulated-1`
+(`ts 1789854423.113499`, `ts 1789854433.643299`).
+
+The regression in `tests/test_deployment.py` sets a **fake canary** webhook,
+intercepts `socket.connect`/`connect_ex`/`create_connection`, runs the
+simulated dispatch and asserts zero outbound connections and no canary in the
+ledger, for both a live reconcile over the stored rows and the `backfill`
+command; `tests/conftest.py` clears the ambient variable as a second layer.
+The channel history is left exactly as it is.
+
+## Artifacts
+
+- `artifacts/baseline/{S1,S2,N1}/` — Phase 1 API-level reproductions (historical).
+- `artifacts/examples/{S1,S2,N1}/events.redacted.jsonl` — Phase 2 portal traces
+  exported from the operator viewer.
+- `artifacts/examples/{S1,S2,N1}/verdict.json` — machine-readable verdict per
+  scenario, separating reproduced baseline defects from harness health.
+- `artifacts/examples/screenshots/` — portal and trace-viewer screenshots.
+- `artifacts/phase3/examples/{S1,S2,N1}/` — Phase 3 replay (fresh run path; the
+  Phase 1/2 paths above are left untouched).
+- `artifacts/phase3/handoff/<fingerprint>/` — the four-file handoff bundles as
+  the console wrote them.
+- `artifacts/phase3/screenshots/` — incident console and browser demonstration.
+- `artifacts/phase4/bootstrap/` — bootstrap in an isolated Compose namespace:
+  measured provenance and the S2 reproduction it produced. Its README carries
+  a correction: that checkout was dirty, so it was not a published-code run.
+- `artifacts/phase5/bootstrap/` — the published-code bootstrap: clean clones of
+  both repositories, isolated project `phase5check`, a healthy MCP container
+  under a protocol-level healthcheck, and the discovered MCP tool list.
+- `artifacts/phase5/negative-control/` — the real validator against the
+  immutable baseline: S2 and S1 fail their target contracts, every control and
+  N1 pass, and three unreachable/unauthenticated variants block.
+- `artifacts/phase5/integrated/` — the same negative control, but produced by
+  the code path live verification uses: the coordinator called
+  `IsolatedStack.prepare()`, which built its own candidate stack
+  (`candidate394bca55c792`, ports 8388/5308), measured provenance and ran the
+  pinned validator through it, then removed everything it created.
+
+- `artifacts/phase6/S2/`, `artifacts/phase6/S1/` — the two live repairs: the
+  full verification record (every check with expected and observed values),
+  the attempts, and a README stating exactly what was and was not run.
+- `artifacts/phase7/simulation/` — the credential-free simulation above, run
+  from a clean clone of the published branch.
+
+### Not covered
+
+- Submitting the chart-sort form as the restricted profile is **not applicable**:
+  the settings page is denied to that role, so the form is never rendered. The
+  denial is the covered behaviour; the form is not exposed and authorization is
+  not weakened to manufacture coverage.
+- No public preview exists. Everything is loopback-only by design, so the URLs
+  above are reachable only on the host running the stack.
+- Verification runs from the trusted host coordinator, never from inside the
+  portal container, which has no git or Docker CLI and reports
+  `can_verify=false`.
+- **No CI ran on either candidate.** Both head SHAs have 0 check-runs and 0
+  commit statuses; the combined `pending` is the absence of reporting, not a
+  passing build. The only independent checks are this validator's behavioural
+  assertions.
+- **Nothing is merged or deployed.** `verified_in_preview` is the end state,
+  and because neither product pull request is merged, the baseline is still
+  buggy.
+- **Slack is outbound status only.** `portal/notify.py` posts lifecycle
+  messages to one incoming webhook (see below). There is no Q&A, no
+  interactivity and no bot listening: native conversational session sync is
+  available only to a session's owner — the `superset-runtime-repair` service
+  user — and is not used here.
+- **Delivery is not exactly-once.** A message whose network outcome is
+  ambiguous is recorded `unknown` and never retried, so it may or may not have
+  arrived; a retried message can in principle arrive twice.
+- Human touch time and cost per repair were not measured, and the API's
+  `acus_consumed: 0.0` is reported as received, not as a claim that the work
+  was free.

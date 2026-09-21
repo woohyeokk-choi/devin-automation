@@ -1,0 +1,36 @@
+{
+  "scenario_id": "S2",
+  "recorded_at": "2026-09-19T22:15:48.019600+00:00",
+  "revision": {
+    "superset_checkout": "/home/ubuntu/phase8/replay-647565f/stacks/candidated234055eaf85",
+    "superset_sha": "d234055eaf85a70d5e5ec5a7a7256ee43d02dde6",
+    "superset_describe": "d234055",
+    "superset_dirty": "no",
+    "automation_sha": "647565f57151eae686f225626189d5f6cab5c438"
+  },
+  "title": "Deleted explore form-data key is reused by the next exploration",
+  "reproduced": false,
+  "tab_id": "991177",
+  "dataset_id": 22,
+  "keys": {
+    "k1": "Zh94YIjkopD_paOtCiGsng",
+    "k2": "x2bhCvPgseUvKqy0Symapg",
+    "reused": false
+  },
+  "delete_status": 200,
+  "absence_status_after_delete": 404,
+  "k1_resurrected_after_create_b": false,
+  "expected": "K2 is a fresh key; K1 stays deleted and keeps returning 404 regardless of later explorations in the same tab",
+  "observed": "K2 == K1 (False); after the second exploration the deleted key resolves again (resurrected=False) and now serves the new exploration's form data",
+  "mechanism": "POST /api/v1/explore/form_data reads tab_id from the query string and stores a contextual mapping cache_key(session_id, tab_id, datasource_id, chart_id, datasource_type) -> key. DELETE /api/v1/explore/form_data/<key> builds CommandParameters(key=key) without tab_id, so the delete command deletes the contextual mapping for tab_id=None and leaves the real mapping in place. The next create finds that stale mapping and hands out the deleted key again.",
+  "code_paths": [
+    "superset/explore/form_data/api.py::ExploreFormDataRestApi.delete",
+    "superset/commands/explore/form_data/delete.py::DeleteFormDataCommand.run",
+    "superset/commands/explore/form_data/create.py::CreateFormDataCommand.run",
+    "superset/temporary_cache/utils.py::cache_key"
+  ],
+  "metastore_key_value_rows_after_delete": [
+    "superset_metastore_cache | 93d1f779-df30-3a05-b6ac-39b271925756"
+  ],
+  "cache_backend": "SupersetMetastoreCache (key_value table, Postgres)"
+}

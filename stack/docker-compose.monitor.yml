@@ -1,0 +1,65 @@
+# Scheduled synthetic browser monitoring for the B1 chart.
+#
+# What this container does, once every MONITOR_INTERVAL_SECONDS: sign in to
+# the configured Superset with its own demo credentials, open one saved chart
+# by its route, and write down what the product logged while rendering it.
+# That is all. It changes no chart setting, saves nothing, seeds nothing — the
+# fixture is created once by `python3 -m scenarios.b1_fixture` and then left
+# alone — and it reads no browser other than the Chromium inside this
+# container.
+#
+# The trigger contract: the schedule decides when to look; an actual captured
+# console event decides whether an incident exists. A clean scan writes a scan
+# summary and nothing else.
+#
+# Trust boundary. This container holds the Superset demo login and nothing
+# else: no GitHub token, no Devin key, no Slack credential, no Docker socket.
+# It has no inbound port at all — there is no ingestion endpoint to attack —
+# and reaches the coordinator only by writing sanitized rows into the shared
+# state directory the coordinator opens.
+#
+# Admission is separate from collection and defaults to dry run. Set
+# PORTAL_TELEMETRY_ADMISSION=enabled on the *coordinator* when a qualified
+# finding should be allowed to become a dispatchable incident; the monitor
+# cannot grant itself that.
+#
+# Usage (from the automation checkout):
+#   set -a; . stack/.env; set +a
+#   docker compose -f stack/docker-compose.monitor.yml up -d --build
+#   docker compose -f stack/docker-compose.monitor.yml run --rm monitor \
+#       python -m portal.monitor --once     # one scan, printed as JSON
+services:
+  monitor:
+    build:
+      context: ..
+      dockerfile: Dockerfile.monitor
+    image: runtime-repair-monitor
+    restart: unless-stopped
+    user: "${PORTAL_UID:-10001}:${PORTAL_GID:-10001}"
+    environment:
+      # The container's view of Superset, not the host's loopback one.
+      MONITOR_BASE_URL: ${MONITOR_CONTAINER_BASE_URL:-http://superset-light:8088}
+      MONITOR_USERNAME: ${MONITOR_USERNAME:-${SUPERSET_USERNAME:-admin}}
+      MONITOR_PASSWORD: ${MONITOR_PASSWORD:-${SUPERSET_PASSWORD:-admin}}
+      # The already-saved chart to watch, created once by the fixture script.
+      MONITOR_CHART_ID: ${MONITOR_CHART_ID:?set MONITOR_CHART_ID to the saved chart id}
+      MONITOR_CHART_NAME: ${MONITOR_CHART_NAME:-}
+      MONITOR_SCENARIO: ${MONITOR_SCENARIO:-B1}
+      MONITOR_INTERVAL_SECONDS: ${MONITOR_INTERVAL_SECONDS:-300}
+      MONITOR_NAME: ${MONITOR_NAME:-b1-table-format-monitor}
+      PORTAL_ENVIRONMENT_KIND: ${PORTAL_ENVIRONMENT_KIND:-baseline-light}
+      PORTAL_RUN_ID: ${PORTAL_RUN_ID:-local}
+      PORTAL_DATA_DIR: /data
+      PORTAL_PROVENANCE_PATH: ${PORTAL_PROVENANCE_PATH:-/provenance/provenance.json}
+      # Fixed: a browser container is never a dispatcher.
+      AUTO_REPAIR_ENABLED: "false"
+    volumes:
+      - ${PORTAL_DATA_DIR:?set PORTAL_DATA_DIR to the host state directory the coordinator also opens}:/data
+      - ${PORTAL_PROVENANCE_DIR:-${AUTOMATION_DIR:?set AUTOMATION_DIR}/runtime}:/provenance:ro
+    networks:
+      - superset
+
+networks:
+  superset:
+    name: ${SUPERSET_NETWORK:-superset_default}
+    external: true

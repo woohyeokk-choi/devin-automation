@@ -1,0 +1,20 @@
+# The image copies four directories explicitly, but the build context is sent
+# to the daemon in full — and this working tree holds live SQLite state and a
+# local stack/.env. Keep both out of the context entirely.
+.git
+runtime
+artifacts
+docs
+tests
+stack/.env
+stack/.env.*
+!stack/.env.example
+.env
+.env.*
+**/__pycache__
+*.py[cod]
+*.sqlite
+*.sqlite3
+.pytest_cache
+.mypy_cache
+.ruff_cache

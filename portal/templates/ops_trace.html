@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block body %}
+<p class="muted"><a href="/ops">← All events</a> ·
+  <a href="/ops/export.jsonl?trace_id={{ trace_id }}">export this trace as JSONL</a></p>
+
+<div class="card">
+  <h2>Trace {{ trace_id }}</h2>
+  <table>
+    <thead><tr><th>#</th><th>Time (UTC)</th><th>Kind</th><th>Operation</th><th>Request</th><th>Outcome</th><th>HTTP</th><th>ms</th></tr></thead>
+    <tbody>
+      {% for event in events %}
+      <tr>
+        <td>{{ event.step_index }}</td>
+        <td class="muted">{{ event.ts_utc }}</td>
+        <td>{{ event.kind }}</td>
+        <td>{{ event.operation }}{% if event.tool_name %} <span class="muted">({{ event.tool_name }})</span>{% endif %}</td>
+        <td class="muted">{{ event.request_id or '' }}</td>
+        <td><span class="pill {{ event.outcome }}">{{ event.outcome }}</span></td>
+        <td>{{ event.http_status or '' }}</td>
+        <td class="muted">{{ event.duration_ms or '' }}</td>
+      </tr>
+      {% if event.assertion %}
+      <tr><td></td><td colspan="7">
+        <strong>{{ event.assertion.name }}</strong> —
+        expected <code>{{ event.assertion.expected }}</code>,
+        observed <code>{{ event.assertion.observed }}</code>
+        {% if event.assertion.known_baseline_defect and not event.assertion.holds %}
+        <span class="pill assertion_failed">known baseline defect — expected here</span>
+        {% elif event.assertion.subject == 'harness' %}
+        <span class="muted">(harness check)</span>
+        {% endif %}
+        {% if event.message %}<br><span class="muted">{{ event.message }}</span>{% endif %}
+      </td></tr>
+      {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Sanitized payloads</h2>
+  <pre>{% for event in events %}{{ event.step_index }} {{ event.operation }}
+  in : {{ event.input }}
+  out: {{ event.output }}
+{% endfor %}</pre>
+  <p class="muted">Allowlisted fields only, scrubbed before storage — cookies, CSRF/API tokens,
+  passwords and connection-URI credentials never reach SQLite, stdout or this page.</p>
+</div>
+{% endblock %}
