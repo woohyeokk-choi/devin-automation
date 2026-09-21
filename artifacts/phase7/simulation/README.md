@@ -4,8 +4,7 @@
 whole seam work without an account, a credential or a network:
 
 ```bash
-git clone --branch devin/1789830208-phase1-baseline-reproductions \
-  https://github.com/woohyeokk-choi/devin-automation.git && cd devin-automation
+git clone https://github.com/woohyeokk-choi/devin-automation.git && cd devin-automation
 docker build -t runtime-repair-portal .
 PORTAL_DATA_DIR=$PWD/runtime/sim PORTAL_UID=$(id -u) PORTAL_GID=$(id -g) \
   python3 scripts/check_shared_state.py

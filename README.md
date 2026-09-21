@@ -1,49 +1,94 @@
 # devin-automation
 
-Automation controller for the **Devin Runtime Repair** project: a synthetic-data
-analytics portal backed by a fork of Apache Superset, where failing user actions
-become deduplicated incidents that drive API-created Devin repair sessions and
-independent verification.
+**A defect in a running product becomes a verified candidate fix, with Devin
+doing the repair work and a separate program deciding whether to believe it.**
 
-Target repository: [`woohyeokk-choi/superset`](https://github.com/woohyeokk-choi/superset)
-(baseline `394bca55c792b7b3547e23f6e175a7cb0f0757e8`).
+The product is a synthetic-data analytics portal built on a fork of Apache
+Superset ([`woohyeokk-choi/superset`](https://github.com/woohyeokk-choi/superset),
+baseline `394bca55c792b7b3547e23f6e175a7cb0f0757e8`). This repository is
+everything around it: the portal, the incident engine, the repair controller
+and the independent validator.
 
-The single living plan — decisions, phase status, commands and blockers — is in
-[docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md).
+### The loop
 
-**Where the code is.** Everything described here lives on the branch
-`devin/1789830208-phase1-baseline-reproductions`, published as
-[pull request #1](https://github.com/woohyeokk-choi/devin-automation/pull/1)
-and not merged. `main` does **not** contain the application; clone the branch.
+1. **A real user action fails.** Not a stack trace and not a 403: an external
+   caller sends Superset's MCP `update_chart` a *sort-only* change, and the
+   saved row limit it never mentioned is silently replaced by the schema
+   default. A **registered behaviour check** on the product's own read-back
+   catches it — the contract, not the crash.
+2. **The failure becomes one incident.** Sanitized structured events are
+   fingerprinted into a failure family, so the same defect reproduced ten
+   times is still one incident (`portal/incidents.py`).
+3. **Devin performs the repair.** A trusted host controller opens a fork issue
+   and creates exactly **one Devin API session** per incident (durable intent,
+   single-flight claim, budget and deadline). The session reproduces the
+   defect, fixes Superset and opens a pull request. No human wrote the patch
+   (`portal/controller.py`).
+4. **Something else decides whether it worked.** A pinned validator, running
+   from a trusted checkout the session cannot touch, rebuilds the stack at the
+   **exact PR head**, measures the running code hash inside each container and
+   replays the registered checks plus permission controls
+   (`portal/verification.py`).
+5. **A human still merges.** A pass means `verified_in_preview` — never merged,
+   never deployed. The lifecycle stops at `awaiting_merge` on purpose.
 
-Publishing the app on `main` is a separate approval item, not a reason to
-merge anything.
+### What actually ran (S1, the recorded story)
 
-**The primary story is S1**, the omitted `row_limit` reset: a real MCP
-sort-only `update_chart` that omits `row_limit` silently resets the saved
-limit, the portal's registered behaviour check fails, one incident is created,
-the coordinator opens fork issue
-[#5](https://github.com/woohyeokk-choi/superset/issues/5) and one Devin API
-session, and the session's PR
-[#6](https://github.com/woohyeokk-choi/superset/pull/6) @ `7bb8de7b136f` passed
-an independent replay at that exact head. It is **open, unmerged and awaiting a
-human**; nothing is deployed and there is no post-merge evidence.
-The scheduled browser monitor (B1, below) is **optional and disabled** — never
-dispatched, and no part of the S1 story depends on it.
+A sort-only MCP update reset the saved row limit `137 → 1000`. That produced
+fork issue [#5](https://github.com/woohyeokk-choi/superset/issues/5), API
+session [`e8b63e60…`](https://app.devin.ai/sessions/e8b63e608d5a4397b114a296420695c7)
+and PR [#6](https://github.com/woohyeokk-choi/superset/pull/6) @
+`7bb8de7b136f9afdc39d31b4c6809b3de467c461`, which passed **13 independent
+checks** at that exact head. It is **open, unmerged, zero merge-verified**:
+nothing is deployed and no post-merge evidence exists.
+
+A separate disposable chart (`Order revenue - live demonstration`, chart 10,
+row limit 10) exists only to make the same defect visible on screen — a
+sort-only update takes it to limit `1000`, about 600 rendered rows. It is a
+**local demonstration replay with dispatch disabled**, not the `137 → 1000`
+incident above, and the two are never counted together.
 
 Earlier repairs [#2](https://github.com/woohyeokk-choi/superset/pull/2) and
 [#4](https://github.com/woohyeokk-choi/superset/pull/4) reached
-`verified_in_preview` the same way and are also open. The portal never
-dispatches: it is fixed at `AUTO_REPAIR_ENABLED=false` and only a trusted host
-coordinator holds credentials. See [artifacts/phase6/](artifacts/phase6/) for
-the evidence, [docs/submission.md](docs/submission.md) for the Part 1/2/3 map
-and [docs/results.md](docs/results.md) for the numbers.
+`verified_in_preview` the same way and are also open; the scheduled browser
+monitor (B1, below) is **optional and never dispatched**. Neither is part of
+the main result.
 
-Running it without any paid key: the credential-free
-`--network none` simulation in [docs/submission.md](docs/submission.md)
-("Try it in one command") uses `FakeGitHub`/`FakeDevin` and creates no remote
-work; live historical output, local replays and that simulation are labelled
-separately everywhere they appear.
+### Reviewer links
+
+| | |
+| --- | --- |
+| Part 1/2/3 map, links, one-command no-key run | [docs/submission.md](docs/submission.md) |
+| Numbers with their caveats | [docs/results.md](docs/results.md) |
+| Decisions, phase history, blockers | [docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md) |
+| Stored evidence | [artifacts/](artifacts/) |
+| Devin's create/manage boundary | [`portal/controller.py`](portal/controller.py) |
+| The exact-SHA gate | [`portal/verification.py`](portal/verification.py) |
+
+### Run it with no credentials
+
+```bash
+git clone https://github.com/woohyeokk-choi/devin-automation.git
+cd devin-automation
+docker build -t runtime-repair-portal .
+PORTAL_DATA_DIR=$PWD/runtime/sim PORTAL_UID=$(id -u) PORTAL_GID=$(id -g) \
+  python3 scripts/check_shared_state.py     # "shared state check: PASS"
+```
+
+That path runs the real portal image under `--network none` against
+`FakeGitHub`/`FakeDevin`: everything it reports is **simulated** and no request
+leaves the machine. Live historical output, local replays and simulation are
+labelled separately everywhere they appear. The full live stack is under
+[Start it](#start-it); credentials are needed only by the host coordinator,
+and only when live dispatch is deliberately enabled.
+
+### What this does not claim
+
+Nothing is merged or deployed; no upstream CI ran on either candidate; human
+touch time, cost per repair and any ROI or productivity figure were **not
+measured**; the API reported `acus_consumed: 0.0`, which is recorded as an
+unknown value rather than as "free". Two defects on one fork with a synthetic
+fixture establish no rate on real customer incidents.
 
 ---
 
@@ -90,8 +135,7 @@ Two checkouts are needed — this repository and the Superset fork at the
 baseline revision:
 
 ```bash
-git clone --branch devin/1789830208-phase1-baseline-reproductions \
-  https://github.com/woohyeokk-choi/devin-automation.git
+git clone https://github.com/woohyeokk-choi/devin-automation.git
 git clone https://github.com/woohyeokk-choi/superset.git
 git -C superset checkout 394bca55c792b7b3547e23f6e175a7cb0f0757e8
 ```

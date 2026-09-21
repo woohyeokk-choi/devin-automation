@@ -122,9 +122,10 @@ footage is scenario output plus the persisted REST read-back, not the
 product's own controls. The stacks were scratch namespaces on loopback ports
 and were torn down.
 
-**No recording of either repaired product's UI exists.** Every clip taken with
-Devin's native recorder so far is a portal or operator-console walk-through on
-the **unfixed baseline** `394bca55c792b7b3547e23f6e175a7cb0f0757e8`, which is
+**No recording of repair 1's or repair 2's product UI exists** (for the later
+fresh S1 run there is one labelled candidate-preview clip at PR #6 head, in
+"The fresh run's two video stages" below). Every clip listed here is a portal
+or operator-console walk-through on the **unfixed baseline** `394bca55c792b7b3547e23f6e175a7cb0f0757e8`, which is
 what the running stack serves because neither product PR is merged:
 
 | Recording | ~Length | What it actually shows |
@@ -205,6 +206,13 @@ chart in Superset's own Explore UI — row limit 10 and 10 rows becoming limit
 1000 and 600 rows after a sort-only update. Builder VM, later replay,
 supplemental: it is neither the original discovery nor post-merge evidence, and
 it does not touch the canonical 137-row case.
+
+**Candidate preview — delivered, and not a fix recording.** Slack file
+`F0C36VA3HQA`, *Superset UI — fix verified in preview*: Superset's own Explore
+at unmerged PR #6 head `7bb8de7b136f`, replayed locally on 2026-09-20, where
+the sort-only update leaves the saved limit and the rendered rows at 10. It is
+preview footage of an open pull request on a loopback stack, not a deployment
+and not post-merge evidence.
 
 **After merge — does not exist.** PR #6 is open and unmerged, so there is no
 merged SHA to deploy, verify or film. The after-video is only produced once a

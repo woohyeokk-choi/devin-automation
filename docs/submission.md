@@ -24,7 +24,7 @@ nothing in the main story depends on it.
 
 | | |
 | --- | --- |
-| Automation code | <https://github.com/woohyeokk-choi/devin-automation/pull/1> (branch `devin/1789830208-phase1-baseline-reproductions`; `main` does not contain the app) |
+| Automation code | <https://github.com/woohyeokk-choi/devin-automation> — `main`, merged from [PR #1](https://github.com/woohyeokk-choi/devin-automation/pull/1), which keeps the full development history |
 | Superset fork | <https://github.com/woohyeokk-choi/superset>, baseline `394bca55c792b7b3547e23f6e175a7cb0f0757e8` |
 | Repair 1 (S2) | issue [#1](https://github.com/woohyeokk-choi/superset/issues/1) → session [`4b7011c7…`](https://app.devin.ai/sessions/4b7011c76c1e4ec8bf28cb373b614577) → PR [#2](https://github.com/woohyeokk-choi/superset/pull/2) @ `d234055eaf85a70d5e5ec5a7a7256ee43d02dde6` |
 | Repair 2 (S1) | issue [#3](https://github.com/woohyeokk-choi/superset/issues/3) → session [`18b04127…`](https://app.devin.ai/sessions/18b04127f4a44af6a9c71f9eb3eaba9e) → PR [#4](https://github.com/woohyeokk-choi/superset/pull/4) @ `fe266eac51a996760a75997ff94b3270c9ef73b1` |
@@ -37,19 +37,18 @@ nothing in the main story depends on it.
 | Evidence | `artifacts/phase6/S2/`, `artifacts/phase6/S1/` |
 | B1 (browser telemetry, no dispatch) | [apache/superset#44007](https://github.com/apache/superset/issues/44007) reproduced on the baseline; monitor scans, admission modes and the validator's baseline failure in `artifacts/b1-monitor/`. No issue, session, PR or Slack post exists for it. |
 | Exact-SHA replay clips | `artifacts/phase8/replay/` — baseline vs accepted head per case, recorded later, not the original verification |
+| Live demonstration chart | `Order revenue - live demonstration` (chart 10, row limit 10, raw records): a sort-only update takes it to limit 1000 and ~600 rendered rows. A **local demonstration replay with dispatch disabled** — a separate fixture from the 137 → 1000 incident, never counted with it |
 | Numbers, with the caveats | [docs/results.md](results.md) |
 | Design decisions and full history | [docs/EXECUTION_PLAN.md](EXECUTION_PLAN.md) |
-| Loom walkthrough | _pending — to be recorded_ |
 
-Publishing this code on `main` is a separate approval item; until then the
-branch checkout above is the only accurate way to run it, and no merge of any
-PR is implied by anything here.
+The automation `main` branch carries the application; every Superset repair
+pull request, including #6, stays **open and unmerged**, and nothing in this
+repository implies otherwise.
 
 ## Try it in one command, no credentials
 
 ```bash
-git clone --branch devin/1789830208-phase1-baseline-reproductions \
-  https://github.com/woohyeokk-choi/devin-automation.git && cd devin-automation
+git clone https://github.com/woohyeokk-choi/devin-automation.git && cd devin-automation
 docker build -t runtime-repair-portal .
 PORTAL_DATA_DIR=$PWD/runtime/sim PORTAL_UID=$(id -u) PORTAL_GID=$(id -g) \
   python3 scripts/check_shared_state.py     # "shared state check: PASS"
@@ -81,8 +80,10 @@ Not verified: no upstream CI ran on either candidate (0 check-runs, 0
 statuses), nothing is merged or deployed, human touch time and cost per repair
 were not measured, the API's `acus_consumed: 0.0` is reported exactly as
 returned rather than as a cost claim, and Slack is outbound status only — a
-webhook notifier with a durable ledger, no Q&A, no exactly-once guarantee, and
-no message sent during either live run. Five messages reached the channel
+webhook notifier with a durable ledger, no Q&A, no exactly-once guarantee. The two
+older S2/S1 results were announced after the fact as backfills; in the
+recorded `fresh-demo-20260919-2310` run the coordinator posted each
+transition while the run was in progress. Five messages reached the channel
 rather than the three authorized: two were simulated lifecycle lines posted by
 the test suite, which inherited the ambient webhook; simulated wiring now
 refuses a real transport at runtime, proven by a canary-webhook regression
